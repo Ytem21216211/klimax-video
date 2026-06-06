@@ -53,13 +53,17 @@ def main() -> int:
     bubble_color = hex_to_rgba(config.get("bubbleColor"), (255, 255, 255, 255))
     text_color = hex_to_rgba(config.get("textColor"), (0, 0, 0, 255))
     center_x = int(config.get("centerX", CANVAS_WIDTH // 2))
-    bubble_top = int(config.get("top", 1030))
+    center_y = int(config.get("centerY", config.get("top", 1030)))
+    target_bubble_width = max(240, min(CANVAS_WIDTH, int(config.get("bubbleWidth", 980))))
+    target_bubble_height = max(80, min(CANVAS_HEIGHT, int(config.get("bubbleHeight", 120))))
 
     image = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     font = load_font(font_path, font_size)
 
-    max_text_width = 920
+    padding_x = 64
+    padding_y = 32
+    max_text_width = max(120, target_bubble_width - padding_x * 2)
     paragraphs = [paragraph.strip() for paragraph in text.split("\n")]
     lines: list[str] = []
     for paragraph in paragraphs:
@@ -83,12 +87,11 @@ def main() -> int:
     bbox = draw.multiline_textbbox((0, 0), "\n".join(lines), font=font, spacing=line_spacing, align="center")
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
-    padding_x = 120
-    padding_y = 32
-    bubble_width = min(980, text_width + padding_x * 2)
-    bubble_height = max(120, text_height + padding_y * 2)
+    bubble_width = target_bubble_width
+    bubble_height = max(target_bubble_height, text_height + padding_y * 2)
     bubble_left = max(0, min(CANVAS_WIDTH - bubble_width, center_x - bubble_width // 2))
     bubble_right = bubble_left + bubble_width
+    bubble_top = max(0, min(CANVAS_HEIGHT - bubble_height, center_y - bubble_height // 2))
     bubble_bottom = bubble_top + bubble_height
     radius = min(96, bubble_height // 2)
 
@@ -98,7 +101,7 @@ def main() -> int:
         fill=bubble_color,
     )
 
-    text_x = CANVAS_WIDTH / 2
+    text_x = bubble_left + bubble_width / 2
     text_y = bubble_top + (bubble_height - text_height) / 2 - bbox[1]
     draw.multiline_text(
         (text_x, text_y),

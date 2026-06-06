@@ -44,6 +44,10 @@ export type KlimaxProjectClip = {
     x: number;
     y: number;
   };
+  hookSize?: {
+    width: number;
+    height: number;
+  };
   subtitlePosition?: {
     x: number;
     y: number;
@@ -277,6 +281,10 @@ export const createKlimaxProjectClip = (
   hookPosition: {
     x: 540,
     y: 1325,
+  },
+  hookSize: {
+    width: 980,
+    height: 120,
   },
   subtitlePosition: {
     x: 540,

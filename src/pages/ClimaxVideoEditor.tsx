@@ -231,6 +231,7 @@ const clampValue = (value: number, min: number, max: number) => Math.min(max, Ma
 const snapToValue = (value: number, target: number, threshold = 18) =>
   Math.abs(value - target) <= threshold ? target : value;
 const canvasFontSize = (size: number) => `${(size / BASE_CANVAS_WIDTH) * 100}cqw`;
+const canvasUnit = (value: number) => `${(value / BASE_CANVAS_WIDTH) * 100}cqw`;
 const formatDuration = (seconds = 0) => {
   const total = Math.max(0, Math.round(seconds));
   const minutes = Math.floor(total / 60);
@@ -287,6 +288,10 @@ const ClimaxVideoEditor = () => {
       hookPosition: clip?.hookPosition || {
         x: 540,
         y: 1325,
+      },
+      hookSize: clip?.hookSize || {
+        width: 980,
+        height: 120,
       },
       subtitlePosition: clip?.subtitlePosition || {
         x: 540,
@@ -399,13 +404,13 @@ const ClimaxVideoEditor = () => {
       fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
       fontWeight: mergedSubtitleStyle.fontWeight || 900,
       WebkitTextStroke: mergedSubtitleStyle.strokeEnabled
-        ? `${mergedSubtitleStyle.strokeWidth || 4}px ${mergedSubtitleStyle.strokeColor || "#000000"}`
+        ? `${canvasUnit(mergedSubtitleStyle.strokeWidth || 4)} ${mergedSubtitleStyle.strokeColor || "#000000"}`
         : undefined,
       textShadow: mergedSubtitleStyle.shadowEnabled
-        ? `0 ${mergedSubtitleStyle.shadowDistance || 4}px 0 ${hexToRgba(
+        ? `0 ${canvasUnit(mergedSubtitleStyle.shadowDistance || 4)} 0 ${hexToRgba(
             mergedSubtitleStyle.shadowColor || "#000000",
             mergedSubtitleStyle.shadowOpacity ?? 0.85
-          )}, 0 ${mergedSubtitleStyle.shadowDistance || 4}px ${mergedSubtitleStyle.shadowBlur ?? 14}px ${hexToRgba(
+          )}, 0 ${canvasUnit(mergedSubtitleStyle.shadowDistance || 4)} ${canvasUnit(mergedSubtitleStyle.shadowBlur ?? 14)} ${hexToRgba(
             mergedSubtitleStyle.shadowColor || "#000000",
             Math.min(0.55, (mergedSubtitleStyle.shadowOpacity ?? 0.85) * 0.55)
           )}`
@@ -957,12 +962,18 @@ const ClimaxVideoEditor = () => {
                           left: `${(selectedClipPositions.hookPosition.x / BASE_CANVAS_WIDTH) * 100}%`,
                           top: `${(selectedClipPositions.hookPosition.y / BASE_CANVAS_HEIGHT) * 100}%`,
                           transform: "translate(-50%, -50%)",
-                          width: "92%",
                         }}
                       >
                         <div
-                          className="relative flex min-h-[72px] w-full max-w-full items-center justify-center rounded-[999px] px-12 py-4 text-center shadow-[0_16px_50px_rgba(0,0,0,0.45)] cursor-move select-none"
-                          style={{ backgroundColor: mergedHookStyle.bubbleColor || "#ffffff", touchAction: "none" }}
+                          className="relative flex w-fit items-center justify-center rounded-[999px] text-center shadow-[0_16px_50px_rgba(0,0,0,0.45)] cursor-move select-none"
+                          style={{
+                            backgroundColor: mergedHookStyle.bubbleColor || "#ffffff",
+                            width: canvasUnit(selectedClipPositions.hookSize.width),
+                            minHeight: canvasUnit(selectedClipPositions.hookSize.height),
+                            boxSizing: "border-box",
+                            padding: `${canvasUnit(32)} ${canvasUnit(64)}`,
+                            touchAction: "none",
+                          }}
                           onPointerDown={(event) => startClipDrag("hook", event)}
                         >
                           <p
@@ -971,6 +982,7 @@ const ClimaxVideoEditor = () => {
                               color: mergedHookStyle.textColor || "#000000",
                               fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
                               fontSize: canvasFontSize(mergedHookStyle.fontSize || 46),
+                              maxWidth: canvasUnit(Math.max(120, selectedClipPositions.hookSize.width - 128)),
                             }}
                           >
                             {selectedClip?.hookText || hookText}
@@ -1702,6 +1714,48 @@ const ClimaxVideoEditor = () => {
                                     })
                                   }
                                 />
+                                <div className="grid gap-4 md:grid-cols-2">
+                                  <div className="space-y-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Largeur</Label>
+                                      <span className="text-sm font-black">{selectedClipPositions.hookSize.width}px</span>
+                                    </div>
+                                    <Slider
+                                      value={[selectedClipPositions.hookSize.width]}
+                                      min={360}
+                                      max={1080}
+                                      step={10}
+                                      onValueChange={([value]) =>
+                                        updateSelectedClip({
+                                          hookSize: {
+                                            width: value,
+                                            height: selectedClipPositions.hookSize.height,
+                                          },
+                                        })
+                                      }
+                                    />
+                                  </div>
+                                  <div className="space-y-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Hauteur</Label>
+                                      <span className="text-sm font-black">{selectedClipPositions.hookSize.height}px</span>
+                                    </div>
+                                    <Slider
+                                      value={[selectedClipPositions.hookSize.height]}
+                                      min={90}
+                                      max={360}
+                                      step={10}
+                                      onValueChange={([value]) =>
+                                        updateSelectedClip({
+                                          hookSize: {
+                                            width: selectedClipPositions.hookSize.width,
+                                            height: value,
+                                          },
+                                        })
+                                      }
+                                    />
+                                  </div>
+                                </div>
                               </div>
                             ) : (
                               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">

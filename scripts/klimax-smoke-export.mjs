@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { mergeFrenchElisionWords } from "../local-backend/captionWords.mjs";
 import { buildLogoMoments } from "../local-backend/logoMoments.mjs";
@@ -46,6 +46,63 @@ const assertFrenchElisionMerging = () => {
   const text = words.map((word) => word.word).join(" ");
   if (text !== "on fait l'appel demain") {
     throw new Error(`Fusion élision française invalide: ${text}`);
+  }
+};
+
+const assertHookBubbleCentering = async () => {
+  const outputPath = path.join(projectRoot, "local-data", "klimax", "tmp", "hook-centering-smoke.png");
+  const configPath = path.join(projectRoot, "local-data", "klimax", "tmp", "hook-centering-smoke.json");
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await fs.writeFile(
+    configPath,
+    JSON.stringify({
+      outputPath,
+      text: "Tu connais cette sensation",
+      fontSize: 52,
+      fontPath: "/System/Library/Fonts/Supplemental/Arial Black.ttf",
+      bubbleColor: "#ffffff",
+      textColor: "#000000",
+      centerX: 540,
+      centerY: 1325,
+      bubbleWidth: 840,
+      bubbleHeight: 180,
+    }),
+    "utf8"
+  );
+
+  const render = spawnSync(path.join(projectRoot, "local-backend", ".venv", "bin", "python"), [
+    path.join(projectRoot, "local-backend", "render_hook_bubble.py"),
+    configPath,
+  ]);
+  if (render.status !== 0) {
+    throw new Error(`Rendu hook smoke impossible: ${render.stderr?.toString() || render.stdout?.toString()}`);
+  }
+
+  const inspect = spawnSync(
+    path.join(projectRoot, "local-backend", ".venv", "bin", "python"),
+    [
+      "-c",
+      [
+        "import json,sys",
+        "from PIL import Image",
+        "im=Image.open(sys.argv[1]).convert('RGBA')",
+        "alpha=im.getchannel('A')",
+        "bbox=alpha.getbbox()",
+        "print(json.dumps({'bbox':bbox,'centerX':(bbox[0]+bbox[2])/2,'centerY':(bbox[1]+bbox[3])/2,'width':bbox[2]-bbox[0],'height':bbox[3]-bbox[1]}))",
+      ].join(";"),
+      outputPath,
+    ],
+    { encoding: "utf8" }
+  );
+  if (inspect.status !== 0) {
+    throw new Error(`Inspection hook smoke impossible: ${inspect.stderr || inspect.stdout}`);
+  }
+  const metrics = JSON.parse(inspect.stdout);
+  if (Math.abs(metrics.centerX - 540) > 2 || Math.abs(metrics.centerY - 1325) > 2) {
+    throw new Error(`Bulle hook non centrée: ${JSON.stringify(metrics)}`);
+  }
+  if (Math.abs(metrics.width - 840) > 2 || Math.abs(metrics.height - 180) > 2) {
+    throw new Error(`Dimensions bulle hook invalides: ${JSON.stringify(metrics)}`);
   }
 };
 
@@ -163,6 +220,7 @@ const main = async () => {
 
   assertLogoMomentDetection();
   assertFrenchElisionMerging();
+  await assertHookBubbleCentering();
   await createSmokeProject();
 
   const child = spawn(process.execPath, ["local-backend/server.mjs"], {

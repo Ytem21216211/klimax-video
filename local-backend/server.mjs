@@ -68,6 +68,10 @@ const defaultClipLayout = (stage) => ({
     x: 540,
     y: 1325,
   },
+  hookSize: {
+    width: 980,
+    height: 120,
+  },
   subtitlePosition: {
     x: 540,
     y: stage === "intro" ? 1500 : 1265,
@@ -203,6 +207,10 @@ const normalizeClipLayout = (clip) => ({
   hookPosition: {
     x: safeNumber(clip?.hookPosition?.x, 540),
     y: safeNumber(clip?.hookPosition?.y, 1325),
+  },
+  hookSize: {
+    width: clamp(safeNumber(clip?.hookSize?.width, 980), 240, 1080),
+    height: clamp(safeNumber(clip?.hookSize?.height, 120), 80, 520),
   },
   subtitlePosition: {
     x: safeNumber(clip?.subtitlePosition?.x, 540),
@@ -751,7 +759,9 @@ const createHookBubbleOverlay = async (project, clip) => {
     bubbleColor: hookStyle.bubbleColor || "#ffffff",
     textColor: hookStyle.textColor || "#000000",
     centerX: clipLayout.hookPosition.x,
-    top: clipLayout.hookPosition.y,
+    centerY: clipLayout.hookPosition.y,
+    bubbleWidth: clipLayout.hookSize.width,
+    bubbleHeight: clipLayout.hookSize.height,
   });
 
   await runProcess(pythonBin, [hookBubbleScriptPath, configPath]);
