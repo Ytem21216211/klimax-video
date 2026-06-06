@@ -34,6 +34,10 @@ export type LocalKlimaxExport = {
   error?: string;
   createdAt?: string;
   path?: string;
+  duration?: number;
+  width?: number;
+  height?: number;
+  sizeBytes?: number;
   log?: string;
 };
 

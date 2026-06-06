@@ -341,6 +341,17 @@ const runJson = async (command, args) => {
 const ffprobeJson = (filePath) =>
   runJson(ffprobe.path, ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", filePath]);
 
+const exportMetadata = async (filePath) => {
+  const [probe, stat] = await Promise.all([ffprobeJson(filePath), fs.stat(filePath)]);
+  const videoStream = (probe.streams || []).find((stream) => stream.codec_type === "video") || {};
+  return {
+    duration: safeNumber(probe.format?.duration, 0),
+    width: safeNumber(videoStream.width, 0),
+    height: safeNumber(videoStream.height, 0),
+    sizeBytes: stat.size,
+  };
+};
+
 const writeTextFile = async (projectId, name, value, extension = "txt") => {
   await ensureDir(textRoot);
   const filePath = path.join(textRoot, `${projectId}-${name}.${extension}`);
@@ -922,11 +933,13 @@ const renderProject = async (db, project, sourceGroup) => {
   ];
 
   const { stderr } = await runProcess(ffmpegPath, args);
+  const metadata = await exportMetadata(outputPath);
   return {
     status: "completed",
     path: outputPath,
     url: publicUrlFor(outputPath),
     createdAt: new Date().toISOString(),
+    ...metadata,
     log: stderr,
   };
 };

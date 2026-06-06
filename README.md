@@ -47,6 +47,14 @@ Ouvre ensuite l'URL affichée par Vite, en général:
 http://127.0.0.1:8080
 ```
 
+## Vérifier l'export local
+
+Quand les deux vidéos de test sont déjà dans la banque locale, ce smoke test lance un backend isolé, crée un projet temporaire, exporte un MP4 avec sous-titres CapCut et logo Klimax, vérifie le fichier puis nettoie le projet temporaire:
+
+```sh
+npm run smoke:klimax
+```
+
 ## Données locales
 
 Les uploads, projets locaux et exports sont générés dans:

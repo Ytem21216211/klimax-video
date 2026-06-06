@@ -2,11 +2,14 @@ import * as React from "react";
 const { useMemo, useState } = React;
 import { useNavigate, useParams } from "react-router-dom";
 import {
+  AlertTriangle,
   ArrowLeft,
   BadgeCheck,
   Captions,
   ChevronRight,
   CirclePlay,
+  Download,
+  ExternalLink,
   Film,
   Image,
   Library,
@@ -227,6 +230,17 @@ const clampValue = (value: number, min: number, max: number) => Math.min(max, Ma
 const snapToValue = (value: number, target: number, threshold = 18) =>
   Math.abs(value - target) <= threshold ? target : value;
 const canvasFontSize = (size: number) => `${(size / BASE_CANVAS_WIDTH) * 100}cqw`;
+const formatDuration = (seconds = 0) => {
+  const total = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return minutes ? `${minutes}m ${String(rest).padStart(2, "0")}s` : `${rest}s`;
+};
+const formatBytes = (bytes = 0) => {
+  if (!bytes) return "taille inconnue";
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} Ko`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} Mo`;
+};
 
 const ClimaxVideoEditor = () => {
   const navigate = useNavigate();
@@ -985,13 +999,56 @@ const ClimaxVideoEditor = () => {
                   {exportHistory[0]?.url ? (
                     <div className="mt-4 space-y-4">
                       <video src={exportHistory[0].url} controls className="w-full rounded-2xl border border-white/10" />
-                      <a
-                        href={exportHistory[0].url}
-                        download
-                        className="inline-flex rounded-full bg-white px-4 py-2 text-sm font-black text-black hover:bg-white/90"
-                      >
-                        Télécharger le dernier MP4
-                      </a>
+                      <div className="rounded-2xl border border-emerald-300/20 bg-emerald-300/[0.08] p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-black text-emerald-100">Dernier export prêt</p>
+                            <p className="mt-1 text-xs text-emerald-50/65">
+                              {exportHistory[0].createdAt ? new Date(exportHistory[0].createdAt).toLocaleString("fr-FR") : "Date inconnue"}
+                            </p>
+                          </div>
+                          <BadgeCheck className="h-5 w-5 text-emerald-200" />
+                        </div>
+                        <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                          <div className="rounded-xl bg-black/35 p-2">
+                            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-white/35">Format</p>
+                            <p className="mt-1 text-xs font-black">
+                              {exportHistory[0].width && exportHistory[0].height
+                                ? `${exportHistory[0].width}x${exportHistory[0].height}`
+                                : "MP4"}
+                            </p>
+                          </div>
+                          <div className="rounded-xl bg-black/35 p-2">
+                            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-white/35">Durée</p>
+                            <p className="mt-1 text-xs font-black">
+                              {exportHistory[0].duration ? formatDuration(exportHistory[0].duration) : "inconnue"}
+                            </p>
+                          </div>
+                          <div className="rounded-xl bg-black/35 p-2">
+                            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-white/35">Poids</p>
+                            <p className="mt-1 text-xs font-black">{formatBytes(exportHistory[0].sizeBytes)}</p>
+                          </div>
+                        </div>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <a
+                            href={exportHistory[0].url}
+                            download
+                            className="inline-flex items-center rounded-full bg-white px-4 py-2 text-sm font-black text-black hover:bg-white/90"
+                          >
+                            <Download className="mr-2 h-4 w-4" />
+                            Télécharger MP4
+                          </a>
+                          <a
+                            href={exportHistory[0].url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center rounded-full border border-white/10 px-4 py-2 text-sm font-black text-white hover:bg-white/10"
+                          >
+                            <ExternalLink className="mr-2 h-4 w-4" />
+                            Ouvrir
+                          </a>
+                        </div>
+                      </div>
                       {exportHistory.length > 1 && (
                         <div className="grid gap-3">
                           {exportHistory.slice(1).map((entry, index) => (
@@ -999,12 +1056,21 @@ const ClimaxVideoEditor = () => {
                               <div className="flex items-center justify-between gap-3">
                                 <div>
                                   <p className="text-sm font-black">Export précédent {index + 1}</p>
-                                  <p className="text-xs text-white/45">{entry.createdAt ? new Date(entry.createdAt).toLocaleString("fr-FR") : "Date inconnue"}</p>
+                                  <p className="text-xs text-white/45">
+                                    {entry.createdAt ? new Date(entry.createdAt).toLocaleString("fr-FR") : "Date inconnue"}
+                                    {entry.width && entry.height ? ` · ${entry.width}x${entry.height}` : ""}
+                                    {entry.sizeBytes ? ` · ${formatBytes(entry.sizeBytes)}` : ""}
+                                  </p>
                                 </div>
                                 {entry.url && (
-                                  <a href={entry.url} download className="rounded-full border border-white/10 px-3 py-1 text-xs font-black text-white hover:bg-white/10">
-                                    Télécharger
-                                  </a>
+                                  <div className="flex gap-2">
+                                    <a href={entry.url} download className="rounded-full border border-white/10 px-3 py-1 text-xs font-black text-white hover:bg-white/10">
+                                      Télécharger
+                                    </a>
+                                    <a href={entry.url} target="_blank" rel="noreferrer" className="rounded-full border border-white/10 px-3 py-1 text-xs font-black text-white hover:bg-white/10">
+                                      Ouvrir
+                                    </a>
+                                  </div>
                                 )}
                               </div>
                             </div>
@@ -1013,7 +1079,12 @@ const ClimaxVideoEditor = () => {
                       )}
                     </div>
                   ) : renderError ? (
-                    <p className="mt-3 text-sm text-red-300">{renderError}</p>
+                    <div className="mt-4 rounded-2xl border border-red-300/20 bg-red-500/10 p-4 text-sm text-red-100">
+                      <div className="flex items-start gap-3">
+                        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                        <p>{renderError}</p>
+                      </div>
+                    </div>
                   ) : null}
                 </div>
               )}
