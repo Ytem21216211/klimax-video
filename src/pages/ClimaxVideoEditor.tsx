@@ -99,14 +99,14 @@ const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
     fontFamily: "Helvetica",
     fontSize: 40,
     textColor: "#ffffff",
-    strokeEnabled: true,
+    strokeEnabled: false,
     strokeColor: "#000000",
-    strokeWidth: 5,
+    strokeWidth: 0,
     shadowEnabled: true,
     shadowColor: "#000000",
-    shadowOpacity: 0.88,
-    shadowDistance: 5,
-    shadowBlur: 16,
+    shadowOpacity: 0.45,
+    shadowDistance: 3,
+    shadowBlur: 10,
     animationPreset: "rise",
     wordsPerLine: 2,
     introVerticalPosition: "lower",
@@ -294,6 +294,38 @@ const VISUAL_SUBTITLE_PRESETS = [
   { key: "orangeThe", label: "THE orange", sample: "THE", badge: null },
   { key: "proQuick", label: "Pro quick", sample: "quick", badge: "Pro" },
 ] as const;
+
+const buildOuterSubtitleShadow = (
+  strokeWidth: number,
+  strokeColor: string,
+  shadowDistance: number,
+  shadowBlur: number,
+  shadowColor: string,
+  shadowOpacity: number
+) => {
+  const shadows: string[] = [];
+  if (strokeWidth > 0) {
+    const stroke = canvasUnit(strokeWidth);
+    [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+      [0.72, 0.72],
+      [-0.72, 0.72],
+      [0.72, -0.72],
+      [-0.72, -0.72],
+    ].forEach(([x, y]) => {
+      shadows.push(`${canvasUnit(strokeWidth * x)} ${canvasUnit(strokeWidth * y)} 0 ${strokeColor}`);
+    });
+    shadows.push(`0 0 ${stroke} ${strokeColor}`);
+  }
+  if (shadowDistance > 0 || shadowBlur > 0) {
+    shadows.push(`0 ${canvasUnit(shadowDistance)} 0 ${hexToRgba(shadowColor, shadowOpacity)}`);
+    shadows.push(`0 ${canvasUnit(shadowDistance)} ${canvasUnit(shadowBlur)} ${hexToRgba(shadowColor, Math.min(0.62, shadowOpacity * 0.62))}`);
+  }
+  return shadows.join(", ");
+};
 const DEFAULT_HOOK_STYLE: LocalHookStyleSettings = {
   bubbleColor: "#ffffff",
   textColor: "#000000",
@@ -615,23 +647,29 @@ const ClimaxVideoEditor = () => {
   const subtitlePreviewStyle = useMemo(
     () => {
       const previewFontSize = clampValue(Math.round((mergedSubtitleStyle.fontSize || subtitleSize) * 1.08), 38, 96);
-      const previewStrokeWidth = Math.max(5, mergedSubtitleStyle.strokeEnabled === false ? 0 : mergedSubtitleStyle.strokeWidth || 5);
-      const previewShadowDistance = Math.max(5, mergedSubtitleStyle.shadowEnabled === false ? 0 : mergedSubtitleStyle.shadowDistance || 5);
-      const previewShadowBlur = Math.max(16, mergedSubtitleStyle.shadowEnabled === false ? 0 : mergedSubtitleStyle.shadowBlur ?? 16);
+      const previewStrokeWidth =
+        mergedSubtitleStyle.strokeEnabled === false ? 0 : clampValue(Math.max(mergedSubtitleStyle.strokeWidth || 5, 5), 0, 14);
+      const previewShadowDistance =
+        mergedSubtitleStyle.shadowEnabled === false ? 0 : clampValue(Math.max(mergedSubtitleStyle.shadowDistance || 5, 5), 0, 22);
+      const previewShadowBlur =
+        mergedSubtitleStyle.shadowEnabled === false ? 0 : clampValue(Math.max(mergedSubtitleStyle.shadowBlur ?? 16, 16), 0, 36);
+      const previewShadowOpacity =
+        mergedSubtitleStyle.shadowEnabled === false ? 0 : clampValue(Math.max(mergedSubtitleStyle.shadowOpacity ?? 0.9, 0.2), 0, 1);
 
       return {
         fontSize: canvasFontSize(previewFontSize),
         color: mergedSubtitleStyle.textColor || "#ffffff",
         fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
         fontWeight: Math.max(900, mergedSubtitleStyle.fontWeight || 900),
-        WebkitTextStroke: `${canvasUnit(previewStrokeWidth)} ${mergedSubtitleStyle.strokeColor || "#000000"}`,
-        textShadow: `0 ${canvasUnit(previewShadowDistance)} 0 ${hexToRgba(
+        WebkitTextStroke: "0 transparent",
+        textShadow: buildOuterSubtitleShadow(
+          previewStrokeWidth,
+          mergedSubtitleStyle.strokeColor || "#000000",
+          previewShadowDistance,
+          previewShadowBlur,
           mergedSubtitleStyle.shadowColor || "#000000",
-          Math.max(0.82, mergedSubtitleStyle.shadowOpacity ?? 0.9)
-        )}, 0 ${canvasUnit(previewShadowDistance)} ${canvasUnit(previewShadowBlur)} ${hexToRgba(
-          mergedSubtitleStyle.shadowColor || "#000000",
-          Math.min(0.62, Math.max(0.82, mergedSubtitleStyle.shadowOpacity ?? 0.9) * 0.62)
-        )}`,
+          previewShadowOpacity
+        ),
         transform: `scaleX(${(mergedSubtitleStyle.fontScaleX || 104) / 100})`,
         animation:
           mergedSubtitleStyle.animationPreset === "pop"

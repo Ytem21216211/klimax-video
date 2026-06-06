@@ -838,10 +838,10 @@ const resolveSubtitleRenderStyle = (subtitleStyle = defaultSubtitleStyle) => {
     fontSize: clamp(Math.round(baseFontSize * 1.08), 38, 96),
     fontWeight: Math.max(900, safeNumber(subtitleStyle.fontWeight, 900)),
     fontScaleX: clamp(safeNumber(subtitleStyle.fontScaleX, defaultSubtitleStyle.fontScaleX), 98, 112),
-    outline: clamp(Math.max(userOutline, 5), 0, 14),
-    shadowDistance: clamp(Math.max(userShadow, 5), 0, 22),
-    shadowBlur: clamp(Math.max(userBlur, 16), 0, 36),
-    shadowOpacity: clamp(Math.max(safeNumber(subtitleStyle.shadowOpacity, 0.9), 0.82), 0, 1),
+    outline: clamp(userOutline, 0, 14),
+    shadowDistance: clamp(userShadow, 0, 22),
+    shadowBlur: clamp(userBlur, 0, 36),
+    shadowOpacity: clamp(safeNumber(subtitleStyle.shadowOpacity, 0.9), 0, 1),
     strokeColor: subtitleStyle.strokeColor || "#000000",
     shadowColor: subtitleStyle.shadowColor || "#000000",
     textColor: subtitleStyle.textColor || "#ffffff",
@@ -899,6 +899,9 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription) => {
   const x = clipLayout.subtitlePosition.x ?? 540;
   const fontSize = renderStyle.fontSize;
   const fontWeight = -1;
+  const shadowOutline = renderStyle.shadowEnabled === false
+    ? 0
+    : clamp(outline > 0 ? outline + 3 : renderStyle.shadowBlur / 4, 0, 10);
   const keywordSet = buildSubtitleKeywordSet(clipTranscription, renderStyle);
   const mainOverride = subtitleAnimationOverride(renderStyle, x, y, 0, { blur: 0 });
   const shadowOverride = subtitleAnimationOverride(renderStyle, x, y, 0, {
@@ -913,10 +916,16 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription) => {
     const end = assTime(cue.end);
     const shadowText = assEscapePlain(cue.text);
     const mainText = formatAssSubtitleText(cue.text, keywordSet, renderStyle);
-    return [
+    const layers = [
       `Dialogue: 0,${start},${end},KlimaxShadow,,0,0,0,,${shadowOverride}${shadowText}`,
-      `Dialogue: 1,${start},${end},Klimax,,0,0,0,,${mainOverride}${mainText}`,
     ];
+    if (outline > 0) {
+      layers.push(`Dialogue: 1,${start},${end},KlimaxOutline,,0,0,0,,${mainOverride}${shadowText}`);
+    }
+    layers.push(
+      `Dialogue: 2,${start},${end},Klimax,,0,0,0,,${mainOverride}${mainText}`,
+    );
+    return layers;
   });
 
   const ass = [
@@ -927,8 +936,9 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription) => {
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    `Style: KlimaxShadow,${font.assName},${fontSize},${shadowColor},${shadowColor},${shadowColor},${shadowColor},${fontWeight},0,0,0,${renderStyle.fontScaleX},100,0,0,1,${Math.max(outline + 3, 8)},0,5,0,0,0,1`,
-    `Style: Klimax,${font.assName},${fontSize},${primary},${primary},${outlineColor},${shadowColor},${fontWeight},0,0,0,${renderStyle.fontScaleX},100,0,0,1,${outline},0,5,0,0,0,1`,
+    `Style: KlimaxShadow,${font.assName},${fontSize},${shadowColor},${shadowColor},${shadowColor},${shadowColor},${fontWeight},0,0,0,${renderStyle.fontScaleX},100,0,0,1,${shadowOutline},0,5,0,0,0,1`,
+    `Style: KlimaxOutline,${font.assName},${fontSize},${outlineColor},${outlineColor},${outlineColor},${outlineColor},${fontWeight},0,0,0,${renderStyle.fontScaleX},100,0,0,1,${outline},0,5,0,0,0,1`,
+    `Style: Klimax,${font.assName},${fontSize},${primary},${primary},${primary},${shadowColor},${fontWeight},0,0,0,${renderStyle.fontScaleX},100,0,0,1,0,0,5,0,0,0,1`,
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
