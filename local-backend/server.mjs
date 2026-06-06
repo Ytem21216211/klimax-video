@@ -602,6 +602,11 @@ const fontDescriptor = (fontFamily) => {
   const family = String(fontFamily || "");
   const known = [
     {
+      match: /arial black/i,
+      assName: "Arial Black",
+      fontPath: "/System/Library/Fonts/Supplemental/Arial Black.ttf",
+    },
+    {
       match: /impact/i,
       assName: "Impact",
       fontPath: "/System/Library/Fonts/Supplemental/Impact.ttf",
@@ -630,7 +635,16 @@ const fontDescriptor = (fontFamily) => {
     { match: /montserrat/i, assName: "Montserrat", fontPath: null },
     { match: /bebas/i, assName: "Bebas Neue", fontPath: null },
     { match: /anton/i, assName: "Anton", fontPath: null },
-    { match: /din/i, assName: "DIN Condensed", fontPath: null },
+    {
+      match: /din condensed/i,
+      assName: "DIN Condensed",
+      fontPath: "/System/Library/Fonts/Supplemental/DIN Condensed Bold.ttf",
+    },
+    {
+      match: /din/i,
+      assName: "DIN Alternate",
+      fontPath: "/System/Library/Fonts/Supplemental/DIN Alternate Bold.ttf",
+    },
     { match: /futura/i, assName: "Futura", fontPath: null },
     { match: /avenir/i, assName: "Avenir Next Heavy", fontPath: null },
     { match: /gill/i, assName: "Gill Sans", fontPath: null },
