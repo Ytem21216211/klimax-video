@@ -1,0 +1,1636 @@
+import * as React from "react";
+const { useMemo, useState } = React;
+import { useNavigate, useParams } from "react-router-dom";
+import {
+  ArrowLeft,
+  BadgeCheck,
+  Captions,
+  ChevronRight,
+  CirclePlay,
+  Film,
+  Image,
+  Library,
+  Music,
+  Play,
+  Plus,
+  Scissors,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  Loader2,
+  Wand2,
+  Zap,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
+import { Slider } from "@/components/ui/slider";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  LOCAL_KLIMAX_API,
+  localKlimaxApi,
+  type LocalHookStyleSettings,
+  type LocalKlimaxProject,
+  type LocalSubtitleStyleSettings,
+} from "@/lib/localKlimaxApi";
+import { cn } from "@/lib/utils";
+import {
+  createKlimaxProjectClip,
+  loadKlimaxBankAssets,
+  loadKlimaxProjectClips,
+  loadKlimaxProjectSource,
+  saveKlimaxProjectClips,
+  type KlimaxAssetCategory,
+  type KlimaxBankAsset,
+  type KlimaxClipStage,
+  type KlimaxProjectClip,
+  type KlimaxProjectSource,
+} from "@/lib/klimaxStorage";
+
+const BASE_CANVAS_WIDTH = 1080;
+const BASE_CANVAS_HEIGHT = 1920;
+
+const antiShadowbanSteps = [
+  "Variation captions et hooks par export",
+  "SFX courts synchronises aux mots forts",
+  "Musique interchangeable par mood",
+  "Cadres et zooms différents à chaque vidéo",
+  "Insertion image ou b-roll selon le sens",
+];
+
+const KLIMAX_LOGO_PREVIEW_URL = `${LOCAL_KLIMAX_API}/files/system/klimax-pop-up.mov`;
+
+const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
+  impact: {
+    stylePreset: "impact",
+    fontFamily: "Arial Bold",
+    fontSize: 34,
+    textColor: "#ffffff",
+    strokeEnabled: true,
+    strokeColor: "#000000",
+    strokeWidth: 4,
+    shadowEnabled: true,
+    shadowColor: "#000000",
+    shadowOpacity: 0.85,
+    shadowDistance: 4,
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 900,
+  },
+  clean: {
+    stylePreset: "clean",
+    fontFamily: "Helvetica",
+    fontSize: 34,
+    textColor: "#ffffff",
+    strokeEnabled: false,
+    strokeColor: "#000000",
+    strokeWidth: 0,
+    shadowEnabled: true,
+    shadowColor: "#000000",
+    shadowOpacity: 0.75,
+    shadowDistance: 3,
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 800,
+  },
+  highlight: {
+    stylePreset: "highlight",
+    fontFamily: "Impact",
+    fontSize: 36,
+    textColor: "#fff16b",
+    strokeEnabled: true,
+    strokeColor: "#000000",
+    strokeWidth: 5,
+    shadowEnabled: true,
+    shadowColor: "#000000",
+    shadowOpacity: 0.9,
+    shadowDistance: 5,
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 900,
+  },
+};
+
+const DEFAULT_SUBTITLE_STYLE = SUBTITLE_PRESETS.impact;
+const DEFAULT_HOOK_STYLE: LocalHookStyleSettings = {
+  bubbleColor: "#ffffff",
+  textColor: "#000000",
+  fontSize: 46,
+};
+
+const FONT_OPTIONS = [
+  { value: "Arial Bold", label: "Arial Bold" },
+  { value: "Helvetica", label: "Helvetica" },
+  { value: "Impact", label: "Impact" },
+  { value: "Courier New", label: "Courier New" },
+  { value: "Arial Rounded MT Bold", label: "Arial Rounded MT Bold" },
+  { value: "Archivo Black", label: "Archivo Black" },
+  { value: "Montserrat", label: "Montserrat" },
+  { value: "Bebas Neue", label: "Bebas Neue" },
+  { value: "Anton", label: "Anton" },
+  { value: "Futura", label: "Futura" },
+  { value: "Avenir Next Heavy", label: "Avenir Next Heavy" },
+  { value: "Gill Sans", label: "Gill Sans" },
+  { value: "Trebuchet MS", label: "Trebuchet MS" },
+];
+
+const hexToRgba = (hex = "#000000", alpha = 1) => {
+  const clean = hex.replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return `rgba(0,0,0,${alpha})`;
+  const r = Number.parseInt(clean.slice(0, 2), 16);
+  const g = Number.parseInt(clean.slice(2, 4), 16);
+  const b = Number.parseInt(clean.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+};
+
+const formatSubtitleSingleLine = (text: string) =>
+  text
+    .replace(/[?,!]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const clampValue = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const ClimaxVideoEditor = () => {
+  const navigate = useNavigate();
+  const { projectId } = useParams();
+  const [mode, setMode] = useState<"manual" | "auto">("manual");
+  const [clips, setClips] = useState<KlimaxProjectClip[]>(() => loadKlimaxProjectClips(projectId));
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(() => loadKlimaxProjectClips(projectId)[0]?.id || null);
+  const [projectSource, setProjectSource] = useState<KlimaxProjectSource | null>(() => loadKlimaxProjectSource(projectId));
+  const [localProject, setLocalProject] = useState<LocalKlimaxProject | null>(null);
+  const [hookText, setHookText] = useState("Tu connais cette sensation ?");
+  const [musicEnabled, setMusicEnabled] = useState(true);
+  const [autoSfxEnabled, setAutoSfxEnabled] = useState(true);
+  const [klimaxLogoEnabled, setKlimaxLogoEnabled] = useState(true);
+  const [brollEnabled, setBrollEnabled] = useState(true);
+  const [musicVolumeDb, setMusicVolumeDb] = useState(-17);
+  const [subtitleSize, setSubtitleSize] = useState(34);
+  const [subtitleStyle, setSubtitleStyle] = useState<LocalSubtitleStyleSettings>({ ...DEFAULT_SUBTITLE_STYLE });
+  const [hookStyle, setHookStyle] = useState<LocalHookStyleSettings>({ ...DEFAULT_HOOK_STYLE });
+  const [bankAssets, setBankAssets] = useState<KlimaxBankAsset[]>(() => loadKlimaxBankAssets());
+  const [isRendering, setIsRendering] = useState(false);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const previewCanvasRef = React.useRef<HTMLDivElement | null>(null);
+  const autoTranscriptionRef = React.useRef<string | null>(null);
+  const dragStateRef = React.useRef<{
+    kind: "hook" | "subtitle" | "logo" | "image";
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
+
+  const getClipPositions = React.useCallback(
+    (clip: KlimaxProjectClip | null | undefined) => ({
+      videoTransform: clip?.videoTransform || {
+        scale: 100,
+        x: 0,
+        y: 0,
+      },
+      hookPosition: clip?.hookPosition || {
+        x: 540,
+        y: 1325,
+      },
+      subtitlePosition: clip?.subtitlePosition || {
+        x: 540,
+        y: clip?.stage === "intro" ? 1500 : 1265,
+      },
+      logoPosition: clip?.logoPosition || {
+        x: 540,
+        y: 1385,
+      },
+      imageTransform: clip?.imageTransform || {
+        scale: 100,
+        x: 0,
+        y: 0,
+      },
+    }),
+    []
+  );
+
+  const applyProjectState = React.useCallback((project: LocalKlimaxProject) => {
+    setLocalProject(project);
+    setClips(project.clips || []);
+    setSelectedClipId((current) => (project.clips?.some((clip) => clip.id === current) ? current : project.clips?.[0]?.id || null));
+    const nextSubtitleStyle = {
+      ...DEFAULT_SUBTITLE_STYLE,
+      ...(project.settings?.subtitleStyle || {}),
+      fontSize: Number(project.settings?.subtitleStyle?.fontSize || project.settings?.subtitleSize || 34),
+    };
+    setSubtitleStyle(nextSubtitleStyle);
+    setSubtitleSize(Number(nextSubtitleStyle.fontSize || 34));
+    setHookStyle({ ...DEFAULT_HOOK_STYLE, ...(project.settings?.hookStyle || {}) });
+    setHookText(project.settings?.hookText || project.clips?.[0]?.hookText || "Tu connais cette sensation ?");
+    setMusicEnabled(project.settings?.musicEnabled !== false);
+    setMusicVolumeDb(Number(project.settings?.musicVolumeDb ?? -17));
+    setAutoSfxEnabled(project.settings?.autoSfxEnabled !== false);
+    setKlimaxLogoEnabled(project.settings?.klimaxLogoEnabled !== false);
+    setBrollEnabled(project.settings?.brollEnabled !== false);
+    setProjectSource(
+      project.sourceGroup?.person1 && project.sourceGroup?.person2
+        ? {
+            videoId: project.sourceGroup.person1.id,
+            videoIds: [project.sourceGroup.person1.id, project.sourceGroup.person2.id],
+            groupId: project.sourceGroup.id,
+            title: project.sourceGroup.title,
+            note: project.sourceGroup.note,
+          }
+        : null
+    );
+  }, []);
+
+  React.useEffect(() => {
+    let active = true;
+
+    const loadProject = async () => {
+      try {
+        const [{ project }, { assets }] = await Promise.all([
+          localKlimaxApi.getProject(projectId || ""),
+          localKlimaxApi.listAssets(),
+        ]);
+        if (!active) return;
+        setBankAssets(assets);
+        applyProjectState(project);
+      } catch {
+        const nextClips = loadKlimaxProjectClips(projectId);
+        if (!active) return;
+        setClips(nextClips);
+        setSelectedClipId(nextClips[0]?.id || null);
+        setProjectSource(loadKlimaxProjectSource(projectId));
+      }
+    };
+
+    loadProject();
+    return () => {
+      active = false;
+    };
+  }, [applyProjectState, projectId]);
+
+  React.useEffect(() => {
+    saveKlimaxProjectClips(projectId, clips);
+  }, [clips, projectId]);
+
+  const selectedClip = useMemo(() => clips.find((clip) => clip.id === selectedClipId) || clips[0] || null, [clips, selectedClipId]);
+  const transcriptionByClipId = useMemo(
+    () => new Map((localProject?.transcription?.clips || []).map((clip) => [clip.clipId, clip])),
+    [localProject?.transcription?.clips]
+  );
+  const selectedTranscription = useMemo(
+    () => (selectedClip ? transcriptionByClipId.get(selectedClip.id) || null : null),
+    [selectedClip, transcriptionByClipId]
+  );
+  const selectedSourceAsset = useMemo(() => {
+    if (!selectedClip || !localProject?.sourceGroup) return null;
+    const { person1, person2 } = localProject.sourceGroup;
+    if (selectedClip.sourceVideoId === person2?.id) return person2;
+    return person1 || person2 || null;
+  }, [localProject?.sourceGroup, selectedClip]);
+  const selectedImageAsset = useMemo(
+    () => (selectedClip?.imageId ? bankAssets.find((asset) => asset.id === selectedClip.imageId) || null : null),
+    [bankAssets, selectedClip?.imageId]
+  );
+  const selectedClipPositions = useMemo(() => getClipPositions(selectedClip), [getClipPositions, selectedClip]);
+  const mergedSubtitleStyle = useMemo(
+    () => ({ ...DEFAULT_SUBTITLE_STYLE, ...subtitleStyle, fontSize: subtitleStyle.fontSize || subtitleSize }),
+    [subtitleStyle, subtitleSize]
+  );
+  const mergedHookStyle = useMemo(() => ({ ...DEFAULT_HOOK_STYLE, ...hookStyle }), [hookStyle]);
+  const subtitlePreviewStyle = useMemo(
+    () => ({
+      fontSize: `${mergedSubtitleStyle.fontSize || subtitleSize}px`,
+      color: mergedSubtitleStyle.textColor || "#ffffff",
+      fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
+      fontWeight: mergedSubtitleStyle.fontWeight || 900,
+      WebkitTextStroke: mergedSubtitleStyle.strokeEnabled
+        ? `${mergedSubtitleStyle.strokeWidth || 4}px ${mergedSubtitleStyle.strokeColor || "#000000"}`
+        : undefined,
+      textShadow: mergedSubtitleStyle.shadowEnabled
+        ? `0 ${mergedSubtitleStyle.shadowDistance || 4}px 0 ${hexToRgba(
+            mergedSubtitleStyle.shadowColor || "#000000",
+            mergedSubtitleStyle.shadowOpacity ?? 0.85
+          )}, 0 ${mergedSubtitleStyle.shadowDistance || 4}px 14px ${hexToRgba(
+            mergedSubtitleStyle.shadowColor || "#000000",
+            Math.min(0.55, (mergedSubtitleStyle.shadowOpacity ?? 0.85) * 0.55)
+          )}`
+        : undefined,
+    }),
+    [mergedSubtitleStyle, subtitleSize]
+  );
+  React.useEffect(() => {
+    setHookText(selectedClip?.hookText || "Tu connais cette sensation ?");
+  }, [selectedClip?.id]);
+  const selectedAutoSubtitle =
+    formatSubtitleSingleLine(selectedTranscription?.cues?.[0]?.text || selectedClip?.subtitle || (isTranscribing ? "Transcription en cours" : "Transcription en attente"));
+  const timeline = useMemo(
+    () => clips.length > 0
+      ? clips.map((clip, index) => ({
+          id: clip.id,
+          label: clip.title,
+          detail: clip.stage === "intro" ? "Personne 1 + hook + sous-titres" : "Personne 2 + reponse + sous-titres",
+          duration: `Segment ${index + 1}`,
+        }))
+      : [
+          { id: "empty", label: "Aucun segment", detail: "Ajoute personne 1 ou personne 2 depuis la vidéo source", duration: "0" },
+        ],
+    [clips]
+  );
+  const bankByCategory = useMemo(
+    () => ({
+      music: bankAssets.filter((asset) => asset.category === "music"),
+      broll: bankAssets.filter((asset) => asset.category === "broll"),
+      image: bankAssets.filter((asset) => asset.category === "image"),
+    }),
+    [bankAssets]
+  );
+  const exportHistory = useMemo(
+    () => (localProject?.exports?.length ? localProject.exports : localProject?.export ? [localProject.export] : []),
+    [localProject?.export, localProject?.exports]
+  );
+
+  const selectBankAsset = (category: Exclude<KlimaxAssetCategory, "video">, assetId: string) => {
+    if (!selectedClip) return;
+    if (category === "music") updateSelectedClip({ musicId: assetId });
+    if (category === "broll") updateSelectedClip({ brollId: assetId });
+    if (category === "image") updateSelectedClip({ imageId: assetId, imageTransform: selectedClip.imageTransform || { scale: 100, x: 0, y: 0 } });
+  };
+
+  const addClip = (stage: KlimaxClipStage) => {
+    const sourceVideoId =
+      stage === "reply"
+        ? projectSource?.videoIds?.[1] || projectSource?.videoId || null
+        : projectSource?.videoIds?.[0] || projectSource?.videoId || null;
+    const nextClip = createKlimaxProjectClip(stage, clips.length, sourceVideoId);
+    const nextClips = [...clips, nextClip];
+    setClips(nextClips);
+    setSelectedClipId(nextClip.id);
+  };
+
+  const updateSelectedClip = (patch: Partial<KlimaxProjectClip>) => {
+    if (!selectedClip) return;
+    setClips((current) =>
+      current.map((clip) => (clip.id === selectedClip.id ? { ...clip, ...patch } : clip))
+    );
+  };
+
+  const startClipDrag = (
+    kind: "video" | "hook" | "subtitle" | "logo" | "image",
+    event: React.PointerEvent<HTMLElement>
+  ) => {
+    if (!selectedClip) return;
+    const canvas = previewCanvasRef.current;
+    if (!canvas) return;
+    const positions = getClipPositions(selectedClip);
+    const origin =
+      kind === "video"
+        ? positions.videoTransform
+        : kind === "hook"
+        ? positions.hookPosition
+        : kind === "subtitle"
+          ? positions.subtitlePosition
+          : kind === "logo"
+            ? positions.logoPosition
+            : positions.imageTransform;
+
+    dragStateRef.current = {
+      kind,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: origin.x,
+      originY: origin.y,
+    };
+    (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  React.useEffect(() => {
+    const onMove = (event: PointerEvent) => {
+      const drag = dragStateRef.current;
+      const canvas = previewCanvasRef.current;
+      if (!drag || !canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = rect.width / BASE_CANVAS_WIDTH || 1;
+      const scaleY = rect.height / BASE_CANVAS_HEIGHT || 1;
+      const deltaX = (event.clientX - drag.startX) / scaleX;
+      const deltaY = (event.clientY - drag.startY) / scaleY;
+      const nextX = Math.round(drag.originX + deltaX);
+      const nextY = Math.round(drag.originY + deltaY);
+
+      if (drag.kind === "hook") {
+        updateSelectedClip({
+          hookPosition: {
+            x: clampValue(nextX, 40, 1040),
+            y: clampValue(nextY, 50, 1840),
+          },
+        });
+      } else if (drag.kind === "subtitle") {
+        updateSelectedClip({
+          subtitlePosition: {
+            x: clampValue(nextX, 40, 1040),
+            y: clampValue(nextY, 50, 1840),
+          },
+        });
+      } else if (drag.kind === "logo") {
+        updateSelectedClip({
+          logoPosition: {
+            x: clampValue(nextX, 40, 1040),
+            y: clampValue(nextY, 50, 1840),
+          },
+        });
+      } else if (drag.kind === "image") {
+        updateSelectedClip({
+          imageTransform: {
+            scale: selectedClip?.imageTransform?.scale ?? 100,
+            x: clampValue(nextX, -540, 540),
+            y: clampValue(nextY, -840, 840),
+          },
+        });
+      } else if (drag.kind === "video") {
+        updateSelectedClip({
+          videoTransform: {
+            scale: selectedClip?.videoTransform?.scale ?? 100,
+            x: clampValue(nextX, -540, 540),
+            y: clampValue(nextY, -840, 840),
+          },
+        });
+      }
+    };
+
+    const onUp = (event: PointerEvent) => {
+      const drag = dragStateRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      dragStateRef.current = null;
+      previewCanvasRef.current?.releasePointerCapture(event.pointerId);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [selectedClip, updateSelectedClip]);
+
+  const refreshTranscription = React.useCallback(async () => {
+    if (!projectId || isTranscribing) return;
+    setIsTranscribing(true);
+    setTranscriptionError(null);
+
+    const settings = {
+      hookText,
+      subtitleSize,
+      musicEnabled,
+      musicVolumeDb,
+      autoSfxEnabled,
+      klimaxLogoEnabled,
+      brollEnabled,
+      logoTriggerWord: "klimax",
+      subtitleStyle: { ...mergedSubtitleStyle, fontSize: subtitleSize },
+      hookStyle: mergedHookStyle,
+    };
+
+    try {
+      await localKlimaxApi.saveProject(projectId, { settings, clips });
+      const { project } = await localKlimaxApi.transcribeProject(projectId, settings);
+      applyProjectState(project);
+    } catch (error: any) {
+      setTranscriptionError(error.message || "Transcription impossible");
+    } finally {
+      setIsTranscribing(false);
+    }
+  }, [
+    applyProjectState,
+    autoSfxEnabled,
+    brollEnabled,
+    clips,
+    hookText,
+    isTranscribing,
+    klimaxLogoEnabled,
+    mergedHookStyle,
+    mergedSubtitleStyle,
+    musicEnabled,
+    musicVolumeDb,
+    projectId,
+    subtitleSize,
+  ]);
+
+  React.useEffect(() => {
+    if (!localProject?.id || !localProject?.sourceGroup?.id) return;
+    if (localProject.transcription?.status === "completed" && (localProject.transcription?.clips?.length || 0) > 0) return;
+    if (autoTranscriptionRef.current === localProject.id) return;
+    autoTranscriptionRef.current = localProject.id;
+    refreshTranscription();
+  }, [localProject?.id, localProject?.sourceGroup?.id, localProject?.transcription?.clips?.length, localProject?.transcription?.status, refreshTranscription]);
+
+  const renderCurrentProject = async () => {
+    if (!projectId || isRendering) return;
+    setIsRendering(true);
+    setRenderError(null);
+
+    const settings = {
+      hookText,
+      subtitleSize,
+      musicEnabled,
+      musicVolumeDb,
+      autoSfxEnabled,
+      klimaxLogoEnabled,
+      brollEnabled,
+      logoTriggerWord: "klimax",
+      subtitleStyle: { ...mergedSubtitleStyle, fontSize: subtitleSize },
+      hookStyle: mergedHookStyle,
+    };
+
+    try {
+      await localKlimaxApi.saveProject(projectId, { settings, clips });
+      const { project } = await localKlimaxApi.renderProject(projectId, settings);
+      applyProjectState(project);
+    } catch (error: any) {
+      setRenderError(error.message || "Export impossible");
+    } finally {
+      setIsRendering(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-black text-white selection:bg-white selection:text-black overflow-hidden">
+      <div className="fixed inset-0 pointer-events-none bg-[linear-gradient(to_right,#ffffff08_1px,transparent_1px),linear-gradient(to_bottom,#ffffff06_1px,transparent_1px)] bg-[size:72px_72px]" />
+      <div className="fixed inset-x-0 top-0 h-64 pointer-events-none bg-gradient-to-b from-white/[0.07] to-transparent" />
+
+      <header className="relative z-20 h-20 border-b border-white/10 bg-black/80 backdrop-blur-xl flex items-center justify-between px-6 lg:px-8">
+        <div className="flex items-center gap-4 min-w-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => navigate("/dashboard")}
+            className="rounded-full border border-white/10 bg-white/[0.03] text-white hover:bg-white hover:text-black"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
+          <div className="h-9 w-9 rounded-full overflow-hidden bg-white grid place-items-center">
+            <img src="/klimax-logo.jpeg" alt="Klimax logo" className="h-full w-full object-cover" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-3">
+              <h1 className="text-xl font-black uppercase tracking-tight">Klimax vidéo</h1>
+              <span className="hidden sm:inline-flex items-center rounded-full border border-white/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-white/55">
+                V1 locale
+              </span>
+            </div>
+            <p className="text-xs text-white/45 truncate">Projet {projectId?.replace("project-", "").slice(0, 8)} · pipeline court-form sans voix off</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="hidden md:flex rounded-full border border-white/10 bg-white/[0.03] p-1">
+            <button
+              onClick={() => setMode("manual")}
+              className={cn(
+                "rounded-full px-4 py-2 text-xs font-black uppercase tracking-wider transition",
+                mode === "manual" ? "bg-white text-black" : "text-white/50 hover:text-white"
+              )}
+            >
+              Manuel
+            </button>
+            <button
+              onClick={() => setMode("auto")}
+              className={cn(
+                "rounded-full px-4 py-2 text-xs font-black uppercase tracking-wider transition",
+                mode === "auto" ? "bg-white text-black" : "text-white/50 hover:text-white"
+              )}
+            >
+              Automatique
+            </button>
+          </div>
+          <Button onClick={renderCurrentProject} disabled={isRendering} className="rounded-full bg-white text-black hover:bg-white/90 font-black disabled:opacity-40">
+            <Play className="mr-2 h-4 w-4 fill-current" />
+            {isRendering ? "Export..." : "Créer la vidéo"}
+          </Button>
+        </div>
+      </header>
+
+      <main className="relative z-10 grid h-[calc(100vh-80px)] grid-cols-1 xl:grid-cols-[300px_minmax(420px,1fr)_390px] overflow-hidden">
+        <aside className="hidden xl:flex border-r border-white/10 bg-black/50 flex-col overflow-hidden">
+          <div className="px-5 py-4 border-b border-white/10">
+            <p className="text-xs font-black uppercase tracking-[0.25em] text-white/35">Source vidéo</p>
+            <p className="mt-2 font-black truncate">{projectSource?.title || "Aucune vidéo liée"}</p>
+            <p className="mt-1 text-xs text-white/45 line-clamp-2">
+              {projectSource ? "Deux vidéos liées: personne 1 et personne 2 dans le même projet." : "Choisis un duo vidéo dans Nouveau projet pour lier la source."}
+            </p>
+          </div>
+          <div className="p-5 border-b border-white/10 space-y-3">
+            <Button onClick={() => addClip("intro")} className="w-full rounded-2xl bg-white text-black hover:bg-white/90 font-black">
+              <Plus className="mr-2 h-4 w-4" />
+              Segment personne 1
+            </Button>
+            <Button onClick={() => addClip("reply")} variant="outline" className="w-full rounded-2xl border-white/10 bg-white/[0.03] text-white hover:bg-white/10 font-black">
+              <Plus className="mr-2 h-4 w-4" />
+              Segment personne 2
+            </Button>
+          </div>
+          <div className="px-5 py-4 flex items-center justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.25em] text-white/35">Segments projet</p>
+              <p className="text-sm text-white/60">{clips.length > 0 ? `${clips.length} segment(s)` : "Aucun segment ajouté"}</p>
+            </div>
+            <BadgeCheck className="h-5 w-5 text-white/50" />
+          </div>
+          <div className="flex-1 overflow-y-auto px-4 pb-6 space-y-2">
+            {clips.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] p-4 text-sm text-white/45">
+                La liste se remplit avec les deux personnes de la vidéo source.
+              </div>
+            )}
+            {clips.map((clip, index) => (
+              <button
+                key={clip.id}
+                onClick={() => setSelectedClipId(clip.id)}
+                className={cn(
+                  "w-full text-left rounded-2xl border p-4 transition group",
+                  selectedClip?.id === clip.id ? "border-white bg-white text-black" : "border-white/10 bg-white/[0.03] hover:bg-white/[0.08]"
+                )}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-black uppercase tracking-tight truncate">{clip.title}</p>
+                    <p className={cn("text-xs mt-1", selectedClip?.id === clip.id ? "text-black/60" : "text-white/45")}>
+                      {clip.stage === "intro" ? "Video liee personne 1" : "Video liee personne 2"}
+                    </p>
+                    <p className={cn("text-[10px] mt-2 line-clamp-2", selectedClip?.id === clip.id ? "text-black/55" : "text-white/30")}>
+                      {clip.subtitle}
+                    </p>
+                  </div>
+                  <Film className={cn("h-4 w-4 shrink-0", selectedClip?.id === clip.id ? "text-black" : "text-white/35")} />
+                </div>
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <section className="overflow-y-auto p-4 lg:p-8">
+          <div className="mx-auto max-w-6xl grid gap-6 lg:grid-cols-[minmax(320px,430px)_1fr] items-start">
+            <div className="space-y-5">
+              <div className="rounded-[32px] border border-white/10 bg-white/[0.04] p-4 shadow-2xl">
+                <div ref={previewCanvasRef} className="aspect-[9/16] rounded-[28px] bg-neutral-950 overflow-hidden relative border border-white/10 touch-none">
+                  <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_12%,#ffffff26,transparent_28%),linear-gradient(160deg,#1f1f1f,#050505_52%,#202020)]" />
+                  {selectedSourceAsset?.fileUrl && (
+                    <video
+                      key={selectedSourceAsset.id}
+                      src={selectedSourceAsset.fileUrl}
+                      className="absolute left-1/2 top-1/2 h-full w-full object-cover opacity-80 cursor-move"
+                      onPointerDown={(event) => startClipDrag("video", event)}
+                      muted
+                      playsInline
+                      style={{
+                        touchAction: "none",
+                        objectPosition: `calc(50% + ${selectedClipPositions.videoTransform.x}px) calc(50% + ${selectedClipPositions.videoTransform.y}px)`,
+                        transform: `translate(-50%, -50%) scale(${selectedClipPositions.videoTransform.scale / 100})`,
+                      }}
+                    />
+                  )}
+                  <div className="absolute inset-0 opacity-40 bg-[linear-gradient(120deg,transparent_0%,#fff_48%,transparent_54%)] translate-x-[-35%]" />
+                  <div className="absolute top-4 left-4 right-4 flex items-center justify-between text-[10px] font-black uppercase tracking-[0.2em] text-white/55">
+                    <span>{selectedClip?.stage === "reply" ? "Personne 2" : "Personne 1"}</span>
+                    <span>9:16</span>
+                  </div>
+
+                  <div className="absolute inset-x-5 top-[16%] h-[42%] rounded-[28px] border border-white/10 bg-black/30 backdrop-blur-[2px] overflow-hidden">
+                    <div className="absolute inset-0 grid place-items-center">
+                      <CirclePlay className="h-16 w-16 text-white/70" />
+                    </div>
+                    {selectedImageAsset?.fileUrl && (
+                      <img
+                        src={selectedImageAsset.fileUrl}
+                        alt={selectedImageAsset.title}
+                        className="absolute left-1/2 top-1/2 h-[78%] w-[78%] object-contain cursor-move"
+                        onPointerDown={(event) => startClipDrag("image", event)}
+                        style={{
+                          touchAction: "none",
+                          transform: `translate(-50%, -50%) translate(${selectedClip?.imageTransform?.x ?? 0}px, ${
+                            selectedClip?.imageTransform?.y ?? 0
+                          }px) scale(${(selectedClip?.imageTransform?.scale ?? 100) / 100})`,
+                        }}
+                      />
+                    )}
+                    {brollEnabled && (
+                      <div className="absolute bottom-4 left-4 right-4 rounded-2xl bg-white text-black px-4 py-3 text-xs font-black uppercase tracking-wide">
+                        B-roll reserve · image sous le texte
+                      </div>
+                    )}
+                  </div>
+
+                  {!selectedClip || selectedClip.stage === "intro" ? (
+                    <>
+                      <div
+                        className="absolute flex flex-col items-center"
+                        style={{
+                          left: `${(selectedClipPositions.hookPosition.x / BASE_CANVAS_WIDTH) * 100}%`,
+                          top: `${(selectedClipPositions.hookPosition.y / BASE_CANVAS_HEIGHT) * 100}%`,
+                          transform: "translate(-50%, -50%)",
+                        }}
+                      >
+                        <div
+                          className="relative w-[96%] max-w-[96%] rounded-[999px] px-10 py-3 text-center shadow-[0_16px_50px_rgba(0,0,0,0.45)] cursor-move select-none"
+                          style={{ backgroundColor: mergedHookStyle.bubbleColor || "#ffffff", touchAction: "none" }}
+                          onPointerDown={(event) => startClipDrag("hook", event)}
+                        >
+                          <div
+                            className="absolute left-1/2 top-full h-5 w-8 -translate-x-1/2 rounded-b-full"
+                            style={{ backgroundColor: mergedHookStyle.bubbleColor || "#ffffff" }}
+                          />
+                          <p
+                            className="relative z-10 whitespace-pre-line text-[18px] font-black leading-snug tracking-tight break-words"
+                            style={{
+                              color: mergedHookStyle.textColor || "#000000",
+                              fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
+                            }}
+                          >
+                            {selectedClip?.hookText || hookText}
+                          </p>
+                        </div>
+                      </div>
+                      <div
+                        className="absolute flex justify-center"
+                        style={{
+                          left: `${(selectedClipPositions.subtitlePosition.x / BASE_CANVAS_WIDTH) * 100}%`,
+                          top: `${(selectedClipPositions.subtitlePosition.y / BASE_CANVAS_HEIGHT) * 100}%`,
+                          transform: "translate(-50%, -50%)",
+                        }}
+                      >
+                        <p
+                          className="max-w-[92%] whitespace-nowrap text-center font-black leading-tight cursor-move select-none"
+                          style={{ ...subtitlePreviewStyle, touchAction: "none" }}
+                          onPointerDown={(event) => startClipDrag("subtitle", event)}
+                        >
+                          {selectedAutoSubtitle}
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div
+                        className="absolute flex justify-center"
+                        style={{
+                          left: `${(selectedClipPositions.subtitlePosition.x / BASE_CANVAS_WIDTH) * 100}%`,
+                          top: `${(selectedClipPositions.subtitlePosition.y / BASE_CANVAS_HEIGHT) * 100}%`,
+                          transform: "translate(-50%, -50%)",
+                        }}
+                      >
+                        <p
+                          className="max-w-[95%] whitespace-nowrap text-center font-black leading-tight cursor-move select-none"
+                          style={{ ...subtitlePreviewStyle, touchAction: "none" }}
+                          onPointerDown={(event) => startClipDrag("subtitle", event)}
+                        >
+                          {selectedAutoSubtitle}
+                        </p>
+                      </div>
+                      {klimaxLogoEnabled && (
+                        <div
+                          className="absolute rounded-[24px] border border-white/20 bg-black/70 p-2 cursor-move"
+                          style={{
+                            left: `${(selectedClipPositions.logoPosition.x / BASE_CANVAS_WIDTH) * 100}%`,
+                            top: `${(selectedClipPositions.logoPosition.y / BASE_CANVAS_HEIGHT) * 100}%`,
+                            transform: "translate(-50%, -50%)",
+                            touchAction: "none",
+                          }}
+                          onPointerDown={(event) => startClipDrag("logo", event)}
+                        >
+                          <video
+                            src={KLIMAX_LOGO_PREVIEW_URL}
+                            autoPlay
+                            loop
+                            muted
+                            playsInline
+                            className="h-20 w-20 rounded-2xl object-contain pointer-events-none"
+                          />
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  <div className="absolute bottom-5 left-5 right-5 flex gap-2">
+                    <button
+                      onClick={() => {
+                        const firstIntro = clips.find((clip) => clip.stage === "intro") || clips[0];
+                        if (firstIntro) setSelectedClipId(firstIntro.id);
+                      }}
+                      className={cn("h-2 flex-1 rounded-full", selectedClip?.stage !== "reply" ? "bg-white" : "bg-white/20")}
+                    />
+                    <button
+                      onClick={() => {
+                        const secondReply = clips.find((clip) => clip.stage === "reply");
+                        if (secondReply) setSelectedClipId(secondReply.id);
+                      }}
+                      className={cn("h-2 flex-1 rounded-full", selectedClip?.stage === "reply" ? "bg-white" : "bg-white/20")}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    const firstIntro = clips.find((clip) => clip.stage === "intro") || clips[0];
+                    if (firstIntro) setSelectedClipId(firstIntro.id);
+                  }}
+                  className={cn("rounded-2xl border-white/10 h-12", selectedClip?.stage !== "reply" ? "bg-white text-black" : "bg-white/[0.03] text-white hover:bg-white/10")}
+                >
+                  Personne 1
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    const secondReply = clips.find((clip) => clip.stage === "reply");
+                    if (secondReply) setSelectedClipId(secondReply.id);
+                  }}
+                  className={cn("rounded-2xl border-white/10 h-12", selectedClip?.stage === "reply" ? "bg-white text-black" : "bg-white/[0.03] text-white hover:bg-white/10")}
+                >
+                  Personne 2
+                </Button>
+              </div>
+
+              {(exportHistory.length > 0 || renderError) && (
+                <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs font-black uppercase tracking-[0.25em] text-white/35">Exports locaux</p>
+                    <span className="text-xs text-white/45">{exportHistory.length} export(s)</span>
+                  </div>
+                  {exportHistory[0]?.url ? (
+                    <div className="mt-4 space-y-4">
+                      <video src={exportHistory[0].url} controls className="w-full rounded-2xl border border-white/10" />
+                      <a
+                        href={exportHistory[0].url}
+                        download
+                        className="inline-flex rounded-full bg-white px-4 py-2 text-sm font-black text-black hover:bg-white/90"
+                      >
+                        Télécharger le dernier MP4
+                      </a>
+                      {exportHistory.length > 1 && (
+                        <div className="grid gap-3">
+                          {exportHistory.slice(1).map((entry, index) => (
+                            <div key={`${entry.url || entry.createdAt || index}`} className="rounded-2xl border border-white/10 bg-black p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <p className="text-sm font-black">Export précédent {index + 1}</p>
+                                  <p className="text-xs text-white/45">{entry.createdAt ? new Date(entry.createdAt).toLocaleString("fr-FR") : "Date inconnue"}</p>
+                                </div>
+                                {entry.url && (
+                                  <a href={entry.url} download className="rounded-full border border-white/10 px-3 py-1 text-xs font-black text-white hover:bg-white/10">
+                                    Télécharger
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : renderError ? (
+                    <p className="mt-3 text-sm text-red-300">{renderError}</p>
+                  ) : null}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-6">
+              <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
+                <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.3em] text-white/35">Mode actuel</p>
+                    <h2 className="text-3xl font-black tracking-tight">{mode === "manual" ? "Montage manuel" : "Automatisation IA"}</h2>
+                  </div>
+                  <div className="md:hidden flex rounded-full border border-white/10 bg-white/[0.03] p-1">
+                    <button onClick={() => setMode("manual")} className={cn("rounded-full px-3 py-2 text-xs font-black", mode === "manual" ? "bg-white text-black" : "text-white/50")}>Manuel</button>
+                    <button onClick={() => setMode("auto")} className={cn("rounded-full px-3 py-2 text-xs font-black", mode === "auto" ? "bg-white text-black" : "text-white/50")}>Auto</button>
+                  </div>
+                </div>
+
+                <Tabs defaultValue="manual" value={mode} onValueChange={(value) => setMode(value as "manual" | "auto")}>
+                  <TabsList className="grid grid-cols-2 bg-white/[0.04] border border-white/10 rounded-2xl p-1 h-14">
+                    <TabsTrigger value="manual" className="rounded-xl font-black uppercase tracking-wider text-xs">Manuel</TabsTrigger>
+                    <TabsTrigger value="auto" className="rounded-xl font-black uppercase tracking-wider text-xs">Automatique</TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="manual" className="mt-6 space-y-5">
+                    <div className="grid gap-4">
+                      <div className="space-y-2">
+                        <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Hook texte personne 1</Label>
+                        <Textarea
+                          value={hookText}
+                          onChange={(e) => {
+                            setHookText(e.target.value);
+                            updateSelectedClip({ hookText: e.target.value });
+                          }}
+                          rows={5}
+                          className="min-h-[130px] rounded-2xl bg-black border-white/10 text-white font-bold leading-snug"
+                        />
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="rounded-2xl border border-white/10 bg-black p-4">
+                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Couleur bulle hook</Label>
+                          <div className="mt-3 flex items-center gap-3">
+                            <input
+                              type="color"
+                              value={mergedHookStyle.bubbleColor || "#ffffff"}
+                              onChange={(e) => setHookStyle((current) => ({ ...current, bubbleColor: e.target.value }))}
+                              className="h-11 w-16 rounded-xl border border-white/10 bg-transparent"
+                            />
+                            <span className="text-sm text-white/55">{mergedHookStyle.bubbleColor || "#ffffff"}</span>
+                          </div>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-black p-4">
+                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Couleur texte hook</Label>
+                          <div className="mt-3 flex items-center gap-3">
+                            <input
+                              type="color"
+                              value={mergedHookStyle.textColor || "#000000"}
+                              onChange={(e) => setHookStyle((current) => ({ ...current, textColor: e.target.value }))}
+                              className="h-11 w-16 rounded-xl border border-white/10 bg-transparent"
+                            />
+                            <span className="text-sm text-white/55">{mergedHookStyle.textColor || "#000000"}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-white/10 bg-black p-4 space-y-4">
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="flex items-center gap-3">
+                            <div className="grid h-10 w-10 place-items-center rounded-full bg-white text-black">
+                              <Captions className="h-4 w-4" />
+                            </div>
+                            <div>
+                              <p className="text-sm font-black uppercase tracking-wide">Sous-titres automatiques</p>
+                              <p className="text-xs text-white/45">Transcription locale avant export, sans points virgules ni points d'interrogation.</p>
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={refreshTranscription}
+                            disabled={isTranscribing}
+                            className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                          >
+                            {isTranscribing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                            {isTranscribing ? "Transcription..." : "Actualiser"}
+                          </Button>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                          <p className="text-xs uppercase tracking-[0.2em] text-white/35">Aperçu texte détecté</p>
+                          <p className="mt-2 text-sm font-bold text-white/80">
+                            {selectedTranscription?.cues?.slice(0, 3).map((cue) => cue.text).join(" / ") || selectedClip?.subtitle || "Transcription en attente"}
+                          </p>
+                          {transcriptionError && <p className="mt-2 text-xs text-red-300">{transcriptionError}</p>}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-white/10 bg-black p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Taille sous-titres</Label>
+                          <span className="text-sm font-black">{subtitleSize}px</span>
+                        </div>
+                        <Slider
+                          value={[subtitleSize]}
+                          min={14}
+                          max={128}
+                          step={1}
+                          onValueChange={([value]) => {
+                            setSubtitleSize(value);
+                            setSubtitleStyle((current) => ({ ...current, fontSize: value }));
+                          }}
+                        />
+                      </div>
+                      <div className="rounded-2xl border border-white/10 bg-black p-4 space-y-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Style sous-titres</Label>
+                          <div className="flex gap-2">
+                            {[
+                              { key: "impact", label: "Impact" },
+                              { key: "clean", label: "Clean" },
+                              { key: "highlight", label: "Highlight" },
+                            ].map((preset) => (
+                              <button
+                                key={preset.key}
+                                type="button"
+                                onClick={() => {
+                                  const next = SUBTITLE_PRESETS[preset.key];
+                                  setSubtitleStyle(next);
+                                  setSubtitleSize(next.fontSize || 34);
+                                }}
+                                className={cn(
+                                  "rounded-full border px-3 py-1 text-xs font-black transition",
+                                  mergedSubtitleStyle.stylePreset === preset.key
+                                    ? "border-white bg-white text-black"
+                                    : "border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                                )}
+                              >
+                                {preset.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Police</Label>
+                            <Select
+                              value={mergedSubtitleStyle.fontFamily || "Arial Bold"}
+                              onValueChange={(value) => setSubtitleStyle((current) => ({ ...current, fontFamily: value }))}
+                            >
+                              <SelectTrigger className="rounded-2xl border-white/10 bg-white/[0.03]">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {FONT_OPTIONS.map((font) => (
+                                  <SelectItem key={font.value} value={font.value}>
+                                    {font.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Mots par ligne</Label>
+                            <Select
+                              value={String(mergedSubtitleStyle.wordsPerLine || 2)}
+                              onValueChange={(value) => setSubtitleStyle((current) => ({ ...current, wordsPerLine: Number(value) }))}
+                            >
+                              <SelectTrigger className="rounded-2xl border-white/10 bg-white/[0.03]">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="2">2 mots max</SelectItem>
+                                <SelectItem value="3">3 mots max</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-3">
+                          <div>
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Texte</Label>
+                            <input
+                              type="color"
+                              value={mergedSubtitleStyle.textColor || "#ffffff"}
+                              onChange={(e) => setSubtitleStyle((current) => ({ ...current, textColor: e.target.value }))}
+                              className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-transparent"
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Contour</Label>
+                            <input
+                              type="color"
+                              value={mergedSubtitleStyle.strokeColor || "#000000"}
+                              onChange={(e) => setSubtitleStyle((current) => ({ ...current, strokeColor: e.target.value }))}
+                              className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-transparent"
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Ombre</Label>
+                            <input
+                              type="color"
+                              value={mergedSubtitleStyle.shadowColor || "#000000"}
+                              onChange={(e) => setSubtitleStyle((current) => ({ ...current, shadowColor: e.target.value }))}
+                              className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-transparent"
+                            />
+                          </div>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-sm font-bold">Contour</span>
+                              <Switch
+                                checked={mergedSubtitleStyle.strokeEnabled !== false}
+                                onCheckedChange={(checked) => setSubtitleStyle((current) => ({ ...current, strokeEnabled: checked }))}
+                              />
+                            </div>
+                            <div className="mt-3">
+                              <Slider
+                                value={[mergedSubtitleStyle.strokeWidth || 4]}
+                                min={0}
+                                max={8}
+                                step={1}
+                                onValueChange={([value]) => setSubtitleStyle((current) => ({ ...current, strokeWidth: value }))}
+                              />
+                            </div>
+                          </div>
+                          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-sm font-bold">Ombre</span>
+                              <Switch
+                                checked={mergedSubtitleStyle.shadowEnabled !== false}
+                                onCheckedChange={(checked) => setSubtitleStyle((current) => ({ ...current, shadowEnabled: checked }))}
+                              />
+                            </div>
+                            <div className="mt-3">
+                              <Slider
+                                value={[mergedSubtitleStyle.shadowDistance || 4]}
+                                min={0}
+                                max={10}
+                                step={1}
+                                onValueChange={([value]) => setSubtitleStyle((current) => ({ ...current, shadowDistance: value }))}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-white/10 bg-black p-4">
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <p className="text-sm font-black uppercase tracking-wide">Mix audio verrouillé</p>
+                            <p className="text-xs text-white/45">Musique à partir de -17 dB et audio vidéo à +2 dB sur les deux clips.</p>
+                          </div>
+                          <Music className="h-5 w-5 text-white/50" />
+                        </div>
+                        <div className="mt-4 space-y-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Volume musique</Label>
+                            <span className="text-sm font-black">{musicVolumeDb} dB</span>
+                          </div>
+                          <Slider
+                            value={[musicVolumeDb]}
+                            min={-30}
+                            max={0}
+                            step={1}
+                            onValueChange={([value]) => setMusicVolumeDb(value)}
+                          />
+                        </div>
+                      </div>
+                      {selectedClip && (
+                        <div className="rounded-2xl border border-white/10 bg-black p-4 space-y-4">
+                          <div>
+                            <p className="text-sm font-black uppercase tracking-wide">Placement direct</p>
+                            <p className="text-xs text-white/45">Glisse les éléments sur la preview ou ajuste leurs coordonnées ici.</p>
+                          </div>
+                          <div className="grid gap-4 md:grid-cols-2">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3 md:col-span-2">
+                              <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Vidéo source</p>
+                              <div className="flex items-center justify-between gap-3">
+                                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Zoom</Label>
+                                <span className="text-sm font-black">{selectedClipPositions.videoTransform.scale}%</span>
+                              </div>
+                              <Slider
+                                value={[selectedClipPositions.videoTransform.scale]}
+                                min={70}
+                                max={150}
+                                step={1}
+                                onValueChange={([value]) =>
+                                  updateSelectedClip({
+                                    videoTransform: {
+                                      scale: value,
+                                      x: selectedClipPositions.videoTransform.x,
+                                      y: selectedClipPositions.videoTransform.y,
+                                    },
+                                  })
+                                }
+                              />
+                              <div className="grid gap-4 md:grid-cols-2">
+                                <div className="space-y-3">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement X</Label>
+                                    <span className="text-sm font-black">{selectedClipPositions.videoTransform.x}px</span>
+                                  </div>
+                                  <Slider
+                                    value={[selectedClipPositions.videoTransform.x]}
+                                    min={-540}
+                                    max={540}
+                                    step={1}
+                                    onValueChange={([value]) =>
+                                      updateSelectedClip({
+                                        videoTransform: {
+                                          scale: selectedClipPositions.videoTransform.scale,
+                                          x: value,
+                                          y: selectedClipPositions.videoTransform.y,
+                                        },
+                                      })
+                                    }
+                                  />
+                                </div>
+                                <div className="space-y-3">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement Y</Label>
+                                    <span className="text-sm font-black">{selectedClipPositions.videoTransform.y}px</span>
+                                  </div>
+                                  <Slider
+                                    value={[selectedClipPositions.videoTransform.y]}
+                                    min={-840}
+                                    max={840}
+                                    step={1}
+                                    onValueChange={([value]) =>
+                                      updateSelectedClip({
+                                        videoTransform: {
+                                          scale: selectedClipPositions.videoTransform.scale,
+                                          x: selectedClipPositions.videoTransform.x,
+                                          y: value,
+                                        },
+                                      })
+                                    }
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                              <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Sous-titres</p>
+                              <div className="flex items-center justify-between gap-3">
+                                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
+                                <span className="text-sm font-black">{selectedClipPositions.subtitlePosition.x}px</span>
+                              </div>
+                              <Slider
+                                value={[selectedClipPositions.subtitlePosition.x]}
+                                min={0}
+                                max={1080}
+                                step={1}
+                                onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      subtitlePosition: {
+                                        x: value,
+                                        y: selectedClipPositions.subtitlePosition.y,
+                                      },
+                                  })
+                                }
+                              />
+                              <div className="flex items-center justify-between gap-3">
+                                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
+                                <span className="text-sm font-black">{selectedClipPositions.subtitlePosition.y}px</span>
+                              </div>
+                              <Slider
+                                value={[selectedClipPositions.subtitlePosition.y]}
+                                min={0}
+                                max={1920}
+                                step={1}
+                                onValueChange={([value]) =>
+                                  updateSelectedClip({
+                                    subtitlePosition: {
+                                      x: selectedClipPositions.subtitlePosition.x,
+                                      y: value,
+                                    },
+                                  })
+                                }
+                              />
+                            </div>
+                            {selectedClip.stage === "intro" ? (
+                              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                                <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Hook bulle</p>
+                                <div className="flex items-center justify-between gap-3">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
+                                  <span className="text-sm font-black">{selectedClipPositions.hookPosition.x}px</span>
+                                </div>
+                                <Slider
+                                  value={[selectedClipPositions.hookPosition.x]}
+                                  min={0}
+                                  max={1080}
+                                  step={1}
+                                  onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      hookPosition: {
+                                        x: value,
+                                        y: selectedClipPositions.hookPosition.y,
+                                      },
+                                    })
+                                  }
+                                />
+                                <div className="flex items-center justify-between gap-3">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
+                                  <span className="text-sm font-black">{selectedClipPositions.hookPosition.y}px</span>
+                                </div>
+                                <Slider
+                                  value={[selectedClipPositions.hookPosition.y]}
+                                  min={0}
+                                  max={1920}
+                                  step={1}
+                                  onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      hookPosition: {
+                                        x: selectedClipPositions.hookPosition.x,
+                                        y: value,
+                                      },
+                                    })
+                                  }
+                                />
+                              </div>
+                            ) : (
+                              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                                <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Logo Klimax</p>
+                                <div className="flex items-center justify-between gap-3">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
+                                  <span className="text-sm font-black">{selectedClipPositions.logoPosition.x}px</span>
+                                </div>
+                                <Slider
+                                  value={[selectedClipPositions.logoPosition.x]}
+                                  min={0}
+                                  max={1080}
+                                  step={1}
+                                  onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      logoPosition: {
+                                        x: value,
+                                        y: selectedClipPositions.logoPosition.y,
+                                      },
+                                    })
+                                  }
+                                />
+                                <div className="flex items-center justify-between gap-3">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
+                                  <span className="text-sm font-black">{selectedClipPositions.logoPosition.y}px</span>
+                                </div>
+                                <Slider
+                                  value={[selectedClipPositions.logoPosition.y]}
+                                  min={0}
+                                  max={1920}
+                                  step={1}
+                                  onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      logoPosition: {
+                                        x: selectedClipPositions.logoPosition.x,
+                                        y: value,
+                                      },
+                                    })
+                                  }
+                                />
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="auto" className="mt-6">
+                    <div className="rounded-3xl border border-dashed border-white/15 bg-black p-6">
+                      <div className="flex items-start gap-4">
+                        <div className="h-12 w-12 rounded-2xl bg-white text-black grid place-items-center shrink-0">
+                          <Wand2 className="h-5 w-5" />
+                        </div>
+                        <div>
+                          <h3 className="text-xl font-black">Mode automatique à configurer</h3>
+                          <p className="mt-2 text-sm leading-relaxed text-white/55">
+                            L'IA analysera le dialogue, choisira les hooks, placera les sous-titres,
+                            sélectionnera les B-rolls/images et variera les SFX. Pour l'instant, cette maquette prépare les zones de contrôle.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </TabsContent>
+                </Tabs>
+              </div>
+
+              <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
+                <div className="flex items-center gap-3 mb-5">
+                  <Scissors className="h-5 w-5 text-white/60" />
+                  <h3 className="font-black uppercase tracking-tight">Montage</h3>
+                </div>
+                <div className="space-y-3">
+                  {timeline.map((item) => (
+                    <div key={item.id} className="flex items-center gap-4 rounded-2xl border border-white/10 bg-black p-4">
+                      <div className="h-10 w-10 rounded-full bg-white text-black grid place-items-center font-black text-sm">{timeline.indexOf(item) + 1}</div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-black">{item.label}</p>
+                        <p className="text-sm text-white/45 truncate">{item.detail}</p>
+                      </div>
+                      <span className="text-xs font-black text-white/35">{item.duration}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <aside className="border-l border-white/10 bg-black/70 overflow-y-auto p-5 space-y-5">
+          <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
+            <div className="flex items-center gap-3 mb-5">
+              <SlidersHorizontal className="h-5 w-5 text-white/60" />
+              <h3 className="font-black uppercase tracking-tight">Réglages rapides</h3>
+            </div>
+            <div className="space-y-4">
+              {[
+                { label: "SFX automatiques", value: autoSfxEnabled, setter: setAutoSfxEnabled, icon: Zap },
+                { label: "B-rolls sous le texte", value: brollEnabled, setter: setBrollEnabled, icon: Image },
+                { label: "Musique active", value: musicEnabled, setter: setMusicEnabled, icon: Music },
+                { label: "Logo KLIMAX sur mot clé", value: klimaxLogoEnabled, setter: setKlimaxLogoEnabled, icon: Sparkles },
+              ].map((setting) => {
+                const Icon = setting.icon;
+                return (
+                  <div key={setting.label} className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-black p-4">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <Icon className="h-4 w-4 text-white/45 shrink-0" />
+                      <span className="text-sm font-bold">{setting.label}</span>
+                    </div>
+                    <Switch checked={setting.value} onCheckedChange={setting.setter} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+              <div className="flex items-center gap-3">
+                <Library className="h-5 w-5 text-white/60" />
+                <h3 className="font-black uppercase tracking-tight">Banque d'assets</h3>
+              </div>
+              <Button
+                variant="outline"
+                onClick={() => navigate("/asset-bank")}
+                className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+              >
+                Ouvrir la banque
+              </Button>
+            </div>
+            <Tabs defaultValue="broll">
+              <TabsList className="grid grid-cols-3 bg-black border border-white/10 rounded-2xl p-1 h-12">
+                <TabsTrigger value="broll" className="rounded-xl"><Film className="h-4 w-4" /></TabsTrigger>
+                <TabsTrigger value="images" className="rounded-xl"><Image className="h-4 w-4" /></TabsTrigger>
+                <TabsTrigger value="music" className="rounded-xl"><Music className="h-4 w-4" /></TabsTrigger>
+              </TabsList>
+              <TabsContent value="broll" className="mt-4 space-y-3">
+                {bankByCategory.broll.map((asset) => (
+                  <button
+                    key={asset.id}
+                    onClick={() => selectBankAsset("broll", asset.id)}
+                    className={cn(
+                      "w-full rounded-2xl border p-4 flex items-center justify-between gap-3 text-left transition",
+                      selectedClip?.brollId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
+                    )}
+                  >
+                    <div>
+                      <p className="font-black text-sm">{asset.title}</p>
+                      <p className={cn("text-xs", selectedClip?.brollId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
+                    </div>
+                    <ChevronRight className={cn("h-4 w-4", selectedClip?.brollId === asset.id ? "text-black/40" : "text-white/30")} />
+                  </button>
+                ))}
+                {bankByCategory.broll.length === 0 && <p className="text-sm text-white/45">Ajoute des B-rolls dans la Banque.</p>}
+              </TabsContent>
+              <TabsContent value="images" className="mt-4">
+                <div className="space-y-3">
+                  {bankByCategory.image.map((asset) => (
+                    <button
+                      key={asset.id}
+                      onClick={() => selectBankAsset("image", asset.id)}
+                      className={cn(
+                        "w-full rounded-2xl border p-4 flex items-center justify-between gap-3 text-left transition",
+                        selectedClip?.imageId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
+                      )}
+                    >
+                      <div>
+                        <p className="font-black text-sm">{asset.title}</p>
+                        <p className={cn("text-xs", selectedClip?.imageId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
+                      </div>
+                      <ChevronRight className={cn("h-4 w-4", selectedClip?.imageId === asset.id ? "text-black/40" : "text-white/30")} />
+                    </button>
+                  ))}
+                  {bankByCategory.image.length === 0 && <p className="text-sm text-white/45">Ajoute des images dans la Banque.</p>}
+                </div>
+                {selectedClip?.imageId && (
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-black uppercase tracking-wide">Placement image</p>
+                        <p className="text-xs text-white/45">{selectedImageAsset?.title || "Image sélectionnée"}</p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                        onClick={() => updateSelectedClip({ imageTransform: { scale: 100, x: 0, y: 0 } })}
+                      >
+                        Reset
+                      </Button>
+                    </div>
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Zoom</Label>
+                        <span className="text-sm font-black">{selectedClip.imageTransform?.scale ?? 100}%</span>
+                      </div>
+                      <Slider
+                        value={[selectedClip.imageTransform?.scale ?? 100]}
+                        min={40}
+                        max={180}
+                        step={1}
+                        onValueChange={([value]) =>
+                          updateSelectedClip({
+                            imageTransform: {
+                              scale: value,
+                              x: selectedClip.imageTransform?.x ?? 0,
+                              y: selectedClip.imageTransform?.y ?? 0,
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement X</Label>
+                          <span className="text-sm font-black">{selectedClip.imageTransform?.x ?? 0}px</span>
+                        </div>
+                        <Slider
+                          value={[selectedClip.imageTransform?.x ?? 0]}
+                          min={-420}
+                          max={420}
+                          step={1}
+                          onValueChange={([value]) =>
+                            updateSelectedClip({
+                              imageTransform: {
+                                scale: selectedClip.imageTransform?.scale ?? 100,
+                                x: value,
+                                y: selectedClip.imageTransform?.y ?? 0,
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement Y</Label>
+                          <span className="text-sm font-black">{selectedClip.imageTransform?.y ?? 0}px</span>
+                        </div>
+                        <Slider
+                          value={[selectedClip.imageTransform?.y ?? 0]}
+                          min={-420}
+                          max={420}
+                          step={1}
+                          onValueChange={([value]) =>
+                            updateSelectedClip({
+                              imageTransform: {
+                                scale: selectedClip.imageTransform?.scale ?? 100,
+                                x: selectedClip.imageTransform?.x ?? 0,
+                                y: value,
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </TabsContent>
+              <TabsContent value="music" className="mt-4">
+                <div className="space-y-3">
+                  {bankByCategory.music.map((asset) => (
+                    <button
+                      key={asset.id}
+                      onClick={() => selectBankAsset("music", asset.id)}
+                      className={cn(
+                        "w-full rounded-2xl border p-4 flex items-center justify-between gap-3 text-left transition",
+                        selectedClip?.musicId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
+                      )}
+                    >
+                      <div>
+                        <p className="font-black text-sm">{asset.title}</p>
+                        <p className={cn("text-xs", selectedClip?.musicId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
+                      </div>
+                      <ChevronRight className={cn("h-4 w-4", selectedClip?.musicId === asset.id ? "text-black/40" : "text-white/30")} />
+                    </button>
+                  ))}
+                  {bankByCategory.music.length === 0 && <p className="text-sm text-white/45">Ajoute des musiques dans la Banque.</p>}
+                </div>
+                <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-black uppercase tracking-wide">Volume musique</p>
+                      <p className="text-xs text-white/45">Base locale à -17 dB, modifiable avant export.</p>
+                    </div>
+                    <span className="text-sm font-black">{musicVolumeDb} dB</span>
+                  </div>
+                  <Slider
+                    value={[musicVolumeDb]}
+                    min={-30}
+                    max={0}
+                    step={1}
+                    onValueChange={([value]) => setMusicVolumeDb(value)}
+                  />
+                </div>
+              </TabsContent>
+            </Tabs>
+          </div>
+
+          <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
+            <div className="flex items-center gap-3 mb-4">
+              <ShieldCheck className="h-5 w-5 text-white/60" />
+              <h3 className="font-black uppercase tracking-tight">Anti-shadowban</h3>
+            </div>
+            <div className="space-y-3">
+              {antiShadowbanSteps.map((step) => (
+                <div key={step} className="flex items-start gap-3 text-sm text-white/65">
+                  <Captions className="h-4 w-4 mt-0.5 text-white/40 shrink-0" />
+                  <span>{step}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </aside>
+      </main>
+    </div>
+  );
+};
+
+export default ClimaxVideoEditor;

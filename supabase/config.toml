@@ -1,0 +1,136 @@
+project_id = "jvlhockppezyupkwpqac"
+
+[functions.process-video]
+verify_jwt = false
+
+[functions.analyze-video]
+verify_jwt = true
+
+[functions.generate-sfx]
+verify_jwt = true
+
+[functions.transcribe-audio]
+verify_jwt = true
+
+[functions.commit-project-uploads]
+verify_jwt = false
+
+[functions.analyze-sentence-boundaries]
+verify_jwt = true
+
+[functions.storage-proxy]
+verify_jwt = false
+
+[functions.admin-command-chat]
+verify_jwt = false
+
+[functions.transcribe-training-script]
+verify_jwt = true
+
+[functions.import-tiktok-account]
+verify_jwt = true
+
+[functions.youtube-oauth-start]
+verify_jwt = false
+
+[functions.youtube-oauth-callback]
+verify_jwt = false
+
+[functions.youtube-upload]
+verify_jwt = false
+
+[functions.process-youtube-queue]
+verify_jwt = false
+
+[functions.sync-youtube-analytics]
+verify_jwt = false
+
+[functions.generate-script-voiceover]
+verify_jwt = true
+
+[functions.process-batch-job]
+verify_jwt = false
+
+[functions.generate-weekly-report]
+verify_jwt = false
+
+[functions.apply-report-settings]
+verify_jwt = false
+
+[functions.scrape-competitor-channel]
+verify_jwt = false
+
+[functions.generate-competitor-report]
+verify_jwt = false
+
+[functions.generate-spy-videos]
+verify_jwt = false
+
+[functions.autonomous-decision-engine]
+verify_jwt = false
+
+[functions.update-project-brain]
+verify_jwt = false
+
+[functions.generate-lab-videos]
+verify_jwt = true
+
+[functions.recover-batch-jobs]
+verify_jwt = false
+
+[functions.worker-api]
+verify_jwt = false
+
+[functions.check-render-status]
+verify_jwt = false
+
+[functions.dev-assistant-chat]
+verify_jwt = false
+
+[functions.github-repo-reader]
+verify_jwt = false
+
+[functions.fetch-tiktok-data]
+enabled = true
+verify_jwt = true
+import_map = "./functions/fetch-tiktok-data/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/fetch-tiktok-data/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/fetch-tiktok-data/*.html" ]
+
+[functions.calculate-scores]
+enabled = true
+verify_jwt = true
+import_map = "./functions/calculate-scores/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/calculate-scores/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/calculate-scores/*.html" ]
+
+[functions.describe-clip]
+verify_jwt = false
+
+[functions.describe-clips-batch]
+verify_jwt = false
+
+[functions.process-description-queue]
+verify_jwt = false
+
+[functions.select-clips-for-script]
+verify_jwt = false
+
+[functions.agentik-gemini]
+enabled = true
+verify_jwt = true
+import_map = "./functions/agentik-gemini/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/agentik-gemini/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/agentik-gemini/*.html" ]

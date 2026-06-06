@@ -1,0 +1,6 @@
+opencv-python
+scenedetect[opencv]
+easyocr
+numpy
+openai
+python-dotenv
