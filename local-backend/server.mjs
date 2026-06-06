@@ -516,10 +516,6 @@ const createSourceFingerprint = async (project, sourceGroup) => {
 };
 
 const ensureTranscription = async (project, sourceGroup) => {
-  if (!fsSync.existsSync(pythonBin)) {
-    throw new Error("Le moteur local de transcription n'est pas installé.");
-  }
-
   const fingerprint = await createSourceFingerprint(project, sourceGroup);
   if (
     project.transcription?.status === "completed" &&
@@ -530,11 +526,12 @@ const ensureTranscription = async (project, sourceGroup) => {
     return project.transcription;
   }
 
+  const { transcribeFile } = await import("./whisper.mjs");
   const subtitleStyle = project.settings?.subtitleStyle || defaultSubtitleStyle;
   const bySource = new Map();
 
   for (const asset of [sourceGroup?.person1, sourceGroup?.person2].filter(Boolean)) {
-    const raw = await runJson(pythonBin, [transcribeScriptPath, asset.filePath, whisperModelName]);
+    const { result: raw } = await transcribeFile(asset.filePath);
     const words = normalizeLogoWords(
       buildWordsFromTranscription(raw),
       project.settings?.logoTriggerWord || "klimax"
@@ -772,6 +769,7 @@ const createHookBubbleOverlay = async (project, clip) => {
 };
 
 const renderProject = async (db, project, sourceGroup) => {
+  const { getSfxPath } = await import("./sfx.mjs");
   if (!ffmpegPath) throw new Error("FFmpeg local indisponible.");
   if (!sourceGroup?.person1?.filePath || !sourceGroup?.person2?.filePath) {
     throw new Error("Ce projet n'a pas ses deux vidéos source.");
@@ -823,10 +821,13 @@ const renderProject = async (db, project, sourceGroup) => {
       currentVideo = nextVideo;
     }
 
-    if (clip.imageId) {
-      const imageAsset = db.assets.find((asset) => asset.id === clip.imageId && asset.category === "image");
-      if (imageAsset?.filePath) {
-        inputArgs.push("-i", imageAsset.filePath);
+    // Image overlay: manual `imageId` (category "image") wins. If none, fall back to
+    // `autoBrollId` (category "broll") set by the b-roll intelligence module.
+    const overlayId = clip.imageId || clip.autoBrollId;
+    if (overlayId) {
+      const overlayAsset = db.assets.find((asset) => asset.id === overlayId && (asset.category === "image" || asset.category === "broll"));
+      if (overlayAsset?.filePath) {
+        inputArgs.push("-i", overlayAsset.filePath);
         const imageInput = inputIndex;
         inputIndex += 1;
         const transform = clip.imageTransform || { scale: 100, x: 0, y: 0 };
@@ -874,7 +875,23 @@ const renderProject = async (db, project, sourceGroup) => {
     const assFilePath = await buildAssSubtitleFile(project, clip, clipTranscription);
     const subtitledVideo = `vsub${clipIndex}`;
     filterChains.push(`[${currentVideo}]subtitles='${assFilePath}'[${subtitledVideo}]`);
-    filterChains.push(`[${sourceInput}:a]volume=2dB,aresample=async=1[a${clipIndex}]`);
+    filterChains.push(`[${sourceInput}:a]volume=2dB,aresample=async=1[acl${clipIndex}]`);
+
+    // Audio SFX for this clip (if any). Mixed at the start of the clip audio.
+    const sfxPath = clip.sfxEffect ? getSfxPath(clip.sfxEffect) : null;
+    if (sfxPath) {
+      inputArgs.push("-i", sfxPath);
+      const sfxInput = inputIndex;
+      inputIndex += 1;
+      filterChains.push(
+        `[${sfxInput}:a]aresample=async=1,atrim=0:${Math.max(0.1, clipDuration).toFixed(3)},asetpts=PTS-STARTPTS[asfx${clipIndex}]`
+      );
+      filterChains.push(
+        `[acl${clipIndex}][asfx${clipIndex}]amix=inputs=2:duration=first:dropout_transition=0:weights=0.85 1.0[a${clipIndex}]`
+      );
+    } else {
+      filterChains.push(`[acl${clipIndex}]anull[a${clipIndex}]`);
+    }
     concatPieces.push(`[${subtitledVideo}]`, `[a${clipIndex}]`);
   }
 
@@ -882,7 +899,41 @@ const renderProject = async (db, project, sourceGroup) => {
     filterChains.push("[vsub0]null[vcat]");
     filterChains.push("[a0]anull[acat]");
   } else {
-    filterChains.push(`${concatPieces.join("")}concat=n=${clipsToRender.length}:v=1:a=1[vcat][acat]`);
+    const transitionKey = project.settings?.sfxTransition;
+    const transitionSfx = transitionKey ? getSfxPath(transitionKey) : null;
+    if (transitionSfx) {
+      // xfade between consecutive video clips. Audio stays as a simple concat.
+      const xfadeMs = transitionKey === "transition_film_roll" ? 500
+        : transitionKey === "transition_whoosh" ? 400
+        : transitionKey === "transition_flash" ? 200
+        : 300;
+      // We approximate durations via the transcribed durations, or 4s fallback per clip.
+      const clipDurations = clipsToRender.map((c) => {
+        const tc = project.transcription?.clips?.find((entry) => entry.clipId === c.id);
+        return safeNumber(tc?.duration, 4);
+      });
+      const offsets = [];
+      let acc = 0;
+      for (let i = 0; i < clipDurations.length; i += 1) {
+        offsets.push(Math.max(0, acc + clipDurations[i] - xfadeMs / 1000));
+        acc += clipDurations[i];
+      }
+      let prevTag = "vsub0";
+      for (let i = 1; i < clipsToRender.length; i += 1) {
+        const isLast = i === clipsToRender.length - 1;
+        const nextTag = isLast ? "vcat" : `vx${i}`;
+        filterChains.push(
+          `[${prevTag}][vsub${i}]xfade=transition=fade:duration=${(xfadeMs / 1000).toFixed(3)}:offset=${offsets[i - 1].toFixed(3)}[${nextTag}]`
+        );
+        prevTag = nextTag;
+      }
+      // For 2 clips, the loop runs once and vcat is the final. For 3+, the last iteration also produces vcat.
+      // Audio: simple concat of the audio parts (every other element of concatPieces).
+      const audioPieces = concatPieces.filter((_, idx) => idx % 2 === 1);
+      filterChains.push(`${audioPieces.join("")}concat=n=${clipsToRender.length}:v=0:a=1[acat]`);
+    } else {
+      filterChains.push(`${concatPieces.join("")}concat=n=${clipsToRender.length}:v=1:a=1[vcat][acat]`);
+    }
   }
 
   const musicAssetId = clipsToRender.find((clip) => clip.musicId)?.musicId || null;
@@ -1137,6 +1188,33 @@ app.post("/api/projects/:id/render", async (req, res) => {
     project.render_progress = 55;
     await writeDb(db);
 
+    // Auto-pick a b-roll for any clip that doesn't have a manual `imageId` and
+    // also doesn't already have an `autoBrollId` from a previous run. This is
+    // best-effort: if the AI isn't configured or fails, we still render.
+    try {
+      const needsPick = project.clips.some((c) => !c.imageId && !c.autoBrollId);
+      const hasBrolls = db.assets.some((a) => a.category === "broll" && (a.note || a.title));
+      if (needsPick && hasBrolls) {
+        const { pickBrollsForClips } = await import("./brollIntelligence.mjs");
+        const clipsPayload = project.clips.map((clip) => {
+          const tc = project.transcription?.clips?.find((c) => c.clipId === clip.id);
+          return { id: clip.id, transcript: (tc?.cues || []).map((cue) => cue.text).join(" ").trim() };
+        });
+        const brollsPayload = db.assets
+          .filter((a) => a.category === "broll" && (a.note || a.title))
+          .map((b) => ({ id: b.id, note: b.note || b.title, title: b.title }));
+        const picks = await pickBrollsForClips({ clips: clipsPayload, brolls: brollsPayload });
+        for (const pick of picks) {
+          const clip = project.clips.find((c) => c.id === pick.clipId);
+          if (!clip || clip.imageId) continue;
+          if (pick.brollId) clip.autoBrollId = pick.brollId;
+        }
+        await writeDb(db);
+      }
+    } catch (autoErr) {
+      console.warn("[render] auto-b-roll skipped:", autoErr.message);
+    }
+
     const exported = await renderProject(db, project, sourceGroup);
     project.status = "completed";
     project.render_progress = 100;
@@ -1157,6 +1235,180 @@ app.post("/api/projects/:id/render", async (req, res) => {
   }
 });
 
+// -------------------------------------------------------------------------
+// SFX library
+// -------------------------------------------------------------------------
+app.get("/api/sfx", async (_req, res) => {
+  const { listSfx, ensureSfxLibrary } = await import("./sfx.mjs");
+  // Best-effort: ensure the on-disk files exist (sync if missing) so the UI
+  // can show them as "ready" without a separate bootstrap step.
+  try { await ensureSfxLibrary(); } catch { /* ignored: surfaced in item.ready=false */ }
+  res.json({ sfx: listSfx() });
+});
+
+app.get("/api/sfx/:key/file", async (req, res) => {
+  const { getSfxPath } = await import("./sfx.mjs");
+  const abs = getSfxPath(req.params.key);
+  if (!abs) return res.status(404).json({ error: "SFX introuvable" });
+  res.sendFile(abs);
+});
+
+app.post("/api/projects/:id/sfx", async (req, res) => {
+  const db = await readDb();
+  const project = db.projects.find((p) => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Projet introuvable" });
+  const { transitionKey, clipSfx } = req.body || {};
+  if (typeof transitionKey === "string" || transitionKey === null) {
+    if (transitionKey) project.settings = { ...project.settings, sfxTransition: transitionKey };
+    else {
+      const next = { ...project.settings };
+      delete next.sfxTransition;
+      project.settings = next;
+    }
+  }
+  if (clipSfx && typeof clipSfx === "object") {
+    // clipSfx = { [clipId]: effectKey | null }
+    for (const clip of project.clips) {
+      if (Object.prototype.hasOwnProperty.call(clipSfx, clip.id)) {
+        const value = clipSfx[clip.id];
+        if (value) clip.sfxEffect = value;
+        else delete clip.sfxEffect;
+      }
+    }
+  }
+  project.updated_at = new Date().toISOString();
+  await writeDb(db);
+  res.json({ project: resolveProject(db, project.id) });
+});
+
+await (async () => {
+  try {
+    const { ensureSfxLibrary } = await import("./sfx.mjs");
+    await ensureSfxLibrary();
+  } catch (e) {
+    console.warn("[sfx] bootstrap failed:", e.message);
+  }
+})();
+
+// -------------------------------------------------------------------------
+// Presets
+// -------------------------------------------------------------------------
+app.get("/api/presets", async (_req, res) => {
+  const { listPresets } = await import("./presets.mjs");
+  res.json({ presets: await listPresets() });
+});
+
+app.post("/api/presets", async (req, res) => {
+  const { createPreset } = await import("./presets.mjs");
+  try {
+    const preset = await createPreset(req.body || {});
+    res.json({ preset });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.patch("/api/presets/:id", async (req, res) => {
+  const { updatePreset } = await import("./presets.mjs");
+  try {
+    const preset = await updatePreset(req.params.id, req.body || {});
+    res.json({ preset });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete("/api/presets/:id", async (req, res) => {
+  const { deletePreset } = await import("./presets.mjs");
+  res.json(await deletePreset(req.params.id));
+});
+
+// -------------------------------------------------------------------------
+// Settings (API keys for Whisper, b-roll intelligence, ...)
+// -------------------------------------------------------------------------
+app.get("/api/settings", async (_req, res) => {
+  const { settings } = await import("./settings.mjs");
+  res.json(await settings.maskedForBrowser());
+});
+
+app.put("/api/settings", async (req, res) => {
+  const { settings } = await import("./settings.mjs");
+  const body = req.body || {};
+  // Only accept known sections, only accept apiKey + model fields.
+  const patch = {};
+  for (const sectionKey of ["whisper", "brollIntelligence"]) {
+    if (body[sectionKey] && typeof body[sectionKey] === "object") {
+      const s = {};
+      if (typeof body[sectionKey].apiKey === "string") s.apiKey = body[sectionKey].apiKey.trim();
+      if (typeof body[sectionKey].model === "string") s.model = body[sectionKey].model.trim();
+      if (Object.keys(s).length > 0) patch[sectionKey] = s;
+    }
+  }
+  if (Object.keys(patch).length === 0) {
+    return res.status(400).json({ error: "Aucun champ reconnu dans la requête." });
+  }
+  const next = await settings.update(patch);
+  res.json(next);
+});
+
+app.post("/api/settings/test/whisper", async (_req, res) => {
+  const { testWhisperConnection } = await import("./whisper.mjs");
+  res.json(await testWhisperConnection());
+});
+
+app.post("/api/settings/test/broll-intelligence", async (_req, res) => {
+  const { testBrollIntelligenceConnection } = await import("./brollIntelligence.mjs");
+  res.json(await testBrollIntelligenceConnection());
+});
+
+// -------------------------------------------------------------------------
+// Auto b-roll: ask the intelligence module to pick a b-roll per clip
+// based on transcripts and b-roll descriptions. Persists the result on
+// each clip as `autoBrollId`. Idempotent: re-running overwrites.
+// -------------------------------------------------------------------------
+app.post("/api/projects/:id/auto-brolls", async (req, res) => {
+  const db = await readDb();
+  const project = db.projects.find((p) => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Projet introuvable." });
+
+  const sourceGroup = getVideoGroups(db.assets).find((g) => g.id === project.sourceGroupId);
+  if (!sourceGroup) return res.status(400).json({ error: "Source vidéo manquante." });
+
+  // Make sure we have a fresh transcription so the AI can read the words.
+  try {
+    await ensureTranscription(project, sourceGroup);
+  } catch (err) {
+    return res.status(500).json({ error: `Transcription impossible: ${err.message}` });
+  }
+
+  const brolls = db.assets.filter((a) => a.category === "broll" && (a.note || a.title));
+  if (brolls.length === 0) {
+    return res.status(400).json({ error: "Aucun b-roll labellisé dans la banque. Ajoute des descriptions." });
+  }
+
+  const clipsPayload = project.clips.map((clip) => {
+    const tc = project.transcription?.clips?.find((c) => c.clipId === clip.id);
+    const text = (tc?.cues || []).map((c) => c.text).join(" ").trim();
+    return { id: clip.id, transcript: text };
+  });
+  const brollsPayload = brolls.map((b) => ({ id: b.id, note: b.note || b.title, title: b.title }));
+
+  const { pickBrollsForClips } = await import("./brollIntelligence.mjs");
+  const picks = await pickBrollsForClips({ clips: clipsPayload, brolls: brollsPayload });
+
+  // Persist on the clip object. Do NOT clobber `imageId` (the user's manual pick).
+  for (const pick of picks) {
+    const clip = project.clips.find((c) => c.id === pick.clipId);
+    if (!clip) continue;
+    if (pick.brollId) clip.autoBrollId = pick.brollId;
+    else delete clip.autoBrollId;
+  }
+  project.updated_at = new Date().toISOString();
+  await writeDb(db);
+
+  res.json({ picks, project: resolveProject(db, project.id) });
+});
+
 await Promise.all([
   ensureDir(uploadRoot),
   ensureDir(renderRoot),
@@ -1170,3 +1422,15 @@ await seedTailleVideos();
 app.listen(port, "127.0.0.1", () => {
   console.log(`Klimax local backend: http://127.0.0.1:${port}`);
 });
+
+// Start the local Supabase-compatible shim (auth + rest + storage on port 54321)
+// so the front-end can use real Postgres-backed auth/db/storage without any
+// external service. Disable with KLIMAX_SUPABASE_ENABLED=0.
+if (process.env.KLIMAX_SUPABASE_ENABLED !== "0") {
+  try {
+    const { start: startShim } = await import("../local-supabase/server.mjs");
+    await startShim();
+  } catch (e) {
+    console.error("[local-supabase] failed to start:", e.message);
+  }
+}

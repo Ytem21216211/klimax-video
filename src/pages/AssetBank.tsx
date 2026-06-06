@@ -1,13 +1,13 @@
 import * as React from "react";
 const { useEffect, useMemo, useRef, useState } = React;
-import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Library, Plus, Trash2, Music, Film, Image as ImageIcon, CirclePlay, Upload } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { ArrowLeft, Library, Plus, Trash2, Music, Film, Image as ImageIcon, CirclePlay, Upload, AudioLines, Wand2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { localKlimaxApi } from "@/lib/localKlimaxApi";
+import { localKlimaxApi, type LocalKlimaxSfx } from "@/lib/localKlimaxApi";
 import { cn } from "@/lib/utils";
 import {
   createKlimaxBankAsset,
@@ -42,7 +42,10 @@ const formatFileSize = (size: number) => {
 const AssetBank = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [assets, setAssets] = useState<KlimaxBankAsset[]>(() => loadKlimaxBankAssets());
+  const [sfx, setSfx] = useState<LocalKlimaxSfx[]>([]);
+  const [initialTab, setInitialTab] = useState<string>(searchParams.get("tab") || "music");
   const [category, setCategory] = useState<KlimaxAssetCategory>("music");
   const [title, setTitle] = useState("");
   const [note, setNote] = useState("");
@@ -82,7 +85,21 @@ const AssetBank = () => {
       .catch(() => {
         // Le backend local peut être éteint; la Bank garde le fallback navigateur.
       });
+    localKlimaxApi
+      .listSfx()
+      .then(({ sfx: nextSfx }) => setSfx(nextSfx))
+      .catch(() => setSfx([]));
   }, []);
+
+  useEffect(() => {
+    // Sync the active tab into the URL so the Dashboard SFX card can deep-link here.
+    const current = searchParams.get("tab");
+    if (current !== initialTab) {
+      const next = new URLSearchParams(searchParams);
+      next.set("tab", initialTab);
+      setSearchParams(next, { replace: true });
+    }
+  }, [initialTab, searchParams, setSearchParams]);
 
   const addAsset = async () => {
     if (isSaving) return;
@@ -315,13 +332,24 @@ const AssetBank = () => {
             )}
 
             <div className="space-y-2">
-              <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Note</Label>
+              <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">
+                {category === "broll" ? "Label du b-roll" : "Note"}
+              </Label>
               <Textarea
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
                 className="min-h-[120px] rounded-2xl border-white/10 bg-black text-white"
-                placeholder="Usage, ambiance, type de plan..."
+                placeholder={
+                  category === "broll"
+                    ? "Décris ce que le b-roll montre (ex: 'Personne qui tape sur un clavier, gros plan sur l'écran'). Cette description sert à l'IA pour choisir le bon b-roll au bon moment."
+                    : "Usage, ambiance, type de plan..."
+                }
               />
+              {category === "broll" && (
+                <p className="text-[10px] text-white/40 leading-relaxed">
+                  Plus la description est précise (sujet, ambiance, action), plus l'IA choisira le bon b-roll au moment du rendu. Va dans <span className="underline">Paramètres</span> pour configurer la clé Gemini.
+                </p>
+              )}
             </div>
 
             <Button
@@ -344,15 +372,16 @@ const AssetBank = () => {
             <p className="text-sm text-white/45">{assets.length} élément(s) enregistré(s)</p>
           </div>
 
-          <Tabs defaultValue="music" className="mt-6">
-            <TabsList className="grid grid-cols-4 bg-black border border-white/10 rounded-2xl p-1 h-12">
-              <TabsTrigger value="music" className="rounded-xl">Musique</TabsTrigger>
-              <TabsTrigger value="broll" className="rounded-xl">B-roll</TabsTrigger>
-              <TabsTrigger value="image" className="rounded-xl">Images</TabsTrigger>
-              <TabsTrigger value="video" className="rounded-xl">Vidéos</TabsTrigger>
+          <Tabs defaultValue="music" value={initialTab} onValueChange={setInitialTab} className="mt-6">
+            <TabsList className="grid grid-cols-5 bg-black border border-white/10 rounded-2xl p-1 h-12">
+              <TabsTrigger value="music" className="rounded-xl text-[10px]">Musique</TabsTrigger>
+              <TabsTrigger value="broll" className="rounded-xl text-[10px]">B-roll</TabsTrigger>
+              <TabsTrigger value="image" className="rounded-xl text-[10px]">Images</TabsTrigger>
+              <TabsTrigger value="video" className="rounded-xl text-[10px]">Vidéos</TabsTrigger>
+              <TabsTrigger value="sfx" className="rounded-xl text-[10px]">SFX</TabsTrigger>
             </TabsList>
 
-            {(["music", "broll", "image", "video"] as KlimaxAssetCategory[]).map((cat) => (
+            {(["music", "broll", "image", "video", "sfx"] as (KlimaxAssetCategory | "sfx")[]).map((cat) => (
               <TabsContent key={cat} value={cat} className="mt-6">
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                   {cat === "video" ? (
@@ -409,11 +438,56 @@ const AssetBank = () => {
                           </div>
                         </article>
                       ))}
-                      {groupedAssets[cat].length === 0 && (
+                       {groupedAssets[cat].length === 0 && (
                         <div className="rounded-[22px] border border-dashed border-white/10 bg-black/50 p-5 text-sm text-white/45">
                           Aucun élément dans {categoryMeta[cat].label.toLowerCase()} pour le moment.
                         </div>
                       )}
+                    </>
+                  ) : (
+                    <>
+                      <div className="sm:col-span-2 xl:col-span-3 rounded-[22px] border border-white/10 bg-black/40 p-4 space-y-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="font-black uppercase tracking-tight text-white">SFX Klimax</p>
+                            <p className="mt-1 text-xs text-white/45">
+                              3 transitions visuelles (film roll, whoosh, flash) et 3 effets audio (pop, ding, boom).
+                              Sélectionnables dans l'éditeur de projet, puis mixés au rendu.
+                            </p>
+                          </div>
+                          <AudioLines className="h-5 w-5 text-white/50" />
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          {sfx.filter((s) => s.type === "transition").map((item) => (
+                            <div key={item.key} className="rounded-2xl border border-white/10 bg-black p-3">
+                              <div className="flex items-center gap-2 text-white">
+                                <Sparkles className="h-4 w-4 text-white/60" />
+                                <span className="font-black">{item.label}</span>
+                                <span className="ml-auto text-[10px] uppercase tracking-[0.2em] text-white/30">Transition</span>
+                              </div>
+                              <p className="mt-2 text-xs text-white/45">{item.description}</p>
+                              <p className="mt-2 text-[10px] text-white/30">
+                                {item.ready ? `${item.durationMs} ms · prêt` : "Génération à la volée au premier usage"}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          {sfx.filter((s) => s.type === "effect").map((item) => (
+                            <div key={item.key} className="rounded-2xl border border-white/10 bg-black p-3">
+                              <div className="flex items-center gap-2 text-white">
+                                <Wand2 className="h-4 w-4 text-white/60" />
+                                <span className="font-black">{item.label}</span>
+                                <span className="ml-auto text-[10px] uppercase tracking-[0.2em] text-white/30">Effet</span>
+                              </div>
+                              <p className="mt-2 text-xs text-white/45">{item.description}</p>
+                              <p className="mt-2 text-[10px] text-white/30">
+                                {item.ready ? `${item.durationMs} ms · prêt` : "Génération à la volée au premier usage"}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     </>
                   )}
                 </div>

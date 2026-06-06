@@ -1,5 +1,5 @@
 import * as React from "react";
-const { useMemo, useState } = React;
+const { useCallback, useMemo, useState } = React;
 import { useNavigate, useParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -39,6 +39,9 @@ import {
   type LocalSubtitleStyleSettings,
 } from "@/lib/localKlimaxApi";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
+import PresetsPanel from "@/components/editor/PresetsPanel";
+import SfxPanel from "@/components/editor/SfxPanel";
 import {
   createKlimaxProjectClip,
   loadKlimaxBankAssets,
@@ -247,6 +250,7 @@ const formatBytes = (bytes = 0) => {
 const ClimaxVideoEditor = () => {
   const navigate = useNavigate();
   const { projectId } = useParams();
+  const { toast } = useToast();
   const [mode, setMode] = useState<"manual" | "auto">("manual");
   const [clips, setClips] = useState<KlimaxProjectClip[]>(() => loadKlimaxProjectClips(projectId));
   const [selectedClipId, setSelectedClipId] = useState<string | null>(() => loadKlimaxProjectClips(projectId)[0]?.id || null);
@@ -257,10 +261,79 @@ const ClimaxVideoEditor = () => {
   const [autoSfxEnabled, setAutoSfxEnabled] = useState(true);
   const [klimaxLogoEnabled, setKlimaxLogoEnabled] = useState(true);
   const [brollEnabled, setBrollEnabled] = useState(true);
+  const [isAutoPickingBrolls, setIsAutoPickingBrolls] = useState(false);
+  const [autoBrollMessage, setAutoBrollMessage] = useState<string | null>(null);
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [presetsRefresh, setPresetsRefresh] = useState(0);
   const [musicVolumeDb, setMusicVolumeDb] = useState(-17);
   const [subtitleSize, setSubtitleSize] = useState(34);
   const [subtitleStyle, setSubtitleStyle] = useState<LocalSubtitleStyleSettings>({ ...DEFAULT_SUBTITLE_STYLE });
   const [hookStyle, setHookStyle] = useState<LocalHookStyleSettings>({ ...DEFAULT_HOOK_STYLE });
+
+  const autoPickBrolls = useCallback(async () => {
+    if (!projectId) return;
+    setIsAutoPickingBrolls(true);
+    setAutoBrollMessage(null);
+    try {
+      const result = await localKlimaxApi.autoPickBrolls(projectId);
+      const matched = result.picks.filter((p) => p.brollId).length;
+      const total = result.picks.length;
+      setAutoBrollMessage(
+        matched === 0
+          ? "L'IA n'a trouvé aucune correspondance. Ajoute plus de labels descriptifs à tes b-rolls dans la Banque."
+          : `${matched} b-roll${matched > 1 ? "s" : ""} placé${matched > 1 ? "s" : ""} sur ${total} clip${total > 1 ? "s" : ""}. Lance le rendu pour les incruster.`
+      );
+    } catch (err) {
+      setAutoBrollMessage((err as Error).message);
+    } finally {
+      setIsAutoPickingBrolls(false);
+    }
+  }, [projectId]);
+
+  // Expose a snapshot of the current settings for the Presets panel.
+  // The panel calls `window.__klimaxCurrentSnapshot()` to grab them at save time.
+  React.useEffect(() => {
+    (window as any).__klimaxCurrentSnapshot = () => ({
+      hookText,
+      subtitleSize,
+      subtitleStyle,
+      hookStyle,
+      musicEnabled,
+      musicVolumeDb,
+      brollEnabled,
+      autoSfxEnabled,
+      klimaxLogoEnabled,
+      logoTriggerWord: "klimax",
+    });
+    return () => { delete (window as any).__klimaxCurrentSnapshot; };
+  }, [hookText, subtitleSize, subtitleStyle, hookStyle, musicEnabled, musicVolumeDb, brollEnabled, autoSfxEnabled, klimaxLogoEnabled]);
+
+  // Apply a preset from the Presets panel: update local state, then save the project.
+  React.useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail || {};
+      if (typeof detail.hookText === "string") setHookText(detail.hookText);
+      if (typeof detail.subtitleSize === "number") {
+        setSubtitleSize(detail.subtitleSize);
+        setSubtitleStyle((current) => ({ ...current, fontSize: detail.subtitleSize }));
+      }
+      if (detail.subtitleStyle && typeof detail.subtitleStyle === "object") {
+        setSubtitleStyle((current) => ({ ...current, ...detail.subtitleStyle }));
+        if (typeof detail.subtitleStyle.fontSize === "number") setSubtitleSize(detail.subtitleStyle.fontSize);
+      }
+      if (detail.hookStyle && typeof detail.hookStyle === "object") {
+        setHookStyle((current) => ({ ...current, ...detail.hookStyle }));
+      }
+      if (typeof detail.musicEnabled === "boolean") setMusicEnabled(detail.musicEnabled);
+      if (typeof detail.musicVolumeDb === "number") setMusicVolumeDb(detail.musicVolumeDb);
+      if (typeof detail.brollEnabled === "boolean") setBrollEnabled(detail.brollEnabled);
+      if (typeof detail.autoSfxEnabled === "boolean") setAutoSfxEnabled(detail.autoSfxEnabled);
+      if (typeof detail.klimaxLogoEnabled === "boolean") setKlimaxLogoEnabled(detail.klimaxLogoEnabled);
+      toast({ title: "Preset appliqué", description: "Les réglages sont en place. Sauvegarde le projet pour les conserver." });
+    };
+    window.addEventListener("klimax:apply-preset", handler as EventListener);
+    return () => window.removeEventListener("klimax:apply-preset", handler as EventListener);
+  }, [toast]);
   const [bankAssets, setBankAssets] = useState<KlimaxBankAsset[]>(() => loadKlimaxBankAssets());
   const [isRendering, setIsRendering] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
@@ -1845,11 +1918,21 @@ const ClimaxVideoEditor = () => {
           </div>
         </section>
 
-        <aside className="border-l border-white/10 bg-black/70 overflow-y-auto p-5 space-y-5">
-          <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
-            <div className="flex items-center gap-3 mb-5">
-              <SlidersHorizontal className="h-5 w-5 text-white/60" />
-              <h3 className="font-black uppercase tracking-tight">Réglages rapides</h3>
+        {rightPanelOpen ? (
+          <aside className="border-l border-white/10 bg-black/70 overflow-y-auto p-5 space-y-5 relative">
+            <button
+              type="button"
+              onClick={() => setRightPanelOpen(false)}
+              title="Réduire le panneau"
+              className="absolute top-4 right-4 z-10 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/80 text-white/55 hover:bg-white/10 hover:text-white transition"
+            >
+              <ChevronRight className="h-4 w-4 rotate-180" />
+            </button>
+            <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
+              <div className="flex items-center gap-3 mb-5 pr-10">
+                <SlidersHorizontal className="h-5 w-5 text-white/60" />
+                <h3 className="font-black uppercase tracking-tight">Réglages rapides</h3>
+              </div>
             </div>
             <div className="space-y-4">
               {[
@@ -1870,206 +1953,270 @@ const ClimaxVideoEditor = () => {
                 );
               })}
             </div>
-          </div>
 
-          <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
-              <div className="flex items-center gap-3">
-                <Library className="h-5 w-5 text-white/60" />
-                <h3 className="font-black uppercase tracking-tight">Banque d'assets</h3>
+            <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
+              <div className="flex items-center gap-3 mb-3">
+                <Wand2 className="h-5 w-5 text-white/60" />
+                <h3 className="font-black uppercase tracking-tight">B-rolls IA</h3>
               </div>
+              <p className="text-xs text-white/55 leading-relaxed">
+                Compare la transcription de chaque clip aux labels des b-rolls de la banque et place le bon b-roll au bon moment (sans écraser tes choix manuels).
+              </p>
               <Button
-                variant="outline"
-                onClick={() => navigate("/asset-bank")}
-                className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                type="button"
+                onClick={autoPickBrolls}
+                disabled={isAutoPickingBrolls}
+                className="mt-4 w-full rounded-2xl bg-white text-black hover:bg-white/90 font-black disabled:opacity-40"
               >
-                Ouvrir la banque
+                {isAutoPickingBrolls ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Wand2 className="mr-2 h-4 w-4" />}
+                {isAutoPickingBrolls ? "Analyse en cours…" : "Choisir les b-rolls via l'IA"}
               </Button>
+              {autoBrollMessage && (
+                <p className="mt-3 rounded-2xl border border-white/10 bg-black/40 p-3 text-xs text-white/65">
+                  {autoBrollMessage}
+                </p>
+              )}
             </div>
-            <Tabs defaultValue="broll">
-              <TabsList className="grid grid-cols-3 bg-black border border-white/10 rounded-2xl p-1 h-12">
-                <TabsTrigger value="broll" className="rounded-xl"><Film className="h-4 w-4" /></TabsTrigger>
-                <TabsTrigger value="images" className="rounded-xl"><Image className="h-4 w-4" /></TabsTrigger>
-                <TabsTrigger value="music" className="rounded-xl"><Music className="h-4 w-4" /></TabsTrigger>
-              </TabsList>
-              <TabsContent value="broll" className="mt-4 space-y-3">
-                {bankByCategory.broll.map((asset) => (
-                  <button
-                    key={asset.id}
-                    onClick={() => selectBankAsset("broll", asset.id)}
-                    className={cn(
-                      "w-full rounded-2xl border p-4 flex items-center justify-between gap-3 text-left transition",
-                      selectedClip?.brollId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
-                    )}
-                  >
-                    <div>
-                      <p className="font-black text-sm">{asset.title}</p>
-                      <p className={cn("text-xs", selectedClip?.brollId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
-                    </div>
-                    <ChevronRight className={cn("h-4 w-4", selectedClip?.brollId === asset.id ? "text-black/40" : "text-white/30")} />
-                  </button>
-                ))}
-                {bankByCategory.broll.length === 0 && <p className="text-sm text-white/45">Ajoute des B-rolls dans la Banque.</p>}
-              </TabsContent>
-              <TabsContent value="images" className="mt-4">
-                <div className="space-y-3">
-                  {bankByCategory.image.map((asset) => (
+
+            <PresetsPanel
+              refreshSignal={presetsRefresh}
+              onApplied={() => setPresetsRefresh((n) => n + 1)}
+            />
+
+          {projectId && (
+            <SfxPanel
+              projectId={projectId}
+              clips={(localProject?.transcription?.clips || []).map((c) => ({ id: c.clipId, stage: c.stage, sfxEffect: c.sfxEffect }))}
+              transitionKey={localProject?.settings?.sfxTransition}
+              onChange={async () => {
+                // Re-fetch the project to reflect the updated sfxEffect on each clip.
+                if (!projectId) return;
+                try {
+                  const { project } = await localKlimaxApi.getProject(projectId);
+                  setLocalProject(project);
+                } catch {
+                  // best-effort
+                }
+              }}
+            />
+          )}
+
+            <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+                <div className="flex items-center gap-3">
+                  <Library className="h-5 w-5 text-white/60" />
+                  <h3 className="font-black uppercase tracking-tight">Banque d'assets</h3>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => navigate("/asset-bank")}
+                  className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                >
+                  Ouvrir la banque
+                </Button>
+              </div>
+              <Tabs defaultValue="broll">
+                <TabsList className="grid grid-cols-3 bg-black border border-white/10 rounded-2xl p-1 h-12">
+                  <TabsTrigger value="broll" className="rounded-xl"><Film className="h-4 w-4" /></TabsTrigger>
+                  <TabsTrigger value="images" className="rounded-xl"><Image className="h-4 w-4" /></TabsTrigger>
+                  <TabsTrigger value="music" className="rounded-xl"><Music className="h-4 w-4" /></TabsTrigger>
+                </TabsList>
+                <TabsContent value="broll" className="mt-4 space-y-3">
+                  {bankByCategory.broll.map((asset) => (
                     <button
                       key={asset.id}
-                      onClick={() => selectBankAsset("image", asset.id)}
+                      onClick={() => selectBankAsset("broll", asset.id)}
                       className={cn(
                         "w-full rounded-2xl border p-4 flex items-center justify-between gap-3 text-left transition",
-                        selectedClip?.imageId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
+                        selectedClip?.brollId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
                       )}
                     >
                       <div>
                         <p className="font-black text-sm">{asset.title}</p>
-                        <p className={cn("text-xs", selectedClip?.imageId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
+                        <p className={cn("text-xs", selectedClip?.brollId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
                       </div>
-                      <ChevronRight className={cn("h-4 w-4", selectedClip?.imageId === asset.id ? "text-black/40" : "text-white/30")} />
+                      <ChevronRight className={cn("h-4 w-4", selectedClip?.brollId === asset.id ? "text-black/40" : "text-white/30")} />
                     </button>
                   ))}
-                  {bankByCategory.image.length === 0 && <p className="text-sm text-white/45">Ajoute des images dans la Banque.</p>}
-                </div>
-                {selectedClip?.imageId && (
-                  <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-black uppercase tracking-wide">Placement image</p>
-                        <p className="text-xs text-white/45">{selectedImageAsset?.title || "Image sélectionnée"}</p>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
-                        onClick={() => updateSelectedClip({ imageTransform: { scale: 100, x: 0, y: 0 } })}
+                  {bankByCategory.broll.length === 0 && <p className="text-sm text-white/45">Ajoute des B-rolls dans la Banque.</p>}
+                </TabsContent>
+                <TabsContent value="images" className="mt-4">
+                  <div className="space-y-3">
+                    {bankByCategory.image.map((asset) => (
+                      <button
+                        key={asset.id}
+                        onClick={() => selectBankAsset("image", asset.id)}
+                        className={cn(
+                          "w-full rounded-2xl border p-4 flex items-center justify-between gap-3 text-left transition",
+                          selectedClip?.imageId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
+                        )}
                       >
-                        Reset
-                      </Button>
-                    </div>
-                    <div className="space-y-3">
+                        <div>
+                          <p className="font-black text-sm">{asset.title}</p>
+                          <p className={cn("text-xs", selectedClip?.imageId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
+                        </div>
+                        <ChevronRight className={cn("h-4 w-4", selectedClip?.imageId === asset.id ? "text-black/40" : "text-white/30")} />
+                      </button>
+                    ))}
+                    {bankByCategory.image.length === 0 && <p className="text-sm text-white/45">Ajoute des images dans la Banque.</p>}
+                  </div>
+                  {selectedClip?.imageId && (
+                    <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
                       <div className="flex items-center justify-between gap-3">
-                        <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Zoom</Label>
-                        <span className="text-sm font-black">{selectedClip.imageTransform?.scale ?? 100}%</span>
+                        <div>
+                          <p className="text-sm font-black uppercase tracking-wide">Placement image</p>
+                          <p className="text-xs text-white/45">{selectedImageAsset?.title || "Image sélectionnée"}</p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                          onClick={() => updateSelectedClip({ imageTransform: { scale: 100, x: 0, y: 0 } })}
+                        >
+                          Reset
+                        </Button>
                       </div>
-                      <Slider
-                        value={[selectedClip.imageTransform?.scale ?? 100]}
-                        min={40}
-                        max={180}
-                        step={1}
-                        onValueChange={([value]) =>
-                          updateSelectedClip({
-                            imageTransform: {
-                              scale: value,
-                              x: selectedClip.imageTransform?.x ?? 0,
-                              y: selectedClip.imageTransform?.y ?? 0,
-                            },
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="grid gap-4 md:grid-cols-2">
                       <div className="space-y-3">
                         <div className="flex items-center justify-between gap-3">
-                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement X</Label>
-                          <span className="text-sm font-black">{selectedClip.imageTransform?.x ?? 0}px</span>
+                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Zoom</Label>
+                          <span className="text-sm font-black">{selectedClip.imageTransform?.scale ?? 100}%</span>
                         </div>
                         <Slider
-                          value={[selectedClip.imageTransform?.x ?? 0]}
-                          min={-420}
-                          max={420}
+                          value={[selectedClip.imageTransform?.scale ?? 100]}
+                          min={40}
+                          max={180}
                           step={1}
                           onValueChange={([value]) =>
                             updateSelectedClip({
                               imageTransform: {
-                                scale: selectedClip.imageTransform?.scale ?? 100,
-                                x: value,
+                                scale: value,
+                                x: selectedClip.imageTransform?.x ?? 0,
                                 y: selectedClip.imageTransform?.y ?? 0,
                               },
                             })
                           }
                         />
                       </div>
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement Y</Label>
-                          <span className="text-sm font-black">{selectedClip.imageTransform?.y ?? 0}px</span>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement X</Label>
+                            <span className="text-sm font-black">{selectedClip.imageTransform?.x ?? 0}px</span>
+                          </div>
+                          <Slider
+                            value={[selectedClip.imageTransform?.x ?? 0]}
+                            min={-420}
+                            max={420}
+                            step={1}
+                            onValueChange={([value]) =>
+                              updateSelectedClip({
+                                imageTransform: {
+                                  scale: selectedClip.imageTransform?.scale ?? 100,
+                                  x: value,
+                                  y: selectedClip.imageTransform?.y ?? 0,
+                                },
+                              })
+                            }
+                          />
                         </div>
-                        <Slider
-                          value={[selectedClip.imageTransform?.y ?? 0]}
-                          min={-420}
-                          max={420}
-                          step={1}
-                          onValueChange={([value]) =>
-                            updateSelectedClip({
-                              imageTransform: {
-                                scale: selectedClip.imageTransform?.scale ?? 100,
-                                x: selectedClip.imageTransform?.x ?? 0,
-                                y: value,
-                              },
-                            })
-                          }
-                        />
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement Y</Label>
+                            <span className="text-sm font-black">{selectedClip.imageTransform?.y ?? 0}px</span>
+                          </div>
+                          <Slider
+                            value={[selectedClip.imageTransform?.y ?? 0]}
+                            min={-420}
+                            max={420}
+                            step={1}
+                            onValueChange={([value]) =>
+                              updateSelectedClip({
+                                imageTransform: {
+                                  scale: selectedClip.imageTransform?.scale ?? 100,
+                                  x: selectedClip.imageTransform?.x ?? 0,
+                                  y: value,
+                                },
+                              })
+                            }
+                          />
+                        </div>
                       </div>
                     </div>
+                  )}
+                </TabsContent>
+                <TabsContent value="music" className="mt-4">
+                  <div className="space-y-3">
+                    {bankByCategory.music.map((asset) => (
+                      <button
+                        key={asset.id}
+                        onClick={() => selectBankAsset("music", asset.id)}
+                        className={cn(
+                          "w-full rounded-2xl border p-4 flex items-center justify-between gap-3 text-left transition",
+                          selectedClip?.musicId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
+                        )}
+                      >
+                        <div>
+                          <p className="font-black text-sm">{asset.title}</p>
+                          <p className={cn("text-xs", selectedClip?.musicId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
+                        </div>
+                        <ChevronRight className={cn("h-4 w-4", selectedClip?.musicId === asset.id ? "text-black/40" : "text-white/30")} />
+                      </button>
+                    ))}
+                    {bankByCategory.music.length === 0 && <p className="text-sm text-white/45">Ajoute des musiques dans la Banque.</p>}
                   </div>
-                )}
-              </TabsContent>
-              <TabsContent value="music" className="mt-4">
-                <div className="space-y-3">
-                  {bankByCategory.music.map((asset) => (
-                    <button
-                      key={asset.id}
-                      onClick={() => selectBankAsset("music", asset.id)}
-                      className={cn(
-                        "w-full rounded-2xl border p-4 flex items-center justify-between gap-3 text-left transition",
-                        selectedClip?.musicId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
-                      )}
-                    >
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="font-black text-sm">{asset.title}</p>
-                        <p className={cn("text-xs", selectedClip?.musicId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
+                        <p className="text-sm font-black uppercase tracking-wide">Volume musique</p>
+                        <p className="text-xs text-white/45">Base locale à -17 dB, modifiable avant export.</p>
                       </div>
-                      <ChevronRight className={cn("h-4 w-4", selectedClip?.musicId === asset.id ? "text-black/40" : "text-white/30")} />
-                    </button>
-                  ))}
-                  {bankByCategory.music.length === 0 && <p className="text-sm text-white/45">Ajoute des musiques dans la Banque.</p>}
-                </div>
-                <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-black uppercase tracking-wide">Volume musique</p>
-                      <p className="text-xs text-white/45">Base locale à -17 dB, modifiable avant export.</p>
+                      <span className="text-sm font-black">{musicVolumeDb} dB</span>
                     </div>
-                    <span className="text-sm font-black">{musicVolumeDb} dB</span>
+                    <Slider
+                      value={[musicVolumeDb]}
+                      min={-30}
+                      max={0}
+                      step={1}
+                      onValueChange={([value]) => setMusicVolumeDb(value)}
+                    />
                   </div>
-                  <Slider
-                    value={[musicVolumeDb]}
-                    min={-30}
-                    max={0}
-                    step={1}
-                    onValueChange={([value]) => setMusicVolumeDb(value)}
-                  />
-                </div>
-              </TabsContent>
-            </Tabs>
-          </div>
+                </TabsContent>
+              </Tabs>
+            </div>
 
-          <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
-            <div className="flex items-center gap-3 mb-4">
-              <ShieldCheck className="h-5 w-5 text-white/60" />
-              <h3 className="font-black uppercase tracking-tight">Anti-shadowban</h3>
+            <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
+              <div className="flex items-center gap-3 mb-4">
+                <ShieldCheck className="h-5 w-5 text-white/60" />
+                <h3 className="font-black uppercase tracking-tight">Anti-shadowban</h3>
+              </div>
+              <div className="space-y-3">
+                {antiShadowbanSteps.map((step) => (
+                  <div key={step} className="flex items-start gap-3 text-sm text-white/65">
+                    <Captions className="h-4 w-4 mt-0.5 text-white/40 shrink-0" />
+                    <span>{step}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="space-y-3">
-              {antiShadowbanSteps.map((step) => (
-                <div key={step} className="flex items-start gap-3 text-sm text-white/65">
-                  <Captions className="h-4 w-4 mt-0.5 text-white/40 shrink-0" />
-                  <span>{step}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </aside>
+          </aside>
+        ) : (
+          <aside className="border-l border-white/10 bg-black/70 w-12 flex flex-col items-center py-5">
+            <button
+              type="button"
+              onClick={() => setRightPanelOpen(true)}
+              title="Ouvrir le panneau"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white transition"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <p
+              className="mt-4 text-[10px] font-black uppercase tracking-[0.3em] text-white/30 select-none"
+              style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
+            >
+              Réglages
+            </p>
+          </aside>
+        )}
       </main>
     </div>
   );

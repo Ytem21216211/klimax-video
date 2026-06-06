@@ -65,6 +65,12 @@ local-data/klimax/
 
 Ce dossier est volontairement ignoré par Git.
 
+## Base de données locale (Subabase de remplacement)
+
+L'application utilise normalement Supabase pour l'authentification, la base de données et le stockage de fichiers. Pour le développement local, un substitut (shim) compatible est fourni dans `local-supabase/`. Il démarre automatiquement avec `npm run backend` et écoute sur le port 54321. Les données sont stockées dans une base PostgreSQL locale (`klimax_local_supabase`) et les fichiers uploadés dans `local-data/supabase-storage/`.
+
+Voir `local-supabase/README.md` pour les détails. Pour désactiver le shim, définir `KLIMAX_SUPABASE_ENABLED=0` dans l'environnement.
+
 ## Notes
 
 - Les vidéos de travail ne sont pas versionnées dans Git pour éviter des pushes trop lourds. Le dossier `public/klimax-videos/` existe pour les fichiers test locaux.

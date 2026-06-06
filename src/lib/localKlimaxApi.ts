@@ -196,4 +196,70 @@ export const localKlimaxApi = {
       })
     );
   },
+
+  async autoPickBrolls(projectId: string) {
+    return parseResponse<{ picks: { clipId: string; brollId: string | null; reason: string }[]; project: LocalKlimaxProject }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/projects/${projectId}/auto-brolls`, { method: "POST" })
+    );
+  },
+
+  // Presets
+  async listPresets() {
+    return parseResponse<{ presets: LocalKlimaxPreset[] }>(await fetch(`${LOCAL_KLIMAX_API}/api/presets`));
+  },
+  async createPreset(payload: { name: string; [k: string]: unknown }) {
+    return parseResponse<{ preset: LocalKlimaxPreset }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/presets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+    );
+  },
+  async updatePreset(id: string, payload: Record<string, unknown>) {
+    return parseResponse<{ preset: LocalKlimaxPreset }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/presets/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+    );
+  },
+  async deletePreset(id: string) {
+    return parseResponse<{ ok: boolean; removed: number }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/presets/${id}`, { method: "DELETE" })
+    );
+  },
+
+  // SFX library
+  async listSfx() {
+    return parseResponse<{ sfx: LocalKlimaxSfx[] }>(await fetch(`${LOCAL_KLIMAX_API}/api/sfx`));
+  },
+  async setProjectSfx(projectId: string, payload: { transitionKey?: string | null; clipSfx?: Record<string, string | null> }) {
+    return parseResponse<{ project: LocalKlimaxProject }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/projects/${projectId}/sfx`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+    );
+  },
+};
+
+export type LocalKlimaxSfx = {
+  key: string;
+  type: "transition" | "effect";
+  label: string;
+  description: string;
+  file: string;
+  durationMs: number;
+  ready: boolean;
+};
+
+export type LocalKlimaxPreset = {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  settings: Record<string, unknown>;
 };

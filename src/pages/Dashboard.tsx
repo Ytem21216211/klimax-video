@@ -7,7 +7,7 @@ import {
   Plus, Video, LogOut, Upload, ScrollText,
   BarChart3, Brain, Eye, Zap, ArrowRight, Library,
   ArrowDown, LayoutGrid, Settings,
-  MessageSquare
+  MessageSquare, Sparkles, ChevronRight, AudioLines, Clock
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDevAssistantContext } from "@/components/devAssistant";
@@ -32,6 +32,97 @@ import {
 } from "@/lib/klimaxStorage";
 
 const PROJECT_VAULT_RESET_KEY = "klimax:project-vault-cleared:v1";
+
+type ChatIntentContext = {
+  projectCount: number;
+  mostRecentProjectTitle?: string;
+  onCreateProject: () => void;
+};
+
+const CHAT_HELP_LINES = [
+  "• « nouveau projet » — j'ouvre le formulaire de création",
+  "• « ouvre mon dernier projet » — je t'emmène dans l'éditeur",
+  "• « comment ajouter un b-roll » — banque d'assets → onglet B-rolls IA",
+  "• « preset » — panneau Préréglages dans l'éditeur (icône dossier à droite)",
+  "• « sfx / son / transition » — onglet SFX de la banque ou panneau SFX de l'éditeur",
+  "• « exporte mon projet » — bouton Exporter dans l'éditeur",
+  "• « sous-titres » — panneau Sous-titres dans l'éditeur",
+];
+
+const matchChatIntent = (raw: string, ctx: ChatIntentContext): string => {
+  const prompt = raw.trim();
+  if (!prompt) {
+    return "Pose-moi une question ou demande-moi de créer un projet.";
+  }
+
+  // 1. Create / new project intents
+  if (/\b(nouveau|nouvelle|nouvau|nvelle|nvel|cree|creer|creerun|creerunprojet|new|make|start|commence|commencer|lance|lancer|fait|fais)\b.*\b(projet|video|clip|reel|tiktok|shorts?|vlog|montage)\b/.test(prompt)
+      || /\b(projet|video|clip|reel|tiktok|shorts?|vlog|montage)\b.*\b(nouveau|nouvelle|nvelle|nvel|cree|creer|new|start|make|commence|lancer)\b/.test(prompt)
+      || /\b(nouveau projet|nouvelle video|nouvelle video|nouveau clip|new project|create project|start a video|start a project|make a video|faire une video|faire un projet)\b/.test(prompt)) {
+    ctx.onCreateProject();
+    const recent = ctx.mostRecentProjectTitle ? ` Ton dernier projet s'appelle « ${ctx.mostRecentProjectTitle} ».` : "";
+    return `J'ouvre le formulaire de création.${recent} Donne un titre et un script, je m'occupe du reste.`;
+  }
+
+  // 2. Open the most recent project
+  if (/\b(ouvre|ouvrir|open|go|vas|lance|aller|reprendre|continuer)\b.*\b(dernier|recent|reel|precedent|projet|project|video|clip|montage)\b/.test(prompt)
+      || /\b(dernier projet|recent project|my project|mon projet|reprendre le montage)\b/.test(prompt)) {
+    if (ctx.mostRecentProjectTitle) {
+      return `Direction ton dernier projet « ${ctx.mostRecentProjectTitle} » — clique sur la carte "Dernier projet" sur le dashboard, ou dis « liste mes projets » pour voir toute la bibliothèque.`;
+    }
+    return `Tu n'as pas encore de projet. Dis « nouveau projet » pour en créer un.`;
+  }
+
+  // 3. Delete / clear intent (warn, never execute silently)
+  if (/\b(supprime|supprimer|efface|effacer|delete|remove|reset|clear|wipe|nettoie|vider)\b/.test(prompt)) {
+    return `Je ne supprime rien automatiquement. Dis-moi quel projet supprimer, ou utilise le menu ⋮ sur la carte du projet. Pour vider la banque d'assets, va dans Paramètres → Banque.`;
+  }
+
+  // 4. SFX / sound / transition
+  if (/\b(sfx|son|sound|audio|effet|effect|transition|flash|whoosh|film roll|boom|pop|ding)\b/.test(prompt)) {
+    return `Pour les SFX : onglet "SFX" dans la Banque d'assets, ou panneau "SFX" dans l'éditeur (à droite, sous Préréglages). Tu peux y choisir 1 transition visuelle pour tout le projet et 1 effet audio par clip.`;
+  }
+
+  // 5. Presets
+  if (/\b(preset|prereg|preconfig|saved|template|modele|model)\b/.test(prompt)) {
+    return `Les préréglages se gèrent dans le panneau "Préréglages" de l'éditeur (à droite, en haut). Tu peux sauvegarder les réglages actuels, les appliquer en un clic, et retrouver les presets partagés par la communauté.`;
+  }
+
+  // 6. B-roll / b-rolls IA
+  if (/\b(b-?roll|broll|stock|footage|video libre|ia|intelligence|gemini|autopick|auto pick)\b/.test(prompt)) {
+    return `Pour l'IA b-roll : ouvre un projet dans l'éditeur, puis le panneau "B-rolls IA" à droite. Bouton "Choisir les b-rolls via l'IA" — Gemini analyse ton script et choisit les meilleures vidéos par clip. La clé API Gemini se règle dans Paramètres.`;
+  }
+
+  // 7. Subtitles / transcription
+  if (/\b(sous-?titre|subtitle|caption|whisper|transcript|transcription|dictation)\b/.test(prompt)) {
+    return `Sous-titres & transcription : ouvre un projet, va dans le panneau "Sous-titres" (à droite). Tu peux générer les sous-titres via Whisper (réglages dans Paramètres) ou les écrire à la main.`;
+  }
+
+  // 8. Export / render
+  if (/\b(export|exporte|render|telecharge|tlcharger|mp4|download)\b/.test(prompt)) {
+    return `Bouton "Exporter" en haut à droite de l'éditeur. Le rendu prend quelques secondes et applique toutes tes options (sous-titres, b-rolls, SFX, musique).`;
+  }
+
+  // 9. Asset bank / media
+  if (/\b(banque|asset|media|musique|music|image|video|logo)\b/.test(prompt)) {
+    return `La Banque d'assets est accessible depuis le menu de gauche (catégorie "Banque") ou la carte "Banque" sur le dashboard. 5 onglets : B-rolls / Images / Musique / Vidéos / SFX.`;
+  }
+
+  // 10. Help / capabilities
+  if (/\b(aide|help|que sais|what can|capacit|comment|how)\b/.test(prompt)) {
+    return "Voici ce que je peux faire sans toucher à l'IA :\n" + CHAT_HELP_LINES.join("\n");
+  }
+
+  // 11. Project count / list
+  if (/\b(combien|how many|liste|list|mes projets|my projects)\b/.test(prompt)) {
+    if (ctx.projectCount === 0) return "Tu n'as pas encore de projet. Dis « nouveau projet » pour commencer.";
+    if (ctx.projectCount === 1) return `Tu as 1 projet${ctx.mostRecentProjectTitle ? ` (« ${ctx.mostRecentProjectTitle} »)` : ""}.`;
+    return `Tu as ${ctx.projectCount} projets${ctx.mostRecentProjectTitle ? `. Le plus récent s'appelle « ${ctx.mostRecentProjectTitle} »` : ""}.`;
+  }
+
+  // Fallthrough
+  return "Je suis l'assistant local de Klimax (sans IA, j'utilise des mots-clés). Essaie :\n" + CHAT_HELP_LINES.join("\n");
+};
 
 const SidebarItem = ({ icon, text, onClick, active }: { icon: any, text: string, onClick: () => void, active?: boolean }) => (
   <button
@@ -95,6 +186,57 @@ const SidebarProject = ({ project, onClick }: { project: any, onClick: () => voi
   );
 };
 
+const DashboardShortcutCard = ({
+  label,
+  description,
+  icon,
+  onClick,
+  disabled,
+  subtle,
+}: {
+  label: string;
+  description: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  subtle?: string | null;
+}) => (
+  <button
+    onClick={onClick}
+    disabled={disabled}
+    className={cn(
+      "group relative overflow-hidden rounded-[24px] border border-white/10 bg-white/[0.04] p-5 text-left transition-all duration-300",
+      "hover:border-white/30 hover:bg-white/[0.08] hover:-translate-y-0.5 hover:shadow-[0_30px_60px_-20px_rgba(0,0,0,0.6)]",
+      "disabled:opacity-50 disabled:pointer-events-none"
+    )}
+  >
+    <div className="flex items-start justify-between gap-3">
+      <div className="grid h-10 w-10 place-items-center rounded-2xl bg-white text-black transition-transform duration-300 group-hover:scale-110">
+        {icon}
+      </div>
+      <ChevronRight className="h-4 w-4 text-white/25 transition-transform duration-300 group-hover:translate-x-0.5 group-hover:text-white" />
+    </div>
+    <h3 className="mt-5 text-lg font-black tracking-tight text-white">{label}</h3>
+    <p className="mt-2 text-xs leading-relaxed text-white/50">{description}</p>
+    {subtle && <p className="mt-3 text-[10px] uppercase tracking-[0.2em] text-white/30">{subtle}</p>}
+  </button>
+);
+
+const formatRelativeDate = (iso?: string) => {
+  if (!iso) return "récemment";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "récemment";
+  const diff = Date.now() - then;
+  const min = Math.round(diff / 60000);
+  if (min < 1) return "à l'instant";
+  if (min < 60) return `il y a ${min} min`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `il y a ${hr} h`;
+  const day = Math.round(hr / 24);
+  if (day < 30) return `il y a ${day} j`;
+  return new Date(iso).toLocaleDateString("fr-FR");
+};
+
 const Dashboard = () => {
   const [user, setUser] = useState<any>(null);
   const [projects, setProjects] = useState<LocalKlimaxProject[]>([]);
@@ -102,6 +244,11 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [projectCleanupDone, setProjectCleanupDone] = useState(false);
+
+  const mostRecentProject = React.useMemo(() => {
+    if (!projects || projects.length === 0) return null;
+    return [...projects].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))[0] || null;
+  }, [projects]);
   const [vaultClearDone, setVaultClearDone] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -120,39 +267,17 @@ const Dashboard = () => {
     setPrompt('');
     setIsTyping(true);
 
+    // Pure keyword/regex intent matcher. No AI call — fast, deterministic, free.
     setTimeout(() => {
-      let aiResponse = "Je suis l'assistant Klimax vidéo. Je peux préparer le montage manuel, les variantes automatiques, les sous-titres, les hooks, les assets, la musique et les vérifications d'export.";
-      const userPrompt = currentPrompt.toLowerCase();
-
-      if (userPrompt.includes("analyt") || userPrompt.includes("data") || userPrompt.includes("stats") || userPrompt.includes("datalligence")) {
-        aiResponse = "Les analyses Klimax vidéo suivront la rétention, les hooks qui marchent, la performance des sous-titres et la qualité d'export de tes vidéos courtes.";
-      } else if (userPrompt.includes("voice") || userPrompt.includes("clone") || userPrompt.includes("audio")) {
-        aiResponse = "Pour Klimax vidéo, il n'y a pas de voix off par défaut. On utilise le dialogue original, les sous-titres, la musique et les SFX au bon timing.";
-      } else if (userPrompt.includes("script") || userPrompt.includes("story") || userPrompt.includes("scriptforge")) {
-        aiResponse = "La couche écriture servira à générer des hooks, reformuler les sous-titres, proposer les B-rolls et créer des variantes manuelles ou automatiques.";
-      } else if (userPrompt.includes("project") || userPrompt.includes("create") || userPrompt.includes("video")) {
-        aiResponse = `Tu as actuellement ${projects.length} projet(s). Pour lancer un nouveau montage, clique sur "Nouveau projet" dans la barre latérale.`;
-      } else if (userPrompt.includes("sfx") || userPrompt.includes("sound")) {
-        aiResponse = "La bibliothèque SFX servira à gérer les sons courts: ajout, tags, pré-écoute et déclencheurs audio pour les moments forts.";
-      } else if (userPrompt.includes("agent") || userPrompt.includes("flow") || userPrompt.includes("whiteboard")) {
-        aiResponse = "Le tableau IA sert à poser visuellement les stratégies de contenu et les automatisations complexes.";
-      } else if (userPrompt.includes("admin") || userPrompt.includes("command") || userPrompt.includes("control")) {
-        aiResponse = "Le centre de commande servira à gérer la logique IA et l'orchestration backend.";
-      } else if (userPrompt.includes("vizion") || userPrompt.includes("math") || userPrompt.includes("concept")) {
-        aiResponse = "Le moteur de vision sert à extraire les éléments importants depuis les vidéos brutes.";
-      } else if (userPrompt.includes("import") || userPrompt.includes("library") || userPrompt.includes("view analyzed")) {
-        aiResponse = "Le module d'import permet de retrouver les assets vidéo déjà traités ou analysés.";
-      } else if (userPrompt.includes("help") || userPrompt.includes("what is this") || userPrompt.includes("how to")) {
-        aiResponse = "Klimax vidéo devient ton studio IA pour les clips courts: contrôle manuel d'abord, puis génération automatique quand on branchera le backend.";
-      } else if (userPrompt.includes("clips") || userPrompt.includes("factory")) {
-        aiResponse = "La fabrique de clips servira à générer automatiquement des variantes de vidéos courtes depuis tes projets sources.";
-      } else if (userPrompt.includes("comment") || userPrompt.includes("social") || userPrompt.includes("reply")) {
-        aiResponse = "Le labo commentaires sert à gérer des commentaires et identités pour les maquettes d'engagement dans les vidéos.";
-      }
-
+      const raw = currentPrompt.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      const aiResponse = matchChatIntent(raw, {
+        projectCount: projects.length,
+        mostRecentProjectTitle: mostRecentProject?.title,
+        onCreateProject: () => setNewProjectOpen(true),
+      });
       setMessages([...newMessages, { role: 'ai' as const, content: aiResponse }]);
       setIsTyping(false);
-    }, 800);
+    }, 350);
   };
 
   useEffect(() => {
@@ -375,6 +500,7 @@ const Dashboard = () => {
               <SidebarItem icon={<Upload className="w-4 h-4" />} text="Imports" onClick={() => navigate("/imports")} />
 
               <SidebarItem icon={<MessageSquare className="w-4 h-4" />} text="Commentaires" onClick={() => navigate("/comment-library")} active={window.location.pathname === "/comment-library"} />
+              <SidebarItem icon={<Settings className="w-4 h-4" />} text="Paramètres" onClick={() => navigate("/parametres")} active={window.location.pathname === "/parametres"} />
             </div>
           </div>
 
@@ -475,34 +601,36 @@ const Dashboard = () => {
                   <span className="px-5 py-2 rounded-full bg-white/5 border border-white/10 text-xs font-medium cursor-pointer hover:bg-white/10 transition-all">Moteur IA</span>
                 </div>
 
-                <div className="mt-8 grid w-full gap-3 text-left sm:grid-cols-3">
-                  <button
+                <div className="mt-10 grid w-full gap-4 text-left sm:grid-cols-3">
+                  <DashboardShortcutCard
+                    label="Banque"
+                    description="Musiques, B-rolls, images, SFX. La source de tout ce que tu insères dans un montage."
+                    icon={<Library className="h-5 w-5" />}
                     onClick={() => navigate("/asset-bank")}
-                    className="rounded-[24px] border border-white/10 bg-white/[0.04] p-5 transition hover:bg-white/[0.08]"
-                  >
-                    <p className="text-[10px] font-black uppercase tracking-[0.28em] text-white/35">Banque séparée</p>
-                    <h3 className="mt-3 text-lg font-black text-white">Banque</h3>
-                    <p className="mt-2 text-xs leading-relaxed text-white/50">
-                      Musiques, B-rolls et images se choisissent ensuite dans l'éditeur.
-                    </p>
-                  </button>
-                  <div className="rounded-[24px] border border-white/10 bg-white/[0.04] p-5">
-                    <p className="text-[10px] font-black uppercase tracking-[0.28em] text-white/35">Projets</p>
-                    <h3 className="mt-3 text-lg font-black text-white">Anciens projets vidés</h3>
-                    <p className="mt-2 text-xs leading-relaxed text-white/50">
-                      Le tableau reste concentré sur les vidéos Klimax à clipper.
-                    </p>
-                  </div>
-                  <div className="rounded-[24px] border border-white/10 bg-white/[0.04] p-5">
-                    <p className="text-[10px] font-black uppercase tracking-[0.28em] text-white/35">Source vidéo</p>
-                    <h3 className="mt-3 text-lg font-black text-white">2 vidéos liées</h3>
-                    <p className="mt-2 text-xs leading-relaxed text-white/50">
-                      Chaque projet regroupe personne 1 et personne 2 dans la même vidéo à recréer.
-                    </p>
-                  </div>
+                  />
+                  <DashboardShortcutCard
+                    label={mostRecentProject ? "Dernier projet" : "Nouveau projet"}
+                    description={
+                      mostRecentProject
+                        ? `Reprendre "${mostRecentProject.title || "Projet sans titre"}" là où tu l'as laissé.`
+                        : "Aucun projet pour l'instant. Crée ton premier montage en 2 clips."
+                    }
+                    icon={mostRecentProject ? <Clock className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
+                    onClick={() => {
+                      if (mostRecentProject) navigate(`/project/${mostRecentProject.id}`);
+                      else setNewProjectOpen(true);
+                    }}
+                    disabled={loading}
+                    subtle={mostRecentProject ? `Mis à jour ${formatRelativeDate(mostRecentProject.updated_at)}` : null}
+                  />
+                  <DashboardShortcutCard
+                    label="SFX"
+                    description="3 transitions (film roll, whoosh, flash) et 3 effets (pop, ding, boom) prêts à coller dans un clip."
+                    icon={<AudioLines className="h-5 w-5" />}
+                    onClick={() => navigate("/asset-bank?tab=sfx")}
+                  />
                 </div>
               </div>
-
             </div>
           </div>
 
