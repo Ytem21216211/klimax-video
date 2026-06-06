@@ -54,7 +54,7 @@ import {
 
 const BASE_CANVAS_WIDTH = 1080;
 const BASE_CANVAS_HEIGHT = 1920;
-const TRANSCRIPTION_PIPELINE_VERSION = "caption-elision-logo-brand-v4";
+const TRANSCRIPTION_PIPELINE_VERSION = "caption-elision-logo-brand-v5";
 
 const antiShadowbanSteps = [
   "Variation captions et hooks par export",

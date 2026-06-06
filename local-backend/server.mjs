@@ -28,7 +28,7 @@ const logoAnimationSourceCandidate = "/Users/juliengoussale/Downloads/pop up kli
 const logoAnimationPath = path.join(systemRoot, "klimax-pop-up.mov");
 const whisperModelName = process.env.KLIMAX_WHISPER_MODEL || "tiny";
 const port = Number(process.env.KLIMAX_BACKEND_PORT || 8787);
-const transcriptionPipelineVersion = "caption-elision-logo-brand-v4";
+const transcriptionPipelineVersion = "caption-elision-logo-brand-v5";
 
 const app = express();
 

@@ -51,6 +51,25 @@ const assertFrenchElisionMerging = () => {
   if (text !== "on fait l'appel demain") {
     throw new Error(`Fusion élision française invalide: ${text}`);
   }
+
+  const splitWords = mergeFrenchElisionWords([
+    { word: "sur", start: 0, end: 0.1 },
+    { word: "l", start: 0.1, end: 0.2 },
+    { word: "'application", start: 0.2, end: 0.5 },
+    { word: "qu", start: 0.5, end: 0.6 },
+    { word: "'on", start: 0.6, end: 0.7 },
+    { word: "d", start: 0.7, end: 0.8 },
+    { word: "`un", start: 0.8, end: 0.9 },
+    { word: "n", start: 0.9, end: 1 },
+    { word: "'", start: 1, end: 1.02 },
+    { word: "en", start: 1.02, end: 1.1 },
+    { word: "t", start: 1.1, end: 1.12 },
+    { word: "'auras", start: 1.12, end: 1.3 },
+  ]);
+  const splitText = splitWords.map((word) => word.word).join(" ");
+  if (splitText !== "sur l'application qu'on d'un n'en t'auras") {
+    throw new Error(`Fusion élision découpée invalide: ${splitText}`);
+  }
 };
 
 const assertHookBubbleCentering = async () => {
