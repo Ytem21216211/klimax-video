@@ -36,21 +36,26 @@ const app = express();
 const defaultSubtitleStyle = {
   stylePreset: "impact",
   fontFamily: "Arial Bold",
-  fontSize: 34,
+  fontSize: 40,
   textColor: "#ffffff",
   strokeEnabled: true,
   strokeColor: "#000000",
-  strokeWidth: 4,
+  strokeWidth: 6,
   shadowEnabled: true,
   shadowColor: "#000000",
-  shadowOpacity: 0.85,
-  shadowDistance: 4,
-  shadowBlur: 10,
+  shadowOpacity: 0.9,
+  shadowDistance: 6,
+  shadowBlur: 18,
   animationPreset: "pop",
   wordsPerLine: 2,
   introVerticalPosition: "lower",
   replyVerticalPosition: "middle",
   fontWeight: 900,
+  fontScaleX: 104,
+  keywordHighlightEnabled: true,
+  keywordColor: "#ffe14a",
+  keywordSecondaryColor: "#45f08a",
+  keywordTerms: "",
 };
 
 const defaultHookStyle = {
@@ -178,11 +183,22 @@ const mergeProjectSettings = (settings = {}) => {
 
   subtitleStyle.fontSize = safeNumber(subtitleStyle.fontSize || settings.subtitleSize, defaults.subtitleSize);
   subtitleStyle.wordsPerLine = clamp(Math.round(safeNumber(subtitleStyle.wordsPerLine, 2)), 2, 2);
-  subtitleStyle.strokeWidth = clamp(safeNumber(subtitleStyle.strokeWidth, 4), 0, 12);
-  subtitleStyle.shadowDistance = clamp(safeNumber(subtitleStyle.shadowDistance, 4), 0, 18);
-  subtitleStyle.shadowBlur = clamp(safeNumber(subtitleStyle.shadowBlur, 10), 0, 28);
+  subtitleStyle.strokeWidth = clamp(safeNumber(subtitleStyle.strokeWidth, 4), 0, 14);
+  subtitleStyle.shadowDistance = clamp(safeNumber(subtitleStyle.shadowDistance, 4), 0, 22);
+  subtitleStyle.shadowBlur = clamp(safeNumber(subtitleStyle.shadowBlur, 10), 0, 36);
   subtitleStyle.shadowOpacity = clamp(safeNumber(subtitleStyle.shadowOpacity, 0.85), 0, 1);
   subtitleStyle.fontWeight = safeNumber(subtitleStyle.fontWeight, 900);
+  subtitleStyle.fontScaleX = clamp(safeNumber(subtitleStyle.fontScaleX, defaults.subtitleStyle.fontScaleX), 90, 118);
+  subtitleStyle.keywordHighlightEnabled = subtitleStyle.keywordHighlightEnabled !== false;
+  subtitleStyle.keywordColor = /^#[0-9a-fA-F]{6}$/.test(String(subtitleStyle.keywordColor || ""))
+    ? subtitleStyle.keywordColor
+    : defaults.subtitleStyle.keywordColor;
+  subtitleStyle.keywordSecondaryColor = /^#[0-9a-fA-F]{6}$/.test(String(subtitleStyle.keywordSecondaryColor || ""))
+    ? subtitleStyle.keywordSecondaryColor
+    : defaults.subtitleStyle.keywordSecondaryColor;
+  subtitleStyle.keywordTerms = Array.isArray(subtitleStyle.keywordTerms)
+    ? subtitleStyle.keywordTerms.join(", ")
+    : String(subtitleStyle.keywordTerms || "");
   if (!["none", "pop", "bounce", "rise"].includes(subtitleStyle.animationPreset)) {
     subtitleStyle.animationPreset = defaults.subtitleStyle.animationPreset;
   }
@@ -584,10 +600,19 @@ const hexToAssColor = (value, alpha = 0) => {
   const clean = String(value || "#ffffff").replace("#", "");
   if (!/^[0-9a-fA-F]{6}$/.test(clean)) return "&H00FFFFFF";
   const aa = clamp(Math.round(alpha), 0, 255).toString(16).padStart(2, "0").toUpperCase();
-  const rr = clean.slice(0, 2);
-  const gg = clean.slice(2, 4);
-  const bb = clean.slice(4, 6);
+  const rr = clean.slice(0, 2).toUpperCase();
+  const gg = clean.slice(2, 4).toUpperCase();
+  const bb = clean.slice(4, 6).toUpperCase();
   return `&H${aa}${bb}${gg}${rr}`;
+};
+
+const hexToAssOverrideColor = (value, fallback = "#ffffff") => {
+  const clean = String(value || fallback).replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return hexToAssOverrideColor(fallback, "#ffffff");
+  const rr = clean.slice(0, 2).toUpperCase();
+  const gg = clean.slice(2, 4).toUpperCase();
+  const bb = clean.slice(4, 6).toUpperCase();
+  return `&H${bb}${gg}${rr}&`;
 };
 
 const assTime = (seconds) => {
@@ -708,11 +733,90 @@ const resolveFontDescriptor = async (fontFamily, fontWeight = 800) => {
   return descriptor;
 };
 
-const assEscape = (text) =>
+const keywordStopWords = new Set([
+  "alors", "apres", "assez", "aucun", "aussi", "autant", "avec", "avoir", "bien", "cette",
+  "comme", "dans", "deja", "donc", "elle", "elles", "encore", "entre", "fait", "faire",
+  "faut", "il", "ils", "jour", "la", "le", "les", "leur", "mais", "mes", "mon", "nous",
+  "pas", "plus", "pour", "quand", "que", "qui", "quoi", "sans", "ses", "son", "sont",
+  "sur", "tes", "toi", "ton", "tous", "tout", "tres", "une", "vraiment", "vous",
+]);
+
+const curatedKeywordTerms = new Set([
+  "klimax", "climax", "application", "taille", "compte", "femmes", "statistiques",
+  "duree", "rapport", "rapports", "probleme", "exercice", "respiration", "confiance",
+  "temps", "mois", "jours", "petit", "grande", "grand", "double", "doubler",
+]);
+
+const normalizeKeywordToken = (value) =>
+  String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9%]+/g, "")
+    .toLowerCase();
+
+const parseKeywordTerms = (terms) =>
+  String(terms || "")
+    .split(/[,;\n]+/)
+    .map(normalizeKeywordToken)
+    .filter(Boolean);
+
+const buildSubtitleKeywordSet = (clipTranscription, subtitleStyle) => {
+  if (subtitleStyle.keywordHighlightEnabled === false) return new Set();
+
+  const configured = parseKeywordTerms(subtitleStyle.keywordTerms);
+  const scores = new Map(configured.map((term) => [term, 100]));
+  const words = clipTranscription?.words?.length
+    ? clipTranscription.words.map((item) => item.word)
+    : (clipTranscription?.cues || []).flatMap((cue) => stripCaptionPunctuation(cue.text).split(" "));
+
+  for (const rawWord of words) {
+    const token = normalizeKeywordToken(rawWord);
+    if (!token || keywordStopWords.has(token)) continue;
+    const isNumber = /^[0-9]+%?$/.test(token);
+    const isCurated = curatedKeywordTerms.has(token);
+    if (!isNumber && !isCurated && token.length < 5) continue;
+    const score = (scores.get(token) || 0) + 1 + (isNumber ? 8 : 0) + (isCurated ? 6 : 0) + Math.min(token.length / 4, 3);
+    scores.set(token, score);
+  }
+
+  return new Set(
+    Array.from(scores.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 22)
+      .map(([term]) => term)
+  );
+};
+
+const assEscapePlain = (text) =>
   String(text || "")
     .replace(/\r?\n/g, "\\N")
     .replace(/[{}]/g, "")
     .trim();
+
+const formatAssSubtitleText = (text, keywordSet, subtitleStyle) => {
+  if (!keywordSet?.size) return assEscapePlain(text);
+
+  const primary = hexToAssOverrideColor(subtitleStyle.textColor, "#ffffff");
+  const outline = hexToAssOverrideColor(subtitleStyle.strokeColor, "#000000");
+  const palette = [
+    hexToAssOverrideColor(subtitleStyle.keywordColor, defaultSubtitleStyle.keywordColor),
+    hexToAssOverrideColor(subtitleStyle.keywordSecondaryColor, defaultSubtitleStyle.keywordSecondaryColor),
+  ];
+  let highlighted = 0;
+
+  return String(text || "")
+    .split(/(\s+)/)
+    .map((part) => {
+      if (!part.trim()) return part.replace(/\r?\n/g, "\\N");
+      const escaped = assEscapePlain(part);
+      const token = normalizeKeywordToken(part);
+      if (!token || (!keywordSet.has(token) && !/^[0-9]+%?$/.test(token))) return escaped;
+      const color = palette[highlighted % palette.length];
+      highlighted += 1;
+      return `{\\c${color}\\3c${outline}\\b1}${escaped}{\\c${primary}\\3c${outline}\\b1}`;
+    })
+    .join("");
+};
 
 const subtitleYForStage = (stage, subtitleStyle) => {
   const introPosition = subtitleStyle.introVerticalPosition || "lower";
@@ -723,18 +827,41 @@ const subtitleYForStage = (stage, subtitleStyle) => {
   return introPosition === "middle" ? 1260 : 1450;
 };
 
-const subtitleAnimationOverride = (subtitleStyle, x, y, shadowDown) => {
-  const blur = Math.max(0, Math.min(4, safeNumber(subtitleStyle.shadowBlur, 10) / 8));
+const resolveSubtitleRenderStyle = (subtitleStyle = defaultSubtitleStyle) => {
+  const baseFontSize = safeNumber(subtitleStyle.fontSize, defaultSubtitleStyle.fontSize);
+  const userOutline = subtitleStyle.strokeEnabled === false ? 0 : safeNumber(subtitleStyle.strokeWidth, defaultSubtitleStyle.strokeWidth);
+  const userShadow = subtitleStyle.shadowEnabled === false ? 0 : safeNumber(subtitleStyle.shadowDistance, defaultSubtitleStyle.shadowDistance);
+  const userBlur = subtitleStyle.shadowEnabled === false ? 0 : safeNumber(subtitleStyle.shadowBlur, defaultSubtitleStyle.shadowBlur);
+
+  return {
+    ...subtitleStyle,
+    fontSize: clamp(Math.round(baseFontSize * 1.08), 38, 96),
+    fontWeight: Math.max(900, safeNumber(subtitleStyle.fontWeight, 900)),
+    fontScaleX: clamp(safeNumber(subtitleStyle.fontScaleX, defaultSubtitleStyle.fontScaleX), 98, 112),
+    outline: clamp(Math.max(userOutline, 5), 0, 14),
+    shadowDistance: clamp(Math.max(userShadow, 5), 0, 22),
+    shadowBlur: clamp(Math.max(userBlur, 16), 0, 36),
+    shadowOpacity: clamp(Math.max(safeNumber(subtitleStyle.shadowOpacity, 0.9), 0.82), 0, 1),
+    strokeColor: subtitleStyle.strokeColor || "#000000",
+    shadowColor: subtitleStyle.shadowColor || "#000000",
+    textColor: subtitleStyle.textColor || "#ffffff",
+  };
+};
+
+const subtitleAnimationOverride = (subtitleStyle, x, y, shadowDown, options = {}) => {
+  const yOffset = safeNumber(options.yOffset, 0);
+  const blur = Math.max(0, Math.min(8, safeNumber(options.blur ?? subtitleStyle.shadowBlur, 10) / 5));
+  const targetY = y + yOffset;
   const base = [`\\an5`, `\\xshad0`, `\\yshad${shadowDown}`, `\\blur${blur.toFixed(1)}`];
   const animation = subtitleStyle.animationPreset || "pop";
 
   if (animation === "rise") {
-    return `{${[...base, `\\move(${x},${y + 52},${x},${y},0,260)`].join("")}}`;
+    return `{${[...base, `\\move(${x},${targetY + 52},${x},${targetY},0,260)`].join("")}}`;
   }
   if (animation === "bounce") {
     return `{${[
       ...base,
-      `\\pos(${x},${y})`,
+      `\\pos(${x},${targetY})`,
       "\\fscx76",
       "\\fscy76",
       "\\t(0,210,\\fscx114\\fscy114)",
@@ -742,11 +869,11 @@ const subtitleAnimationOverride = (subtitleStyle, x, y, shadowDown) => {
     ].join("")}}`;
   }
   if (animation === "none") {
-    return `{${[...base, `\\pos(${x},${y})`].join("")}}`;
+    return `{${[...base, `\\pos(${x},${targetY})`].join("")}}`;
   }
   return `{${[
     ...base,
-    `\\pos(${x},${y})`,
+    `\\pos(${x},${targetY})`,
     "\\fscx70",
     "\\fscy70",
     "\\t(0,150,\\fscx112\\fscy112)",
@@ -756,25 +883,38 @@ const subtitleAnimationOverride = (subtitleStyle, x, y, shadowDown) => {
 
 const buildAssSubtitleFile = async (project, clip, clipTranscription) => {
   const subtitleStyle = project.settings?.subtitleStyle || defaultSubtitleStyle;
+  const renderStyle = resolveSubtitleRenderStyle(subtitleStyle);
   const clipLayout = normalizeClipLayout(clip);
-  const font = await resolveFontDescriptor(subtitleStyle.fontFamily, subtitleStyle.fontWeight || 800);
-  const outline = subtitleStyle.strokeEnabled ? safeNumber(subtitleStyle.strokeWidth, 4) : 0;
-  const shadow = subtitleStyle.shadowEnabled ? safeNumber(subtitleStyle.shadowDistance, 4) : 0;
-  const backAlpha = subtitleStyle.shadowEnabled
-    ? Math.round((1 - safeNumber(subtitleStyle.shadowOpacity, 0.85)) * 255)
-    : 255;
-  const primary = hexToAssColor(subtitleStyle.textColor, 0);
-  const outlineColor = hexToAssColor(subtitleStyle.strokeColor, 0);
-  const backColor = hexToAssColor(subtitleStyle.shadowColor, backAlpha);
+  const font = await resolveFontDescriptor(renderStyle.fontFamily, renderStyle.fontWeight);
+  const outline = renderStyle.outline;
+  const shadowOffset = Math.round(renderStyle.shadowDistance);
+  const shadowAlpha = Math.round((1 - renderStyle.shadowOpacity) * 255);
+  const primary = hexToAssColor(renderStyle.textColor, 0);
+  const outlineColor = hexToAssColor(renderStyle.strokeColor, 0);
+  const shadowColor = hexToAssColor(renderStyle.shadowColor, shadowAlpha);
   const y = clipLayout.subtitlePosition.y ?? subtitleYForStage(clip.stage, subtitleStyle);
   const x = clipLayout.subtitlePosition.x ?? 540;
-  const fontSize = safeNumber(subtitleStyle.fontSize, 34);
-  const fontWeight = safeNumber(subtitleStyle.fontWeight, 900) >= 700 ? -1 : 0;
-  const shadowDown = Math.max(0, Math.round(shadow));
-  const cueOverride = subtitleAnimationOverride(subtitleStyle, x, y, shadowDown);
+  const fontSize = renderStyle.fontSize;
+  const fontWeight = -1;
+  const keywordSet = buildSubtitleKeywordSet(clipTranscription, renderStyle);
+  const mainOverride = subtitleAnimationOverride(renderStyle, x, y, 0, { blur: 0 });
+  const shadowOverride = subtitleAnimationOverride(renderStyle, x, y, 0, {
+    yOffset: shadowOffset,
+    blur: renderStyle.shadowBlur,
+  });
   const cues = clipTranscription?.cues?.length
     ? clipTranscription.cues
     : [{ start: 0, end: 2, text: stripCaptionPunctuation(clip.subtitle || "Sous titres automatiques") }];
+  const events = cues.flatMap((cue) => {
+    const start = assTime(cue.start);
+    const end = assTime(cue.end);
+    const shadowText = assEscapePlain(cue.text);
+    const mainText = formatAssSubtitleText(cue.text, keywordSet, renderStyle);
+    return [
+      `Dialogue: 0,${start},${end},KlimaxShadow,,0,0,0,,${shadowOverride}${shadowText}`,
+      `Dialogue: 1,${start},${end},Klimax,,0,0,0,,${mainOverride}${mainText}`,
+    ];
+  });
 
   const ass = [
     "[Script Info]",
@@ -784,14 +924,12 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription) => {
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    `Style: Klimax,${font.assName},${fontSize},${primary},${primary},${outlineColor},${backColor},${fontWeight},0,0,0,100,100,0,0,1,${outline},${shadow},5,0,0,0,1`,
+    `Style: KlimaxShadow,${font.assName},${fontSize},${shadowColor},${shadowColor},${shadowColor},${shadowColor},${fontWeight},0,0,0,${renderStyle.fontScaleX},100,0,0,1,${Math.max(outline + 3, 8)},0,5,0,0,0,1`,
+    `Style: Klimax,${font.assName},${fontSize},${primary},${primary},${outlineColor},${shadowColor},${fontWeight},0,0,0,${renderStyle.fontScaleX},100,0,0,1,${outline},0,5,0,0,0,1`,
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-    ...cues.map(
-      (cue) =>
-        `Dialogue: 0,${assTime(cue.start)},${assTime(cue.end)},Klimax,,0,0,0,,${cueOverride}${assEscape(cue.text)}`
-    ),
+    ...events,
   ].join("\n");
 
   return writeTextFile(project.id, `${clip.id}-subtitles`, ass, "ass");

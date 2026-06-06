@@ -73,40 +73,50 @@ const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
   impact: {
     stylePreset: "impact",
     fontFamily: "Arial Bold",
-    fontSize: 34,
+    fontSize: 40,
     textColor: "#ffffff",
     strokeEnabled: true,
     strokeColor: "#000000",
-    strokeWidth: 4,
+    strokeWidth: 6,
     shadowEnabled: true,
     shadowColor: "#000000",
-    shadowOpacity: 0.85,
-    shadowDistance: 4,
-    shadowBlur: 10,
+    shadowOpacity: 0.9,
+    shadowDistance: 6,
+    shadowBlur: 18,
     animationPreset: "pop",
     wordsPerLine: 2,
     introVerticalPosition: "lower",
     replyVerticalPosition: "middle",
     fontWeight: 900,
+    fontScaleX: 104,
+    keywordHighlightEnabled: true,
+    keywordColor: "#ffe14a",
+    keywordSecondaryColor: "#45f08a",
+    keywordTerms: "",
   },
   clean: {
     stylePreset: "clean",
     fontFamily: "Helvetica",
-    fontSize: 34,
+    fontSize: 40,
     textColor: "#ffffff",
-    strokeEnabled: false,
+    strokeEnabled: true,
     strokeColor: "#000000",
-    strokeWidth: 0,
+    strokeWidth: 5,
     shadowEnabled: true,
     shadowColor: "#000000",
-    shadowOpacity: 0.75,
-    shadowDistance: 3,
-    shadowBlur: 12,
+    shadowOpacity: 0.88,
+    shadowDistance: 5,
+    shadowBlur: 16,
     animationPreset: "rise",
     wordsPerLine: 2,
     introVerticalPosition: "lower",
     replyVerticalPosition: "middle",
-    fontWeight: 800,
+    fontWeight: 900,
+    fontScaleX: 103,
+    keywordHighlightEnabled: true,
+    keywordColor: "#ffe14a",
+    keywordSecondaryColor: "#45f08a",
+    keywordTerms: "",
   },
   highlight: {
     stylePreset: "highlight",
@@ -126,6 +136,11 @@ const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
     introVerticalPosition: "lower",
     replyVerticalPosition: "middle",
     fontWeight: 900,
+    fontScaleX: 104,
+    keywordHighlightEnabled: true,
+    keywordColor: "#ffe14a",
+    keywordSecondaryColor: "#45f08a",
+    keywordTerms: "",
   },
   capcut: {
     stylePreset: "capcut",
@@ -145,6 +160,11 @@ const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
     introVerticalPosition: "lower",
     replyVerticalPosition: "middle",
     fontWeight: 900,
+    fontScaleX: 105,
+    keywordHighlightEnabled: true,
+    keywordColor: "#ffe14a",
+    keywordSecondaryColor: "#45f08a",
+    keywordTerms: "",
   },
   punch: {
     stylePreset: "punch",
@@ -164,6 +184,11 @@ const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
     introVerticalPosition: "lower",
     replyVerticalPosition: "middle",
     fontWeight: 900,
+    fontScaleX: 106,
+    keywordHighlightEnabled: true,
+    keywordColor: "#ffe14a",
+    keywordSecondaryColor: "#45f08a",
+    keywordTerms: "",
   },
   neon: {
     stylePreset: "neon",
@@ -183,6 +208,11 @@ const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
     introVerticalPosition: "lower",
     replyVerticalPosition: "middle",
     fontWeight: 900,
+    fontScaleX: 104,
+    keywordHighlightEnabled: true,
+    keywordColor: "#ffe14a",
+    keywordSecondaryColor: "#45f08a",
+    keywordTerms: "",
   },
 };
 
@@ -235,6 +265,17 @@ const snapToValue = (value: number, target: number, threshold = 18) =>
   Math.abs(value - target) <= threshold ? target : value;
 const canvasFontSize = (size: number) => `${(size / BASE_CANVAS_WIDTH) * 100}cqw`;
 const canvasUnit = (value: number) => `${(value / BASE_CANVAS_WIDTH) * 100}cqw`;
+const previewKeywordStopWords = new Set(["mais", "avec", "pour", "dans", "plus", "tout", "tous", "elle", "cette", "vraiment"]);
+const normalizePreviewKeyword = (value: string) =>
+  value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9%]+/g, "")
+    .toLowerCase();
+const isPreviewKeyword = (value: string) => {
+  const token = normalizePreviewKeyword(value);
+  return Boolean(token && !previewKeywordStopWords.has(token) && (token === "klimax" || /^[0-9]+%?$/.test(token) || token.length >= 5));
+};
 const formatDuration = (seconds = 0) => {
   const total = Math.max(0, Math.round(seconds));
   const minutes = Math.floor(total / 60);
@@ -495,23 +536,26 @@ const ClimaxVideoEditor = () => {
   );
   const mergedHookStyle = useMemo(() => ({ ...DEFAULT_HOOK_STYLE, ...hookStyle }), [hookStyle]);
   const subtitlePreviewStyle = useMemo(
-    () => ({
-      fontSize: canvasFontSize(mergedSubtitleStyle.fontSize || subtitleSize),
+    () => {
+      const previewFontSize = clampValue(Math.round((mergedSubtitleStyle.fontSize || subtitleSize) * 1.08), 38, 96);
+      const previewStrokeWidth = Math.max(5, mergedSubtitleStyle.strokeEnabled === false ? 0 : mergedSubtitleStyle.strokeWidth || 5);
+      const previewShadowDistance = Math.max(5, mergedSubtitleStyle.shadowEnabled === false ? 0 : mergedSubtitleStyle.shadowDistance || 5);
+      const previewShadowBlur = Math.max(16, mergedSubtitleStyle.shadowEnabled === false ? 0 : mergedSubtitleStyle.shadowBlur ?? 16);
+
+      return {
+      fontSize: canvasFontSize(previewFontSize),
       color: mergedSubtitleStyle.textColor || "#ffffff",
       fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
-      fontWeight: mergedSubtitleStyle.fontWeight || 900,
-      WebkitTextStroke: mergedSubtitleStyle.strokeEnabled
-        ? `${canvasUnit(mergedSubtitleStyle.strokeWidth || 4)} ${mergedSubtitleStyle.strokeColor || "#000000"}`
-        : undefined,
-      textShadow: mergedSubtitleStyle.shadowEnabled
-        ? `0 ${canvasUnit(mergedSubtitleStyle.shadowDistance || 4)} 0 ${hexToRgba(
+      fontWeight: Math.max(900, mergedSubtitleStyle.fontWeight || 900),
+      WebkitTextStroke: `${canvasUnit(previewStrokeWidth)} ${mergedSubtitleStyle.strokeColor || "#000000"}`,
+      textShadow: `0 ${canvasUnit(previewShadowDistance)} 0 ${hexToRgba(
             mergedSubtitleStyle.shadowColor || "#000000",
-            mergedSubtitleStyle.shadowOpacity ?? 0.85
-          )}, 0 ${canvasUnit(mergedSubtitleStyle.shadowDistance || 4)} ${canvasUnit(mergedSubtitleStyle.shadowBlur ?? 14)} ${hexToRgba(
+            Math.max(0.82, mergedSubtitleStyle.shadowOpacity ?? 0.9)
+          )}, 0 ${canvasUnit(previewShadowDistance)} ${canvasUnit(previewShadowBlur)} ${hexToRgba(
             mergedSubtitleStyle.shadowColor || "#000000",
-            Math.min(0.55, (mergedSubtitleStyle.shadowOpacity ?? 0.85) * 0.55)
-          )}`
-        : undefined,
+            Math.min(0.62, Math.max(0.82, mergedSubtitleStyle.shadowOpacity ?? 0.9) * 0.62)
+          )}`,
+      transform: `scaleX(${(mergedSubtitleStyle.fontScaleX || 104) / 100})`,
       animation:
         mergedSubtitleStyle.animationPreset === "pop"
           ? "klimaxSubtitlePop 360ms cubic-bezier(.2,1.35,.3,1)"
@@ -520,7 +564,8 @@ const ClimaxVideoEditor = () => {
             : mergedSubtitleStyle.animationPreset === "rise"
               ? "klimaxSubtitleRise 360ms ease-out"
               : undefined,
-    }),
+    };
+    },
     [mergedSubtitleStyle, subtitleSize]
   );
   React.useEffect(() => {
@@ -528,6 +573,20 @@ const ClimaxVideoEditor = () => {
   }, [selectedClip?.id]);
   const selectedAutoSubtitle =
     formatSubtitleSingleLine(selectedTranscription?.cues?.[0]?.text || selectedClip?.subtitle || (isTranscribing ? "Transcription en cours" : "Transcription en attente"));
+  const subtitlePreviewText = useMemo(() => {
+    if (mergedSubtitleStyle.keywordHighlightEnabled === false) return selectedAutoSubtitle;
+    return selectedAutoSubtitle.split(/(\s+)/).map((part, index) => {
+      if (!part.trim() || !isPreviewKeyword(part)) return <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>;
+      const color = index % 2 === 0
+        ? mergedSubtitleStyle.keywordColor || DEFAULT_SUBTITLE_STYLE.keywordColor
+        : mergedSubtitleStyle.keywordSecondaryColor || DEFAULT_SUBTITLE_STYLE.keywordSecondaryColor;
+      return (
+        <span key={`${part}-${index}`} style={{ color }}>
+          {part}
+        </span>
+      );
+    });
+  }, [mergedSubtitleStyle, selectedAutoSubtitle]);
   const timeline = useMemo(
     () => clips.length > 0
       ? clips.map((clip, index) => ({
@@ -1108,7 +1167,7 @@ const ClimaxVideoEditor = () => {
                           style={{ ...subtitlePreviewStyle, touchAction: "none" }}
                           onPointerDown={(event) => startClipDrag("subtitle", event)}
                         >
-                          {selectedAutoSubtitle}
+                          {subtitlePreviewText}
                         </p>
                       </div>
                     </>
@@ -1127,7 +1186,7 @@ const ClimaxVideoEditor = () => {
                           style={{ ...subtitlePreviewStyle, touchAction: "none" }}
                           onPointerDown={(event) => startClipDrag("subtitle", event)}
                         >
-                          {selectedAutoSubtitle}
+                          {subtitlePreviewText}
                         </p>
                       </div>
                       {klimaxLogoEnabled && (
@@ -1554,6 +1613,47 @@ const ClimaxVideoEditor = () => {
                             />
                           </div>
                         </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-bold">Mots clés colorés</p>
+                              <p className="text-xs text-white/45">Auto-détection des mots forts, nombres, Klimax et termes importants.</p>
+                            </div>
+                            <Switch
+                              checked={mergedSubtitleStyle.keywordHighlightEnabled !== false}
+                              onCheckedChange={(checked) => setSubtitleStyle((current) => ({ ...current, keywordHighlightEnabled: checked }))}
+                            />
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div>
+                              <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Couleur 1</Label>
+                              <input
+                                type="color"
+                                value={mergedSubtitleStyle.keywordColor || DEFAULT_SUBTITLE_STYLE.keywordColor}
+                                onChange={(e) => setSubtitleStyle((current) => ({ ...current, keywordColor: e.target.value }))}
+                                className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-transparent"
+                              />
+                            </div>
+                            <div>
+                              <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Couleur 2</Label>
+                              <input
+                                type="color"
+                                value={mergedSubtitleStyle.keywordSecondaryColor || DEFAULT_SUBTITLE_STYLE.keywordSecondaryColor}
+                                onChange={(e) => setSubtitleStyle((current) => ({ ...current, keywordSecondaryColor: e.target.value }))}
+                                className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-transparent"
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Mots forcés</Label>
+                            <input
+                              value={mergedSubtitleStyle.keywordTerms || ""}
+                              onChange={(e) => setSubtitleStyle((current) => ({ ...current, keywordTerms: e.target.value }))}
+                              placeholder="klimax, exercice, confiance"
+                              className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-black px-3 text-sm text-white outline-none placeholder:text-white/25"
+                            />
+                          </div>
+                        </div>
                         <div className="grid gap-3 md:grid-cols-2">
                           <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
                             <div className="flex items-center justify-between gap-3">
@@ -1567,7 +1667,7 @@ const ClimaxVideoEditor = () => {
                               <Slider
                                 value={[mergedSubtitleStyle.strokeWidth || 4]}
                                 min={0}
-                                max={8}
+                                max={14}
                                 step={1}
                                 onValueChange={([value]) => setSubtitleStyle((current) => ({ ...current, strokeWidth: value }))}
                               />
@@ -1585,7 +1685,7 @@ const ClimaxVideoEditor = () => {
                               <Slider
                                 value={[mergedSubtitleStyle.shadowDistance || 4]}
                                 min={0}
-                                max={10}
+                                max={22}
                                 step={1}
                                 onValueChange={([value]) => setSubtitleStyle((current) => ({ ...current, shadowDistance: value }))}
                               />
@@ -1598,7 +1698,7 @@ const ClimaxVideoEditor = () => {
                               <Slider
                                 value={[mergedSubtitleStyle.shadowBlur ?? 14]}
                                 min={0}
-                                max={28}
+                                max={36}
                                 step={1}
                                 onValueChange={([value]) => setSubtitleStyle((current) => ({ ...current, shadowBlur: value }))}
                               />

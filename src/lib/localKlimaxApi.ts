@@ -20,6 +20,11 @@ export type LocalSubtitleStyleSettings = {
   introVerticalPosition?: "lower" | "middle";
   replyVerticalPosition?: "lower" | "middle";
   fontWeight?: number;
+  fontScaleX?: number;
+  keywordHighlightEnabled?: boolean;
+  keywordColor?: string;
+  keywordSecondaryColor?: string;
+  keywordTerms?: string;
 };
 
 export type LocalHookStyleSettings = {

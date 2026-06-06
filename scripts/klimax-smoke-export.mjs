@@ -193,6 +193,11 @@ const createSmokeProject = async () => {
       animationPreset: "pop",
       wordsPerLine: 2,
       fontWeight: 900,
+      fontScaleX: 104,
+      keywordHighlightEnabled: true,
+      keywordColor: "#ffe14a",
+      keywordSecondaryColor: "#45f08a",
+      keywordTerms: "klimax, taille, compte, exercice",
     },
     hookStyle: {
       bubbleColor: "#ffffff",
@@ -281,6 +286,10 @@ const main = async () => {
     if (!exported?.sizeBytes || exported.sizeBytes < 100000) failures.push("file too small");
     if (!String(exported?.log || "").includes("klimax-pop-up.mov")) failures.push("logo animation not used");
     if (!String(exported?.log || "").includes("Montserrat")) failures.push("Montserrat not used");
+    const assPath = path.join(projectRoot, "local-data", "klimax", "render-text", `${smokeProjectId}-intro-smoke-0-subtitles.ass`);
+    const assText = fsSync.existsSync(assPath) ? await fs.readFile(assPath, "utf8") : "";
+    if (!assText.includes("Style: KlimaxShadow")) failures.push("subtitle shadow style missing");
+    if (!assText.includes("\\c&H4AE1FF&") && !assText.includes("\\c&H8AF045&")) failures.push("keyword color override missing");
 
     if (failures.length) {
       throw new Error(`Smoke export failed: ${failures.join(", ")}`);
