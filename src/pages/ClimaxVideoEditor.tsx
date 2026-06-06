@@ -450,6 +450,78 @@ const ClimaxVideoEditor = () => {
     () => (localProject?.exports?.length ? localProject.exports : localProject?.export ? [localProject.export] : []),
     [localProject?.export, localProject?.exports]
   );
+  const projectDiagnostics = useMemo(() => {
+    const hasSourcePair = Boolean(localProject?.sourceGroup?.person1 && localProject?.sourceGroup?.person2);
+    const hasIntro = clips.some((clip) => clip.stage === "intro");
+    const hasReply = clips.some((clip) => clip.stage === "reply");
+    const transcriptionStatus = localProject?.transcription?.status || "idle";
+    const transcriptionClips = localProject?.transcription?.clips?.length || 0;
+    const replyLogoMoments = (localProject?.transcription?.clips || [])
+      .filter((clip) => clip.stage === "reply")
+      .reduce((total, clip) => total + (clip.logoMoments?.length || 0), 0);
+
+    return [
+      {
+        label: "Source vidéo",
+        detail: hasSourcePair ? "Personne 1 et personne 2 liées" : "Choisis une vidéo dans Nouveau projet",
+        ok: hasSourcePair,
+        required: true,
+      },
+      {
+        label: "Segments",
+        detail: hasIntro && hasReply ? `${clips.length} segment(s) prêts` : "Ajoute personne 1 et personne 2",
+        ok: hasIntro && hasReply,
+        required: true,
+      },
+      {
+        label: "Transcription",
+        detail:
+          transcriptionStatus === "completed"
+            ? `${transcriptionClips} segment(s) transcrits`
+            : transcriptionStatus === "running"
+              ? "Transcription en cours"
+              : "Sera générée avant l'export",
+        ok: transcriptionStatus === "completed",
+        required: false,
+      },
+      {
+        label: "Sous-titres",
+        detail: `${mergedSubtitleStyle.fontFamily || "Police"} · ${mergedSubtitleStyle.animationPreset || "pop"} · 2 mots max`,
+        ok: true,
+        required: false,
+      },
+      {
+        label: "Logo Klimax",
+        detail: klimaxLogoEnabled
+          ? replyLogoMoments
+            ? `${replyLogoMoments} moment(s) détecté(s)`
+            : "Actif, affiché quand Klimax est détecté"
+          : "Désactivé",
+        ok: klimaxLogoEnabled,
+        required: false,
+      },
+      {
+        label: "Assets",
+        detail: `${bankByCategory.broll.length} B-roll · ${bankByCategory.image.length} image · ${bankByCategory.music.length} musique`,
+        ok: bankAssets.length > 0,
+        required: false,
+      },
+    ];
+  }, [
+    bankAssets.length,
+    bankByCategory.broll.length,
+    bankByCategory.image.length,
+    bankByCategory.music.length,
+    clips,
+    klimaxLogoEnabled,
+    localProject?.sourceGroup?.person1,
+    localProject?.sourceGroup?.person2,
+    localProject?.transcription?.clips,
+    localProject?.transcription?.status,
+    mergedSubtitleStyle.animationPreset,
+    mergedSubtitleStyle.fontFamily,
+  ]);
+  const canStartRender = projectDiagnostics.filter((item) => item.required).every((item) => item.ok);
 
   const selectBankAsset = (category: Exclude<KlimaxAssetCategory, "video">, assetId: string) => {
     if (!selectedClip) return;
@@ -635,6 +707,10 @@ const ClimaxVideoEditor = () => {
 
   const renderCurrentProject = async () => {
     if (!projectId || isRendering) return;
+    if (!canStartRender) {
+      setRenderError("Ajoute d'abord une source vidéo avec personne 1 et personne 2, puis les deux segments du projet.");
+      return;
+    }
     setIsRendering(true);
     setRenderError(null);
 
@@ -730,7 +806,7 @@ const ClimaxVideoEditor = () => {
               Automatique
             </button>
           </div>
-          <Button onClick={renderCurrentProject} disabled={isRendering} className="rounded-full bg-white text-black hover:bg-white/90 font-black disabled:opacity-40">
+          <Button onClick={renderCurrentProject} disabled={isRendering || !canStartRender} className="rounded-full bg-white text-black hover:bg-white/90 font-black disabled:opacity-40">
             <Play className="mr-2 h-4 w-4 fill-current" />
             {isRendering ? "Export..." : "Créer la vidéo"}
           </Button>
@@ -988,6 +1064,42 @@ const ClimaxVideoEditor = () => {
                 >
                   Personne 2
                 </Button>
+              </div>
+
+              <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.25em] text-white/35">Préparation export</p>
+                    <p className="mt-1 text-sm text-white/55">
+                      {canStartRender ? "La vidéo peut être créée." : "Il manque une base avant export."}
+                    </p>
+                  </div>
+                  {canStartRender ? (
+                    <BadgeCheck className="h-5 w-5 text-emerald-200" />
+                  ) : (
+                    <AlertTriangle className="h-5 w-5 text-amber-200" />
+                  )}
+                </div>
+                <div className="mt-4 grid gap-2">
+                  {projectDiagnostics.map((item) => (
+                    <div key={item.label} className="flex items-start gap-3 rounded-2xl border border-white/10 bg-black/35 p-3">
+                      <div
+                        className={cn(
+                          "mt-0.5 h-3 w-3 rounded-full border",
+                          item.ok
+                            ? "border-emerald-200 bg-emerald-300"
+                            : item.required
+                              ? "border-amber-200 bg-amber-300"
+                              : "border-white/20 bg-white/10"
+                        )}
+                      />
+                      <div className="min-w-0">
+                        <p className="text-sm font-black">{item.label}</p>
+                        <p className="text-xs text-white/45">{item.detail}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
 
               {(exportHistory.length > 0 || renderError) && (
