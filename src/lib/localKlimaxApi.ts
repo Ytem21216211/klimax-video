@@ -85,6 +85,7 @@ export type LocalKlimaxProject = {
     subtitleSize?: number;
     musicEnabled?: boolean;
     musicVolumeDb?: number;
+    videoVolumeDb?: number;
     brollEnabled?: boolean;
     autoSfxEnabled?: boolean;
     klimaxLogoEnabled?: boolean;

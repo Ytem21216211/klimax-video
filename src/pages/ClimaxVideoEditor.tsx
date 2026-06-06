@@ -397,6 +397,67 @@ const formatBytes = (bytes = 0) => {
   return `${(bytes / 1024 / 1024).toFixed(1)} Mo`;
 };
 
+const VolumeDial = ({
+  label,
+  value,
+  min,
+  max,
+  baseValue,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  baseValue: number;
+  onChange: (value: number) => void;
+}) => {
+  const percentage = ((value - min) / (max - min)) * 100;
+  const angle = -130 + percentage * 2.6;
+  const markerX = 50 + Math.cos((angle * Math.PI) / 180) * 34;
+  const markerY = 50 + Math.sin((angle * Math.PI) / 180) * 34;
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.2em] text-white/45">{label}</p>
+          <p className="mt-1 text-2xl font-black">{value > 0 ? `+${value}` : value} dB</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => onChange(baseValue)}
+          className="rounded-full border border-white/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-white/55 hover:bg-white/10"
+        >
+          Base
+        </button>
+      </div>
+      <div className="mt-4 flex items-center gap-4">
+        <div
+          className="relative grid h-24 w-24 shrink-0 place-items-center rounded-full border border-white/10 bg-black shadow-inner"
+          style={{
+            background: `conic-gradient(from 220deg, #ffffff ${Math.max(0, percentage)}%, rgba(255,255,255,0.08) 0 100%)`,
+          }}
+        >
+          <div className="absolute inset-2 rounded-full bg-black" />
+          <div
+            className="absolute h-3 w-3 rounded-full bg-white shadow-[0_0_18px_rgba(255,255,255,0.85)]"
+            style={{ left: `${markerX}%`, top: `${markerY}%`, transform: "translate(-50%, -50%)" }}
+          />
+          <span className="relative text-[10px] font-black uppercase tracking-[0.18em] text-white/45">dB</span>
+        </div>
+        <div className="min-w-0 flex-1 space-y-3">
+          <Slider value={[value]} min={min} max={max} step={1} onValueChange={([next]) => onChange(next)} />
+          <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-[0.18em] text-white/35">
+            <span>{min} dB</span>
+            <span>{max > 0 ? `+${max}` : max} dB</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const ClimaxVideoEditor = () => {
   const navigate = useNavigate();
   const { projectId } = useParams();
@@ -416,6 +477,7 @@ const ClimaxVideoEditor = () => {
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [presetsRefresh, setPresetsRefresh] = useState(0);
   const [musicVolumeDb, setMusicVolumeDb] = useState(-17);
+  const [videoVolumeDb, setVideoVolumeDb] = useState(2);
   const [subtitleSize, setSubtitleSize] = useState(34);
   const [subtitleStyle, setSubtitleStyle] = useState<LocalSubtitleStyleSettings>({ ...DEFAULT_SUBTITLE_STYLE });
   const [hookStyle, setHookStyle] = useState<LocalHookStyleSettings>({ ...DEFAULT_HOOK_STYLE });
@@ -450,13 +512,14 @@ const ClimaxVideoEditor = () => {
       hookStyle,
       musicEnabled,
       musicVolumeDb,
+      videoVolumeDb,
       brollEnabled,
       autoSfxEnabled,
       klimaxLogoEnabled,
       logoTriggerWord: "klimax",
     });
     return () => { delete (window as any).__klimaxCurrentSnapshot; };
-  }, [hookText, subtitleSize, subtitleStyle, hookStyle, musicEnabled, musicVolumeDb, brollEnabled, autoSfxEnabled, klimaxLogoEnabled]);
+  }, [hookText, subtitleSize, subtitleStyle, hookStyle, musicEnabled, musicVolumeDb, videoVolumeDb, brollEnabled, autoSfxEnabled, klimaxLogoEnabled]);
 
   // Apply a preset from the Presets panel: update local state, then save the project.
   React.useEffect(() => {
@@ -476,6 +539,7 @@ const ClimaxVideoEditor = () => {
       }
       if (typeof detail.musicEnabled === "boolean") setMusicEnabled(detail.musicEnabled);
       if (typeof detail.musicVolumeDb === "number") setMusicVolumeDb(detail.musicVolumeDb);
+      if (typeof detail.videoVolumeDb === "number") setVideoVolumeDb(detail.videoVolumeDb);
       if (typeof detail.brollEnabled === "boolean") setBrollEnabled(detail.brollEnabled);
       if (typeof detail.autoSfxEnabled === "boolean") setAutoSfxEnabled(detail.autoSfxEnabled);
       if (typeof detail.klimaxLogoEnabled === "boolean") setKlimaxLogoEnabled(detail.klimaxLogoEnabled);
@@ -549,6 +613,7 @@ const ClimaxVideoEditor = () => {
     setHookText(project.settings?.hookText || project.clips?.[0]?.hookText || "Tu connais cette sensation ?");
     setMusicEnabled(project.settings?.musicEnabled !== false);
     setMusicVolumeDb(Number(project.settings?.musicVolumeDb ?? -17));
+    setVideoVolumeDb(Number(project.settings?.videoVolumeDb ?? 2));
     setAutoSfxEnabled(project.settings?.autoSfxEnabled !== false);
     setKlimaxLogoEnabled(project.settings?.klimaxLogoEnabled !== false);
     setBrollEnabled(project.settings?.brollEnabled !== false);
@@ -943,6 +1008,7 @@ const ClimaxVideoEditor = () => {
       subtitleSize,
       musicEnabled,
       musicVolumeDb,
+      videoVolumeDb,
       autoSfxEnabled,
       klimaxLogoEnabled,
       brollEnabled,
@@ -972,6 +1038,7 @@ const ClimaxVideoEditor = () => {
     mergedSubtitleStyle,
     musicEnabled,
     musicVolumeDb,
+    videoVolumeDb,
     projectId,
     subtitleSize,
   ]);
@@ -1009,6 +1076,7 @@ const ClimaxVideoEditor = () => {
       subtitleSize,
       musicEnabled,
       musicVolumeDb,
+      videoVolumeDb,
       autoSfxEnabled,
       klimaxLogoEnabled,
       brollEnabled,
@@ -1571,6 +1639,286 @@ const ClimaxVideoEditor = () => {
                           </div>
                         </div>
                       </div>
+                      {selectedClip && (
+                        <div className="rounded-2xl border border-white/10 bg-black p-4 space-y-4">
+                          <div>
+                            <p className="text-sm font-black uppercase tracking-wide">Placement direct</p>
+                            <p className="text-xs text-white/45">Glisse les éléments sur la preview ou ajuste leurs coordonnées ici.</p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                updateSelectedClip({
+                                  videoTransform: { scale: 100, x: 0, y: 0 },
+                                })
+                              }
+                              className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                            >
+                              Reset cadrage
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                updateSelectedClip({
+                                  subtitlePosition: { x: 540, y: selectedClipPositions.subtitlePosition.y },
+                                })
+                              }
+                              className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                            >
+                              Centrer sous-titres
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                selectedClip.stage === "intro"
+                                  ? updateSelectedClip({ hookPosition: { x: 540, y: selectedClipPositions.hookPosition.y } })
+                                  : updateSelectedClip({ logoPosition: { x: 540, y: selectedClipPositions.logoPosition.y } })
+                              }
+                              className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                            >
+                              Centrer élément
+                            </Button>
+                          </div>
+                          <div className="grid gap-4 md:grid-cols-2">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3 md:col-span-2">
+                              <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Vidéo source</p>
+                              <div className="flex items-center justify-between gap-3">
+                                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Zoom</Label>
+                                <span className="text-sm font-black">{selectedClipPositions.videoTransform.scale}%</span>
+                              </div>
+                              <Slider
+                                value={[selectedClipPositions.videoTransform.scale]}
+                                min={70}
+                                max={150}
+                                step={1}
+                                onValueChange={([value]) =>
+                                  updateSelectedClip({
+                                    videoTransform: {
+                                      scale: value,
+                                      x: selectedClipPositions.videoTransform.x,
+                                      y: selectedClipPositions.videoTransform.y,
+                                    },
+                                  })
+                                }
+                              />
+                              <div className="grid gap-4 md:grid-cols-2">
+                                <div className="space-y-3">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement X</Label>
+                                    <span className="text-sm font-black">{selectedClipPositions.videoTransform.x}px</span>
+                                  </div>
+                                  <Slider
+                                    value={[selectedClipPositions.videoTransform.x]}
+                                    min={-540}
+                                    max={540}
+                                    step={1}
+                                    onValueChange={([value]) =>
+                                      updateSelectedClip({
+                                        videoTransform: {
+                                          scale: selectedClipPositions.videoTransform.scale,
+                                          x: value,
+                                          y: selectedClipPositions.videoTransform.y,
+                                        },
+                                      })
+                                    }
+                                  />
+                                </div>
+                                <div className="space-y-3">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement Y</Label>
+                                    <span className="text-sm font-black">{selectedClipPositions.videoTransform.y}px</span>
+                                  </div>
+                                  <Slider
+                                    value={[selectedClipPositions.videoTransform.y]}
+                                    min={-840}
+                                    max={840}
+                                    step={1}
+                                    onValueChange={([value]) =>
+                                      updateSelectedClip({
+                                        videoTransform: {
+                                          scale: selectedClipPositions.videoTransform.scale,
+                                          x: selectedClipPositions.videoTransform.x,
+                                          y: value,
+                                        },
+                                      })
+                                    }
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                              <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Sous-titres</p>
+                              <div className="flex items-center justify-between gap-3">
+                                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
+                                <span className="text-sm font-black">{selectedClipPositions.subtitlePosition.x}px</span>
+                              </div>
+                              <Slider
+                                value={[selectedClipPositions.subtitlePosition.x]}
+                                min={0}
+                                max={1080}
+                                step={1}
+                                onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      subtitlePosition: {
+                                        x: value,
+                                        y: selectedClipPositions.subtitlePosition.y,
+                                      },
+                                  })
+                                }
+                              />
+                              <div className="flex items-center justify-between gap-3">
+                                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
+                                <span className="text-sm font-black">{selectedClipPositions.subtitlePosition.y}px</span>
+                              </div>
+                              <Slider
+                                value={[selectedClipPositions.subtitlePosition.y]}
+                                min={0}
+                                max={1920}
+                                step={1}
+                                onValueChange={([value]) =>
+                                  updateSelectedClip({
+                                    subtitlePosition: {
+                                      x: selectedClipPositions.subtitlePosition.x,
+                                      y: value,
+                                    },
+                                  })
+                                }
+                              />
+                            </div>
+                            {selectedClip.stage === "intro" ? (
+                              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                                <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Hook bulle</p>
+                                <div className="flex items-center justify-between gap-3">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
+                                  <span className="text-sm font-black">{selectedClipPositions.hookPosition.x}px</span>
+                                </div>
+                                <Slider
+                                  value={[selectedClipPositions.hookPosition.x]}
+                                  min={0}
+                                  max={1080}
+                                  step={1}
+                                  onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      hookPosition: {
+                                        x: value,
+                                        y: selectedClipPositions.hookPosition.y,
+                                      },
+                                    })
+                                  }
+                                />
+                                <div className="flex items-center justify-between gap-3">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
+                                  <span className="text-sm font-black">{selectedClipPositions.hookPosition.y}px</span>
+                                </div>
+                                <Slider
+                                  value={[selectedClipPositions.hookPosition.y]}
+                                  min={0}
+                                  max={1920}
+                                  step={1}
+                                  onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      hookPosition: {
+                                        x: selectedClipPositions.hookPosition.x,
+                                        y: value,
+                                      },
+                                    })
+                                  }
+                                />
+                                <div className="grid gap-4 md:grid-cols-2">
+                                  <div className="space-y-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Largeur</Label>
+                                      <span className="text-sm font-black">{selectedClipPositions.hookSize.width}px</span>
+                                    </div>
+                                    <Slider
+                                      value={[selectedClipPositions.hookSize.width]}
+                                      min={360}
+                                      max={1080}
+                                      step={10}
+                                      onValueChange={([value]) =>
+                                        updateSelectedClip({
+                                          hookSize: {
+                                            width: value,
+                                            height: selectedClipPositions.hookSize.height,
+                                          },
+                                        })
+                                      }
+                                    />
+                                  </div>
+                                  <div className="space-y-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Hauteur</Label>
+                                      <span className="text-sm font-black">{selectedClipPositions.hookSize.height}px</span>
+                                    </div>
+                                    <Slider
+                                      value={[selectedClipPositions.hookSize.height]}
+                                      min={90}
+                                      max={360}
+                                      step={10}
+                                      onValueChange={([value]) =>
+                                        updateSelectedClip({
+                                          hookSize: {
+                                            width: selectedClipPositions.hookSize.width,
+                                            height: value,
+                                          },
+                                        })
+                                      }
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                                <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Logo Klimax</p>
+                                <div className="flex items-center justify-between gap-3">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
+                                  <span className="text-sm font-black">{selectedClipPositions.logoPosition.x}px</span>
+                                </div>
+                                <Slider
+                                  value={[selectedClipPositions.logoPosition.x]}
+                                  min={0}
+                                  max={1080}
+                                  step={1}
+                                  onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      logoPosition: {
+                                        x: value,
+                                        y: selectedClipPositions.logoPosition.y,
+                                      },
+                                    })
+                                  }
+                                />
+                                <div className="flex items-center justify-between gap-3">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
+                                  <span className="text-sm font-black">{selectedClipPositions.logoPosition.y}px</span>
+                                </div>
+                                <Slider
+                                  value={[selectedClipPositions.logoPosition.y]}
+                                  min={0}
+                                  max={1920}
+                                  step={1}
+                                  onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      logoPosition: {
+                                        x: selectedClipPositions.logoPosition.x,
+                                        y: value,
+                                      },
+                                    })
+                                  }
+                                />
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
                       <div className="rounded-2xl border border-white/10 bg-black p-4 space-y-4">
                         <div className="flex items-center justify-between gap-4">
                           <div className="flex items-center gap-3">
@@ -1881,304 +2229,16 @@ const ClimaxVideoEditor = () => {
                       <div className="rounded-2xl border border-white/10 bg-black p-4">
                         <div className="flex items-center justify-between gap-4">
                           <div>
-                            <p className="text-sm font-black uppercase tracking-wide">Mix audio verrouillé</p>
-                            <p className="text-xs text-white/45">Musique à partir de -17 dB et audio vidéo à +2 dB sur les deux clips.</p>
+                            <p className="text-sm font-black uppercase tracking-wide">Mix audio</p>
+                            <p className="text-xs text-white/45">Choisis séparément la musique et le son original de la vidéo avant export.</p>
                           </div>
                           <Music className="h-5 w-5 text-white/50" />
                         </div>
-                        <div className="mt-4 space-y-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Volume musique</Label>
-                            <span className="text-sm font-black">{musicVolumeDb} dB</span>
-                          </div>
-                          <Slider
-                            value={[musicVolumeDb]}
-                            min={-30}
-                            max={0}
-                            step={1}
-                            onValueChange={([value]) => setMusicVolumeDb(value)}
-                          />
+                        <div className="mt-4 grid gap-3 md:grid-cols-2">
+                          <VolumeDial label="Musique" value={musicVolumeDb} min={-40} max={0} baseValue={-17} onChange={setMusicVolumeDb} />
+                          <VolumeDial label="Son vidéo" value={videoVolumeDb} min={-12} max={12} baseValue={2} onChange={setVideoVolumeDb} />
                         </div>
                       </div>
-                      {selectedClip && (
-                        <div className="rounded-2xl border border-white/10 bg-black p-4 space-y-4">
-                          <div>
-                            <p className="text-sm font-black uppercase tracking-wide">Placement direct</p>
-                            <p className="text-xs text-white/45">Glisse les éléments sur la preview ou ajuste leurs coordonnées ici.</p>
-                          </div>
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
-                                updateSelectedClip({
-                                  videoTransform: { scale: 100, x: 0, y: 0 },
-                                })
-                              }
-                              className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
-                            >
-                              Reset cadrage
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
-                                updateSelectedClip({
-                                  subtitlePosition: { x: 540, y: selectedClipPositions.subtitlePosition.y },
-                                })
-                              }
-                              className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
-                            >
-                              Centrer sous-titres
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
-                                selectedClip.stage === "intro"
-                                  ? updateSelectedClip({ hookPosition: { x: 540, y: selectedClipPositions.hookPosition.y } })
-                                  : updateSelectedClip({ logoPosition: { x: 540, y: selectedClipPositions.logoPosition.y } })
-                              }
-                              className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
-                            >
-                              Centrer élément
-                            </Button>
-                          </div>
-                          <div className="grid gap-4 md:grid-cols-2">
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3 md:col-span-2">
-                              <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Vidéo source</p>
-                              <div className="flex items-center justify-between gap-3">
-                                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Zoom</Label>
-                                <span className="text-sm font-black">{selectedClipPositions.videoTransform.scale}%</span>
-                              </div>
-                              <Slider
-                                value={[selectedClipPositions.videoTransform.scale]}
-                                min={70}
-                                max={150}
-                                step={1}
-                                onValueChange={([value]) =>
-                                  updateSelectedClip({
-                                    videoTransform: {
-                                      scale: value,
-                                      x: selectedClipPositions.videoTransform.x,
-                                      y: selectedClipPositions.videoTransform.y,
-                                    },
-                                  })
-                                }
-                              />
-                              <div className="grid gap-4 md:grid-cols-2">
-                                <div className="space-y-3">
-                                  <div className="flex items-center justify-between gap-3">
-                                    <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement X</Label>
-                                    <span className="text-sm font-black">{selectedClipPositions.videoTransform.x}px</span>
-                                  </div>
-                                  <Slider
-                                    value={[selectedClipPositions.videoTransform.x]}
-                                    min={-540}
-                                    max={540}
-                                    step={1}
-                                    onValueChange={([value]) =>
-                                      updateSelectedClip({
-                                        videoTransform: {
-                                          scale: selectedClipPositions.videoTransform.scale,
-                                          x: value,
-                                          y: selectedClipPositions.videoTransform.y,
-                                        },
-                                      })
-                                    }
-                                  />
-                                </div>
-                                <div className="space-y-3">
-                                  <div className="flex items-center justify-between gap-3">
-                                    <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement Y</Label>
-                                    <span className="text-sm font-black">{selectedClipPositions.videoTransform.y}px</span>
-                                  </div>
-                                  <Slider
-                                    value={[selectedClipPositions.videoTransform.y]}
-                                    min={-840}
-                                    max={840}
-                                    step={1}
-                                    onValueChange={([value]) =>
-                                      updateSelectedClip({
-                                        videoTransform: {
-                                          scale: selectedClipPositions.videoTransform.scale,
-                                          x: selectedClipPositions.videoTransform.x,
-                                          y: value,
-                                        },
-                                      })
-                                    }
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
-                              <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Sous-titres</p>
-                              <div className="flex items-center justify-between gap-3">
-                                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
-                                <span className="text-sm font-black">{selectedClipPositions.subtitlePosition.x}px</span>
-                              </div>
-                              <Slider
-                                value={[selectedClipPositions.subtitlePosition.x]}
-                                min={0}
-                                max={1080}
-                                step={1}
-                                onValueChange={([value]) =>
-                                    updateSelectedClip({
-                                      subtitlePosition: {
-                                        x: value,
-                                        y: selectedClipPositions.subtitlePosition.y,
-                                      },
-                                  })
-                                }
-                              />
-                              <div className="flex items-center justify-between gap-3">
-                                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
-                                <span className="text-sm font-black">{selectedClipPositions.subtitlePosition.y}px</span>
-                              </div>
-                              <Slider
-                                value={[selectedClipPositions.subtitlePosition.y]}
-                                min={0}
-                                max={1920}
-                                step={1}
-                                onValueChange={([value]) =>
-                                  updateSelectedClip({
-                                    subtitlePosition: {
-                                      x: selectedClipPositions.subtitlePosition.x,
-                                      y: value,
-                                    },
-                                  })
-                                }
-                              />
-                            </div>
-                            {selectedClip.stage === "intro" ? (
-                              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
-                                <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Hook bulle</p>
-                                <div className="flex items-center justify-between gap-3">
-                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
-                                  <span className="text-sm font-black">{selectedClipPositions.hookPosition.x}px</span>
-                                </div>
-                                <Slider
-                                  value={[selectedClipPositions.hookPosition.x]}
-                                  min={0}
-                                  max={1080}
-                                  step={1}
-                                  onValueChange={([value]) =>
-                                    updateSelectedClip({
-                                      hookPosition: {
-                                        x: value,
-                                        y: selectedClipPositions.hookPosition.y,
-                                      },
-                                    })
-                                  }
-                                />
-                                <div className="flex items-center justify-between gap-3">
-                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
-                                  <span className="text-sm font-black">{selectedClipPositions.hookPosition.y}px</span>
-                                </div>
-                                <Slider
-                                  value={[selectedClipPositions.hookPosition.y]}
-                                  min={0}
-                                  max={1920}
-                                  step={1}
-                                  onValueChange={([value]) =>
-                                    updateSelectedClip({
-                                      hookPosition: {
-                                        x: selectedClipPositions.hookPosition.x,
-                                        y: value,
-                                      },
-                                    })
-                                  }
-                                />
-                                <div className="grid gap-4 md:grid-cols-2">
-                                  <div className="space-y-3">
-                                    <div className="flex items-center justify-between gap-3">
-                                      <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Largeur</Label>
-                                      <span className="text-sm font-black">{selectedClipPositions.hookSize.width}px</span>
-                                    </div>
-                                    <Slider
-                                      value={[selectedClipPositions.hookSize.width]}
-                                      min={360}
-                                      max={1080}
-                                      step={10}
-                                      onValueChange={([value]) =>
-                                        updateSelectedClip({
-                                          hookSize: {
-                                            width: value,
-                                            height: selectedClipPositions.hookSize.height,
-                                          },
-                                        })
-                                      }
-                                    />
-                                  </div>
-                                  <div className="space-y-3">
-                                    <div className="flex items-center justify-between gap-3">
-                                      <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Hauteur</Label>
-                                      <span className="text-sm font-black">{selectedClipPositions.hookSize.height}px</span>
-                                    </div>
-                                    <Slider
-                                      value={[selectedClipPositions.hookSize.height]}
-                                      min={90}
-                                      max={360}
-                                      step={10}
-                                      onValueChange={([value]) =>
-                                        updateSelectedClip({
-                                          hookSize: {
-                                            width: selectedClipPositions.hookSize.width,
-                                            height: value,
-                                          },
-                                        })
-                                      }
-                                    />
-                                  </div>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
-                                <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Logo Klimax</p>
-                                <div className="flex items-center justify-between gap-3">
-                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
-                                  <span className="text-sm font-black">{selectedClipPositions.logoPosition.x}px</span>
-                                </div>
-                                <Slider
-                                  value={[selectedClipPositions.logoPosition.x]}
-                                  min={0}
-                                  max={1080}
-                                  step={1}
-                                  onValueChange={([value]) =>
-                                    updateSelectedClip({
-                                      logoPosition: {
-                                        x: value,
-                                        y: selectedClipPositions.logoPosition.y,
-                                      },
-                                    })
-                                  }
-                                />
-                                <div className="flex items-center justify-between gap-3">
-                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
-                                  <span className="text-sm font-black">{selectedClipPositions.logoPosition.y}px</span>
-                                </div>
-                                <Slider
-                                  value={[selectedClipPositions.logoPosition.y]}
-                                  min={0}
-                                  max={1920}
-                                  step={1}
-                                  onValueChange={([value]) =>
-                                    updateSelectedClip({
-                                      logoPosition: {
-                                        x: selectedClipPositions.logoPosition.x,
-                                        y: value,
-                                      },
-                                    })
-                                  }
-                                />
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
                     </div>
                   </TabsContent>
 
@@ -2469,21 +2529,16 @@ const ClimaxVideoEditor = () => {
                     ))}
                     {bankByCategory.music.length === 0 && <p className="text-sm text-white/45">Ajoute des musiques dans la Banque.</p>}
                   </div>
-                  <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-black uppercase tracking-wide">Volume musique</p>
-                        <p className="text-xs text-white/45">Base locale à -17 dB, modifiable avant export.</p>
+                        <p className="text-sm font-black uppercase tracking-wide">Volumes export</p>
+                        <p className="text-xs text-white/45">Base musique à -17 dB et son vidéo à +2 dB, modifiables avant export.</p>
                       </div>
-                      <span className="text-sm font-black">{musicVolumeDb} dB</span>
+                      <Music className="h-4 w-4 text-white/45" />
                     </div>
-                    <Slider
-                      value={[musicVolumeDb]}
-                      min={-30}
-                      max={0}
-                      step={1}
-                      onValueChange={([value]) => setMusicVolumeDb(value)}
-                    />
+                    <VolumeDial label="Musique" value={musicVolumeDb} min={-40} max={0} baseValue={-17} onChange={setMusicVolumeDb} />
+                    <VolumeDial label="Son vidéo" value={videoVolumeDb} min={-12} max={12} baseValue={2} onChange={setVideoVolumeDb} />
                   </div>
                 </TabsContent>
               </Tabs>

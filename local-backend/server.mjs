@@ -93,6 +93,7 @@ const defaultProjectSettings = () => ({
   subtitleSize: 34,
   musicEnabled: true,
   musicVolumeDb: -17,
+  videoVolumeDb: 2,
   brollEnabled: true,
   autoSfxEnabled: true,
   klimaxLogoEnabled: true,
@@ -204,12 +205,14 @@ const mergeProjectSettings = (settings = {}) => {
   }
   hookStyle.fontSize = safeNumber(hookStyle.fontSize, 46);
   const musicVolumeDb = clamp(safeNumber(settings.musicVolumeDb, defaults.musicVolumeDb), -40, 0);
+  const videoVolumeDb = clamp(safeNumber(settings.videoVolumeDb, defaults.videoVolumeDb), -12, 12);
 
   return {
     ...defaults,
     ...settings,
     subtitleSize: subtitleStyle.fontSize,
     musicVolumeDb,
+    videoVolumeDb,
     subtitleStyle,
     hookStyle,
   };
@@ -1079,7 +1082,8 @@ const renderProject = async (db, project, sourceGroup) => {
     const assFilePath = await buildAssSubtitleFile(project, clip, clipTranscription);
     const subtitledVideo = `vsub${clipIndex}`;
     filterChains.push(`[${currentVideo}]subtitles='${assFilePath}':fontsdir='${fontRoot}'[${subtitledVideo}]`);
-    filterChains.push(`[${sourceInput}:a]volume=2dB,aresample=async=1[acl${clipIndex}]`);
+    const videoVolumeDb = safeNumber(project.settings?.videoVolumeDb, 2);
+    filterChains.push(`[${sourceInput}:a]volume=${videoVolumeDb}dB,aresample=async=1[acl${clipIndex}]`);
 
     // Audio SFX for this clip (if any). Mixed at the start of the clip audio.
     const sfxPath = clip.sfxEffect ? getSfxPath(clip.sfxEffect) : null;
