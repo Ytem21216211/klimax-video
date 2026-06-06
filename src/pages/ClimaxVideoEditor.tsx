@@ -340,6 +340,7 @@ const ClimaxVideoEditor = () => {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [activeDragKind, setActiveDragKind] = useState<"video" | "hook" | "subtitle" | "logo" | "image" | null>(null);
+  const [sourceVideoSizes, setSourceVideoSizes] = React.useState<Record<string, { width: number; height: number }>>({});
   const previewCanvasRef = React.useRef<HTMLDivElement | null>(null);
   const autoTranscriptionRef = React.useRef<string | null>(null);
   const dragStateRef = React.useRef<{
@@ -465,6 +466,29 @@ const ClimaxVideoEditor = () => {
     [bankAssets, selectedClip?.imageId]
   );
   const selectedClipPositions = useMemo(() => getClipPositions(selectedClip), [getClipPositions, selectedClip]);
+  const selectedSourceVideoSize = selectedSourceAsset?.id ? sourceVideoSizes[selectedSourceAsset.id] : null;
+  const previewVideoFrameStyle = useMemo(() => {
+    const sourceWidth = selectedSourceVideoSize?.width || 1920;
+    const sourceHeight = selectedSourceVideoSize?.height || 1080;
+    const sourceAspect = sourceWidth / sourceHeight || 16 / 9;
+    const targetAspect = BASE_CANVAS_WIDTH / BASE_CANVAS_HEIGHT;
+    const zoom = selectedClipPositions.videoTransform.scale / 100;
+    let scaledWidth = BASE_CANVAS_WIDTH * zoom;
+    let scaledHeight = scaledWidth / sourceAspect;
+
+    if (sourceAspect > targetAspect) {
+      scaledHeight = BASE_CANVAS_HEIGHT * zoom;
+      scaledWidth = scaledHeight * sourceAspect;
+    }
+
+    return {
+      width: `${(scaledWidth / BASE_CANVAS_WIDTH) * 100}%`,
+      height: `${(scaledHeight / BASE_CANVAS_HEIGHT) * 100}%`,
+      left: `${50 - (selectedClipPositions.videoTransform.x / BASE_CANVAS_WIDTH) * 100}%`,
+      top: `${50 - (selectedClipPositions.videoTransform.y / BASE_CANVAS_HEIGHT) * 100}%`,
+      transform: "translate(-50%, -50%)",
+    };
+  }, [selectedClipPositions.videoTransform, selectedSourceVideoSize]);
   const mergedSubtitleStyle = useMemo(
     () => ({ ...DEFAULT_SUBTITLE_STYLE, ...subtitleStyle, fontSize: subtitleStyle.fontSize || subtitleSize }),
     [subtitleStyle, subtitleSize]
@@ -975,14 +999,23 @@ const ClimaxVideoEditor = () => {
                     <video
                       key={selectedSourceAsset.id}
                       src={selectedSourceAsset.fileUrl}
-                      className="absolute left-1/2 top-1/2 h-full w-full object-cover opacity-80 cursor-move"
+                      className="absolute object-fill opacity-80 cursor-move"
+                      onLoadedMetadata={(event) => {
+                        const { videoWidth, videoHeight } = event.currentTarget;
+                        if (!videoWidth || !videoHeight) return;
+                        setSourceVideoSizes((current) => ({
+                          ...current,
+                          [selectedSourceAsset.id]: { width: videoWidth, height: videoHeight },
+                        }));
+                      }}
                       onPointerDown={(event) => startClipDrag("video", event)}
                       muted
                       playsInline
                       style={{
+                        ...previewVideoFrameStyle,
+                        maxWidth: "none",
+                        maxHeight: "none",
                         touchAction: "none",
-                        objectPosition: `calc(50% + ${canvasUnit(selectedClipPositions.videoTransform.x)}) calc(50% + ${canvasUnit(selectedClipPositions.videoTransform.y)})`,
-                        transform: `translate(-50%, -50%) scale(${selectedClipPositions.videoTransform.scale / 100})`,
                       }}
                     />
                   )}
