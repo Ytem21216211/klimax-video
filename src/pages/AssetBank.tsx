@@ -419,7 +419,7 @@ const AssetBank = () => {
                         </div>
                       )}
                     </>
-                  ) : (
+                  ) : cat !== "sfx" ? (
                     <>
                       {groupedAssets[cat].map((asset) => (
                         <article key={asset.id} className="rounded-[22px] border border-white/10 bg-black p-4">
