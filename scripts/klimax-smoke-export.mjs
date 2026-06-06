@@ -3,6 +3,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { mergeFrenchElisionWords } from "../local-backend/captionWords.mjs";
 import { buildLogoMoments } from "../local-backend/logoMoments.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +32,20 @@ const assertLogoMomentDetection = () => {
 
   if (failures.length) {
     throw new Error(`Détection logo Klimax invalide: ${failures.join(", ")}`);
+  }
+};
+
+const assertFrenchElisionMerging = () => {
+  const words = mergeFrenchElisionWords([
+    { word: "on", start: 0, end: 0.1 },
+    { word: "fait", start: 0.1, end: 0.2 },
+    { word: "l'", start: 0.2, end: 0.25 },
+    { word: "appel", start: 0.25, end: 0.55 },
+    { word: "demain", start: 0.55, end: 0.9 },
+  ]);
+  const text = words.map((word) => word.word).join(" ");
+  if (text !== "on fait l'appel demain") {
+    throw new Error(`Fusion élision française invalide: ${text}`);
   }
 };
 
@@ -147,6 +162,7 @@ const main = async () => {
   }
 
   assertLogoMomentDetection();
+  assertFrenchElisionMerging();
   await createSmokeProject();
 
   const child = spawn(process.execPath, ["local-backend/server.mjs"], {

@@ -54,6 +54,7 @@ import {
 
 const BASE_CANVAS_WIDTH = 1080;
 const BASE_CANVAS_HEIGHT = 1920;
+const TRANSCRIPTION_PIPELINE_VERSION = "caption-elision-v2";
 
 const antiShadowbanSteps = [
   "Variation captions et hooks par export",
@@ -699,11 +700,22 @@ const ClimaxVideoEditor = () => {
 
   React.useEffect(() => {
     if (!localProject?.id || !localProject?.sourceGroup?.id) return;
-    if (localProject.transcription?.status === "completed" && (localProject.transcription?.clips?.length || 0) > 0) return;
+    const hasCurrentTranscription =
+      localProject.transcription?.status === "completed" &&
+      (localProject.transcription?.clips?.length || 0) > 0 &&
+      String(localProject.transcription?.sourceFingerprint || "").includes(TRANSCRIPTION_PIPELINE_VERSION);
+    if (hasCurrentTranscription) return;
     if (autoTranscriptionRef.current === localProject.id) return;
     autoTranscriptionRef.current = localProject.id;
     refreshTranscription();
-  }, [localProject?.id, localProject?.sourceGroup?.id, localProject?.transcription?.clips?.length, localProject?.transcription?.status, refreshTranscription]);
+  }, [
+    localProject?.id,
+    localProject?.sourceGroup?.id,
+    localProject?.transcription?.clips?.length,
+    localProject?.transcription?.sourceFingerprint,
+    localProject?.transcription?.status,
+    refreshTranscription,
+  ]);
 
   const renderCurrentProject = async () => {
     if (!projectId || isRendering) return;

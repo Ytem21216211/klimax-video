@@ -8,6 +8,7 @@ import multer from "multer";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { mergeFrenchElisionWords } from "./captionWords.mjs";
 import { buildLogoMoments } from "./logoMoments.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -27,6 +28,7 @@ const logoAnimationSourceCandidate = "/Users/juliengoussale/Downloads/pop up kli
 const logoAnimationPath = path.join(systemRoot, "klimax-pop-up.mov");
 const whisperModelName = process.env.KLIMAX_WHISPER_MODEL || "tiny";
 const port = Number(process.env.KLIMAX_BACKEND_PORT || 8787);
+const transcriptionPipelineVersion = "caption-elision-v2";
 
 const app = express();
 
@@ -457,7 +459,7 @@ const buildWordsFromTranscription = (transcription) => {
     });
   }
 
-  return words;
+  return mergeFrenchElisionWords(words);
 };
 
 const buildCaptionCues = (words, wordsPerLine = 4) => {
@@ -490,7 +492,12 @@ const buildCaptionCues = (words, wordsPerLine = 4) => {
 
 const createSourceFingerprint = async (project, sourceGroup) => {
   const subtitleStyle = project.settings?.subtitleStyle || defaultSubtitleStyle;
-  const parts = [project.sourceGroupId, subtitleStyle.wordsPerLine, project.settings?.logoTriggerWord || "klimax"];
+  const parts = [
+    transcriptionPipelineVersion,
+    project.sourceGroupId,
+    subtitleStyle.wordsPerLine,
+    project.settings?.logoTriggerWord || "klimax",
+  ];
 
   for (const asset of [sourceGroup?.person1, sourceGroup?.person2].filter(Boolean)) {
     const stat = await fs.stat(asset.filePath);
