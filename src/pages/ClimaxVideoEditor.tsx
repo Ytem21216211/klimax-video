@@ -214,9 +214,86 @@ const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
     keywordSecondaryColor: "#45f08a",
     keywordTerms: "",
   },
+  quickFade: {
+    stylePreset: "quickFade",
+    fontFamily: "Arial Black",
+    fontSize: 38,
+    textColor: "#ffe45c",
+    strokeEnabled: true,
+    strokeColor: "#000000",
+    strokeWidth: 6,
+    shadowEnabled: true,
+    shadowColor: "#000000",
+    shadowOpacity: 0.9,
+    shadowDistance: 5,
+    shadowBlur: 16,
+    animationPreset: "fade",
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 900,
+    fontScaleX: 104,
+    keywordHighlightEnabled: false,
+    keywordColor: "#ffe14a",
+    keywordSecondaryColor: "#45f08a",
+    keywordTerms: "",
+  },
+  orangeThe: {
+    stylePreset: "orangeThe",
+    fontFamily: "Anton",
+    fontSize: 58,
+    textColor: "#ff7a00",
+    strokeEnabled: true,
+    strokeColor: "#000000",
+    strokeWidth: 7,
+    shadowEnabled: true,
+    shadowColor: "#000000",
+    shadowOpacity: 0.92,
+    shadowDistance: 5,
+    shadowBlur: 18,
+    animationPreset: "rise",
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 900,
+    fontScaleX: 106,
+    keywordHighlightEnabled: false,
+    keywordColor: "#ff7a00",
+    keywordSecondaryColor: "#ffe14a",
+    keywordTerms: "",
+  },
+  proQuick: {
+    stylePreset: "proQuick",
+    fontFamily: "Arial Black",
+    fontSize: 50,
+    textColor: "#ffffff",
+    strokeEnabled: true,
+    strokeColor: "#000000",
+    strokeWidth: 8,
+    shadowEnabled: true,
+    shadowColor: "#000000",
+    shadowOpacity: 0.95,
+    shadowDistance: 6,
+    shadowBlur: 20,
+    animationPreset: "fade",
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 900,
+    fontScaleX: 104,
+    keywordHighlightEnabled: false,
+    keywordColor: "#ffe14a",
+    keywordSecondaryColor: "#45f08a",
+    keywordTerms: "",
+  },
 };
 
 const DEFAULT_SUBTITLE_STYLE = SUBTITLE_PRESETS.impact;
+const VISUAL_SUBTITLE_PRESETS = [
+  { key: "quickFade", label: "Quick opacite", sample: "THE QUICK BROWN FOX", badge: null },
+  { key: "orangeThe", label: "THE orange", sample: "THE", badge: null },
+  { key: "proQuick", label: "Pro quick", sample: "quick", badge: "Pro" },
+] as const;
 const DEFAULT_HOOK_STYLE: LocalHookStyleSettings = {
   bubbleColor: "#ffffff",
   textColor: "#000000",
@@ -543,28 +620,30 @@ const ClimaxVideoEditor = () => {
       const previewShadowBlur = Math.max(16, mergedSubtitleStyle.shadowEnabled === false ? 0 : mergedSubtitleStyle.shadowBlur ?? 16);
 
       return {
-      fontSize: canvasFontSize(previewFontSize),
-      color: mergedSubtitleStyle.textColor || "#ffffff",
-      fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
-      fontWeight: Math.max(900, mergedSubtitleStyle.fontWeight || 900),
-      WebkitTextStroke: `${canvasUnit(previewStrokeWidth)} ${mergedSubtitleStyle.strokeColor || "#000000"}`,
-      textShadow: `0 ${canvasUnit(previewShadowDistance)} 0 ${hexToRgba(
-            mergedSubtitleStyle.shadowColor || "#000000",
-            Math.max(0.82, mergedSubtitleStyle.shadowOpacity ?? 0.9)
-          )}, 0 ${canvasUnit(previewShadowDistance)} ${canvasUnit(previewShadowBlur)} ${hexToRgba(
-            mergedSubtitleStyle.shadowColor || "#000000",
-            Math.min(0.62, Math.max(0.82, mergedSubtitleStyle.shadowOpacity ?? 0.9) * 0.62)
-          )}`,
-      transform: `scaleX(${(mergedSubtitleStyle.fontScaleX || 104) / 100})`,
-      animation:
-        mergedSubtitleStyle.animationPreset === "pop"
-          ? "klimaxSubtitlePop 360ms cubic-bezier(.2,1.35,.3,1)"
-          : mergedSubtitleStyle.animationPreset === "bounce"
-            ? "klimaxSubtitleBounce 520ms cubic-bezier(.2,1.25,.2,1)"
-            : mergedSubtitleStyle.animationPreset === "rise"
-              ? "klimaxSubtitleRise 360ms ease-out"
-              : undefined,
-    };
+        fontSize: canvasFontSize(previewFontSize),
+        color: mergedSubtitleStyle.textColor || "#ffffff",
+        fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
+        fontWeight: Math.max(900, mergedSubtitleStyle.fontWeight || 900),
+        WebkitTextStroke: `${canvasUnit(previewStrokeWidth)} ${mergedSubtitleStyle.strokeColor || "#000000"}`,
+        textShadow: `0 ${canvasUnit(previewShadowDistance)} 0 ${hexToRgba(
+          mergedSubtitleStyle.shadowColor || "#000000",
+          Math.max(0.82, mergedSubtitleStyle.shadowOpacity ?? 0.9)
+        )}, 0 ${canvasUnit(previewShadowDistance)} ${canvasUnit(previewShadowBlur)} ${hexToRgba(
+          mergedSubtitleStyle.shadowColor || "#000000",
+          Math.min(0.62, Math.max(0.82, mergedSubtitleStyle.shadowOpacity ?? 0.9) * 0.62)
+        )}`,
+        transform: `scaleX(${(mergedSubtitleStyle.fontScaleX || 104) / 100})`,
+        animation:
+          mergedSubtitleStyle.animationPreset === "pop"
+            ? "klimaxSubtitlePop 360ms cubic-bezier(.2,1.35,.3,1)"
+            : mergedSubtitleStyle.animationPreset === "bounce"
+              ? "klimaxSubtitleBounce 520ms cubic-bezier(.2,1.25,.2,1)"
+              : mergedSubtitleStyle.animationPreset === "rise"
+                ? "klimaxSubtitleRise 360ms ease-out"
+                : mergedSubtitleStyle.animationPreset === "fade"
+                  ? "klimaxSubtitleFade 260ms ease-out"
+                  : undefined,
+      };
     },
     [mergedSubtitleStyle, subtitleSize]
   );
@@ -928,6 +1007,10 @@ const ClimaxVideoEditor = () => {
           @keyframes klimaxSubtitleRise {
             0% { transform: translateY(18%); opacity: .1; }
             100% { transform: translateY(0); opacity: 1; }
+          }
+          @keyframes klimaxSubtitleFade {
+            0% { opacity: 0; }
+            100% { opacity: 1; }
           }
         `}
       </style>
@@ -1513,7 +1596,7 @@ const ClimaxVideoEditor = () => {
                                 type="button"
                                 onClick={() => {
                                   const next = SUBTITLE_PRESETS[preset.key];
-                                  setSubtitleStyle(next);
+                                  setSubtitleStyle({ ...next });
                                   setSubtitleSize(next.fontSize || 34);
                                 }}
                                 className={cn(
@@ -1527,6 +1610,56 @@ const ClimaxVideoEditor = () => {
                               </button>
                             ))}
                           </div>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-3">
+                          {VISUAL_SUBTITLE_PRESETS.map((preset) => {
+                            const preview = SUBTITLE_PRESETS[preset.key];
+                            const active = mergedSubtitleStyle.stylePreset === preset.key;
+
+                            return (
+                              <button
+                                key={preset.key}
+                                type="button"
+                                onClick={() => {
+                                  setSubtitleStyle({ ...preview });
+                                  setSubtitleSize(preview.fontSize || 40);
+                                }}
+                                className={cn(
+                                  "relative h-24 overflow-hidden rounded-2xl border bg-white/[0.04] p-3 text-left transition hover:bg-white/[0.08]",
+                                  active ? "border-white shadow-[0_0_0_1px_rgba(255,255,255,0.45)]" : "border-white/10"
+                                )}
+                              >
+                                {preset.badge && (
+                                  <span className="absolute left-3 top-3 rounded bg-white px-2 py-0.5 text-[10px] font-black italic text-black shadow-[3px_3px_0_#b8a7ff]">
+                                    {preset.badge}
+                                  </span>
+                                )}
+                                <span
+                                  className={cn(
+                                    "absolute left-4 right-4 top-1/2 block -translate-y-1/2 whitespace-nowrap text-center font-black leading-none",
+                                    preset.key === "quickFade" && "text-left italic",
+                                    preset.key === "proQuick" && "text-right lowercase"
+                                  )}
+                                  style={{
+                                    color: preview.textColor || "#ffffff",
+                                    fontFamily: preview.fontFamily || "Arial Black, Arial, sans-serif",
+                                    fontSize: preset.key === "quickFade" ? "12px" : preset.key === "orangeThe" ? "30px" : "26px",
+                                    WebkitTextStroke: `${preset.key === "quickFade" ? 0 : 1.5}px ${preview.strokeColor || "#000000"}`,
+                                    textShadow:
+                                      preset.key === "quickFade"
+                                        ? "none"
+                                        : `0 3px 0 ${preview.strokeColor || "#000000"}, 0 8px 18px rgba(0,0,0,.55)`,
+                                    opacity: preset.key === "quickFade" ? 0.96 : 1,
+                                  }}
+                                >
+                                  {preset.sample}
+                                </span>
+                                <span className="absolute bottom-2 right-2 grid h-8 w-8 place-items-center rounded-full bg-black/70 text-white">
+                                  <Download className="h-4 w-4" />
+                                </span>
+                              </button>
+                            );
+                          })}
                         </div>
                         <div className="grid gap-4 md:grid-cols-2">
                           <div className="space-y-2">
@@ -1579,6 +1712,7 @@ const ClimaxVideoEditor = () => {
                                 <SelectItem value="pop">Pop-up</SelectItem>
                                 <SelectItem value="bounce">Bounce</SelectItem>
                                 <SelectItem value="rise">Montee douce</SelectItem>
+                                <SelectItem value="fade">Fade opacite</SelectItem>
                                 <SelectItem value="none">Sans animation</SelectItem>
                               </SelectContent>
                             </Select>

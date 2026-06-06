@@ -199,7 +199,7 @@ const mergeProjectSettings = (settings = {}) => {
   subtitleStyle.keywordTerms = Array.isArray(subtitleStyle.keywordTerms)
     ? subtitleStyle.keywordTerms.join(", ")
     : String(subtitleStyle.keywordTerms || "");
-  if (!["none", "pop", "bounce", "rise"].includes(subtitleStyle.animationPreset)) {
+  if (!["none", "pop", "bounce", "rise", "fade"].includes(subtitleStyle.animationPreset)) {
     subtitleStyle.animationPreset = defaults.subtitleStyle.animationPreset;
   }
   hookStyle.fontSize = safeNumber(hookStyle.fontSize, 46);
@@ -870,6 +870,9 @@ const subtitleAnimationOverride = (subtitleStyle, x, y, shadowDown, options = {}
   }
   if (animation === "none") {
     return `{${[...base, `\\pos(${x},${targetY})`].join("")}}`;
+  }
+  if (animation === "fade") {
+    return `{${[...base, `\\pos(${x},${targetY})`, "\\alpha&HFF&", "\\t(0,180,\\alpha&H00&)"].join("")}}`;
   }
   return `{${[
     ...base,
