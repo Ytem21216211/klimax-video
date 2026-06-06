@@ -9,7 +9,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { mergeFrenchElisionWords } from "./captionWords.mjs";
-import { buildLogoMoments } from "./logoMoments.mjs";
+import { buildLogoMoments, normalizeLogoWords } from "./logoMoments.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
@@ -28,7 +28,7 @@ const logoAnimationSourceCandidate = "/Users/juliengoussale/Downloads/pop up kli
 const logoAnimationPath = path.join(systemRoot, "klimax-pop-up.mov");
 const whisperModelName = process.env.KLIMAX_WHISPER_MODEL || "tiny";
 const port = Number(process.env.KLIMAX_BACKEND_PORT || 8787);
-const transcriptionPipelineVersion = "caption-elision-v2";
+const transcriptionPipelineVersion = "caption-elision-logo-brand-v4";
 
 const app = express();
 
@@ -535,7 +535,10 @@ const ensureTranscription = async (project, sourceGroup) => {
 
   for (const asset of [sourceGroup?.person1, sourceGroup?.person2].filter(Boolean)) {
     const raw = await runJson(pythonBin, [transcribeScriptPath, asset.filePath, whisperModelName]);
-    const words = buildWordsFromTranscription(raw);
+    const words = normalizeLogoWords(
+      buildWordsFromTranscription(raw),
+      project.settings?.logoTriggerWord || "klimax"
+    );
     const cues = buildCaptionCues(words, subtitleStyle.wordsPerLine);
     const duration = safeNumber(raw.duration, 0);
     bySource.set(asset.id, {
@@ -559,7 +562,7 @@ const ensureTranscription = async (project, sourceGroup) => {
       duration: safeNumber(sourceTranscript?.duration, 0),
       cues: sourceTranscript?.cues || [],
       words: sourceTranscript?.words || [],
-      logoMoments: clip.stage === "reply" ? sourceTranscript?.logoMoments || [] : [],
+      logoMoments: sourceTranscript?.logoMoments || [],
     };
   });
 

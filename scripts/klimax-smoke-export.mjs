@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { mergeFrenchElisionWords } from "../local-backend/captionWords.mjs";
-import { buildLogoMoments } from "../local-backend/logoMoments.mjs";
+import { buildLogoMoments, normalizeLogoWords } from "../local-backend/logoMoments.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
@@ -26,9 +26,13 @@ const assertLogoMomentDetection = () => {
   const failures = [];
   if (direct.length !== 1 || direct[0].start !== 1) failures.push("direct Klimax word");
   if (alternateSpelling.length !== 1 || alternateSpelling[0].start !== 2) failures.push("climax spelling");
+  if (alternateSpelling[0]?.term !== "Klimax") failures.push("canonical Klimax term");
   if (textFallback.length !== 1 || textFallback[0].start !== 3 || textFallback[0].source !== "text") {
     failures.push("text fallback");
   }
+
+  const normalizedWords = normalizeLogoWords([{ word: "climax", start: 17, end: 17.3 }], "klimax");
+  if (normalizedWords[0]?.word !== "Klimax") failures.push("caption Klimax replacement");
 
   if (failures.length) {
     throw new Error(`Détection logo Klimax invalide: ${failures.join(", ")}`);
