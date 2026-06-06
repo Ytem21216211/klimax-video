@@ -3,6 +3,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { buildLogoMoments } from "../local-backend/logoMoments.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
@@ -13,6 +14,25 @@ const baseUrl = `http://127.0.0.1:${port}`;
 
 const readDb = async () => JSON.parse(await fs.readFile(dbPath, "utf8"));
 const writeDb = async (db) => fs.writeFile(dbPath, `${JSON.stringify(db, null, 2)}\n`, "utf8");
+
+const assertLogoMomentDetection = () => {
+  const direct = buildLogoMoments([{ word: "Klimax", start: 1, end: 1.25 }], "klimax", 8);
+  const alternateSpelling = buildLogoMoments([{ word: "climax", start: 2, end: 2.25 }], "klimax", 8);
+  const textFallback = buildLogoMoments([], "klimax", 8, [
+    { text: "On ouvre Klimax maintenant", start: 3, end: 4 },
+  ]);
+
+  const failures = [];
+  if (direct.length !== 1 || direct[0].start !== 1) failures.push("direct Klimax word");
+  if (alternateSpelling.length !== 1 || alternateSpelling[0].start !== 2) failures.push("climax spelling");
+  if (textFallback.length !== 1 || textFallback[0].start !== 3 || textFallback[0].source !== "text") {
+    failures.push("text fallback");
+  }
+
+  if (failures.length) {
+    throw new Error(`Détection logo Klimax invalide: ${failures.join(", ")}`);
+  }
+};
 
 const waitForHealth = async (child) => {
   const started = Date.now();
@@ -126,6 +146,7 @@ const main = async () => {
     throw new Error("Base locale introuvable: local-data/klimax/db.json.");
   }
 
+  assertLogoMomentDetection();
   await createSmokeProject();
 
   const child = spawn(process.execPath, ["local-backend/server.mjs"], {

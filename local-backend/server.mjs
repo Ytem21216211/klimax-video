@@ -8,6 +8,7 @@ import multer from "multer";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { buildLogoMoments } from "./logoMoments.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
@@ -149,12 +150,6 @@ const cleanCaptionText = (text, wordsPerLine = 2) => {
   }
   return lines.join("\n");
 };
-
-const normalizeKeyword = (text) =>
-  stripCaptionPunctuation(text)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
 
 const safeNumber = (value, fallback = 0) => {
   const number = Number(value);
@@ -493,28 +488,6 @@ const buildCaptionCues = (words, wordsPerLine = 4) => {
   return cues;
 };
 
-const buildLogoMoments = (words, triggerWord, duration) => {
-  const target = normalizeKeyword(triggerWord || "klimax");
-  if (!target) return [];
-  const triggers = new Set([target]);
-  if (target === "klimax") {
-    triggers.add("climax");
-    triggers.add("klimaks");
-    triggers.add("climaks");
-  }
-
-  return words
-    .filter((word) => {
-      const normalized = normalizeKeyword(word.word);
-      return [...triggers].some((trigger) => normalized.includes(trigger));
-    })
-    .map((word) => ({
-      term: word.word,
-      start: Math.max(0, safeNumber(word.start, 0)),
-      end: Math.min(duration || safeNumber(word.end, 0) + 4.8, safeNumber(word.start, 0) + 4.8),
-    }));
-};
-
 const createSourceFingerprint = async (project, sourceGroup) => {
   const subtitleStyle = project.settings?.subtitleStyle || defaultSubtitleStyle;
   const parts = [project.sourceGroupId, subtitleStyle.wordsPerLine, project.settings?.logoTriggerWord || "klimax"];
@@ -549,13 +522,14 @@ const ensureTranscription = async (project, sourceGroup) => {
     const raw = await runJson(pythonBin, [transcribeScriptPath, asset.filePath, whisperModelName]);
     const words = buildWordsFromTranscription(raw);
     const cues = buildCaptionCues(words, subtitleStyle.wordsPerLine);
+    const duration = safeNumber(raw.duration, 0);
     bySource.set(asset.id, {
       sourceVideoId: asset.id,
       language: raw.language || "unknown",
-      duration: safeNumber(raw.duration, 0),
+      duration,
       cues,
       words,
-      logoMoments: buildLogoMoments(words, project.settings?.logoTriggerWord || "klimax", safeNumber(raw.duration, 0)),
+      logoMoments: buildLogoMoments(words, project.settings?.logoTriggerWord || "klimax", duration, raw.segments || cues),
     });
   }
 
