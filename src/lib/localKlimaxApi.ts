@@ -14,6 +14,8 @@ export type LocalSubtitleStyleSettings = {
   shadowColor?: string;
   shadowOpacity?: number;
   shadowDistance?: number;
+  shadowBlur?: number;
+  animationPreset?: "none" | "pop" | "bounce" | "rise";
   wordsPerLine?: number;
   introVerticalPosition?: "lower" | "middle";
   replyVerticalPosition?: "lower" | "middle";

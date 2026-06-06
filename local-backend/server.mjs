@@ -41,6 +41,8 @@ const defaultSubtitleStyle = {
   shadowColor: "#000000",
   shadowOpacity: 0.85,
   shadowDistance: 4,
+  shadowBlur: 10,
+  animationPreset: "pop",
   wordsPerLine: 2,
   introVerticalPosition: "lower",
   replyVerticalPosition: "middle",
@@ -176,8 +178,12 @@ const mergeProjectSettings = (settings = {}) => {
   subtitleStyle.wordsPerLine = clamp(Math.round(safeNumber(subtitleStyle.wordsPerLine, 2)), 2, 2);
   subtitleStyle.strokeWidth = clamp(safeNumber(subtitleStyle.strokeWidth, 4), 0, 12);
   subtitleStyle.shadowDistance = clamp(safeNumber(subtitleStyle.shadowDistance, 4), 0, 18);
+  subtitleStyle.shadowBlur = clamp(safeNumber(subtitleStyle.shadowBlur, 10), 0, 28);
   subtitleStyle.shadowOpacity = clamp(safeNumber(subtitleStyle.shadowOpacity, 0.85), 0, 1);
   subtitleStyle.fontWeight = safeNumber(subtitleStyle.fontWeight, 900);
+  if (!["none", "pop", "bounce", "rise"].includes(subtitleStyle.animationPreset)) {
+    subtitleStyle.animationPreset = defaults.subtitleStyle.animationPreset;
+  }
   hookStyle.fontSize = safeNumber(hookStyle.fontSize, 46);
   const musicVolumeDb = clamp(safeNumber(settings.musicVolumeDb, defaults.musicVolumeDb), -40, 0);
 
@@ -479,9 +485,18 @@ const buildCaptionCues = (words, wordsPerLine = 4) => {
 const buildLogoMoments = (words, triggerWord, duration) => {
   const target = normalizeKeyword(triggerWord || "klimax");
   if (!target) return [];
+  const triggers = new Set([target]);
+  if (target === "klimax") {
+    triggers.add("climax");
+    triggers.add("klimaks");
+    triggers.add("climaks");
+  }
 
   return words
-    .filter((word) => normalizeKeyword(word.word).includes(target))
+    .filter((word) => {
+      const normalized = normalizeKeyword(word.word);
+      return [...triggers].some((trigger) => normalized.includes(trigger));
+    })
     .map((word) => ({
       term: word.word,
       start: Math.max(0, safeNumber(word.start, 0)),
@@ -606,14 +621,22 @@ const fontDescriptor = (fontFamily) => {
       assName: "Arial",
       fontPath: "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
     },
+    {
+      match: /sf pro|system/i,
+      assName: "SF Pro Display",
+      fontPath: "/System/Library/Fonts/SFNS.ttf",
+    },
     { match: /archivo/i, assName: "Archivo Black", fontPath: null },
     { match: /montserrat/i, assName: "Montserrat", fontPath: null },
     { match: /bebas/i, assName: "Bebas Neue", fontPath: null },
     { match: /anton/i, assName: "Anton", fontPath: null },
+    { match: /din/i, assName: "DIN Condensed", fontPath: null },
     { match: /futura/i, assName: "Futura", fontPath: null },
     { match: /avenir/i, assName: "Avenir Next Heavy", fontPath: null },
     { match: /gill/i, assName: "Gill Sans", fontPath: null },
     { match: /trebuchet/i, assName: "Trebuchet MS", fontPath: null },
+    { match: /marker/i, assName: "Marker Felt", fontPath: null },
+    { match: /noteworthy/i, assName: "Noteworthy", fontPath: null },
   ];
 
   return known.find((item) => item.match.test(family)) || known[3];
@@ -634,6 +657,37 @@ const subtitleYForStage = (stage, subtitleStyle) => {
   return introPosition === "middle" ? 1260 : 1450;
 };
 
+const subtitleAnimationOverride = (subtitleStyle, x, y, shadowDown) => {
+  const blur = Math.max(0, Math.min(4, safeNumber(subtitleStyle.shadowBlur, 10) / 8));
+  const base = [`\\an5`, `\\xshad0`, `\\yshad${shadowDown}`, `\\blur${blur.toFixed(1)}`];
+  const animation = subtitleStyle.animationPreset || "pop";
+
+  if (animation === "rise") {
+    return `{${[...base, `\\move(${x},${y + 52},${x},${y},0,260)`].join("")}}`;
+  }
+  if (animation === "bounce") {
+    return `{${[
+      ...base,
+      `\\pos(${x},${y})`,
+      "\\fscx76",
+      "\\fscy76",
+      "\\t(0,210,\\fscx114\\fscy114)",
+      "\\t(210,390,\\fscx100\\fscy100)",
+    ].join("")}}`;
+  }
+  if (animation === "none") {
+    return `{${[...base, `\\pos(${x},${y})`].join("")}}`;
+  }
+  return `{${[
+    ...base,
+    `\\pos(${x},${y})`,
+    "\\fscx70",
+    "\\fscy70",
+    "\\t(0,150,\\fscx112\\fscy112)",
+    "\\t(150,280,\\fscx100\\fscy100)",
+  ].join("")}}`;
+};
+
 const buildAssSubtitleFile = async (project, clip, clipTranscription) => {
   const subtitleStyle = project.settings?.subtitleStyle || defaultSubtitleStyle;
   const clipLayout = normalizeClipLayout(clip);
@@ -651,6 +705,7 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription) => {
   const fontSize = safeNumber(subtitleStyle.fontSize, 34);
   const fontWeight = safeNumber(subtitleStyle.fontWeight, 900) >= 700 ? -1 : 0;
   const shadowDown = Math.max(0, Math.round(shadow));
+  const cueOverride = subtitleAnimationOverride(subtitleStyle, x, y, shadowDown);
   const cues = clipTranscription?.cues?.length
     ? clipTranscription.cues
     : [{ start: 0, end: 2, text: stripCaptionPunctuation(clip.subtitle || "Sous titres automatiques") }];
@@ -669,7 +724,7 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription) => {
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ...cues.map(
       (cue) =>
-        `Dialogue: 0,${assTime(cue.start)},${assTime(cue.end)},Klimax,,0,0,0,,{\\an5\\pos(${x},${y})\\xshad0\\yshad${shadowDown}}${assEscape(cue.text)}`
+        `Dialogue: 0,${assTime(cue.start)},${assTime(cue.end)},Klimax,,0,0,0,,${cueOverride}${assEscape(cue.text)}`
     ),
   ].join("\n");
 
@@ -735,7 +790,7 @@ const renderProject = async (db, project, sourceGroup) => {
     const baseOffsetX = safeNumber(clipLayout.videoTransform.x, 0);
     const baseOffsetY = safeNumber(clipLayout.videoTransform.y, 0);
     filterChains.push(
-      `[${sourceInput}:v]scale=1080*${baseScale}:1920*${baseScale}:force_original_aspect_ratio=increase,crop=1080:1920:(in_w-1080)/2+${baseOffsetX}:(in_h-1920)/2+${baseOffsetY},setsar=1,format=rgba[${currentVideo}]`
+      `[${sourceInput}:v]scale=1080*${baseScale}:1920*${baseScale}:force_original_aspect_ratio=increase,crop=1080:1920:min(max((in_w-1080)/2+${baseOffsetX}\\,0)\\,in_w-1080):min(max((in_h-1920)/2+${baseOffsetY}\\,0)\\,in_h-1920),setsar=1,format=rgba[${currentVideo}]`
     );
 
     if (clip.stage === "intro") {

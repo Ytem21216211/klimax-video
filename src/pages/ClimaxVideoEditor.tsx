@@ -75,6 +75,8 @@ const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
     shadowColor: "#000000",
     shadowOpacity: 0.85,
     shadowDistance: 4,
+    shadowBlur: 10,
+    animationPreset: "pop",
     wordsPerLine: 2,
     introVerticalPosition: "lower",
     replyVerticalPosition: "middle",
@@ -92,6 +94,8 @@ const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
     shadowColor: "#000000",
     shadowOpacity: 0.75,
     shadowDistance: 3,
+    shadowBlur: 12,
+    animationPreset: "rise",
     wordsPerLine: 2,
     introVerticalPosition: "lower",
     replyVerticalPosition: "middle",
@@ -109,6 +113,65 @@ const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
     shadowColor: "#000000",
     shadowOpacity: 0.9,
     shadowDistance: 5,
+    shadowBlur: 14,
+    animationPreset: "bounce",
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 900,
+  },
+  capcut: {
+    stylePreset: "capcut",
+    fontFamily: "Arial Black",
+    fontSize: 40,
+    textColor: "#ffffff",
+    strokeEnabled: true,
+    strokeColor: "#000000",
+    strokeWidth: 6,
+    shadowEnabled: true,
+    shadowColor: "#000000",
+    shadowOpacity: 0.95,
+    shadowDistance: 5,
+    shadowBlur: 18,
+    animationPreset: "pop",
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 900,
+  },
+  punch: {
+    stylePreset: "punch",
+    fontFamily: "Anton",
+    fontSize: 44,
+    textColor: "#ffffff",
+    strokeEnabled: true,
+    strokeColor: "#111111",
+    strokeWidth: 5,
+    shadowEnabled: true,
+    shadowColor: "#ff2d55",
+    shadowOpacity: 0.55,
+    shadowDistance: 6,
+    shadowBlur: 20,
+    animationPreset: "bounce",
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 900,
+  },
+  neon: {
+    stylePreset: "neon",
+    fontFamily: "Montserrat",
+    fontSize: 38,
+    textColor: "#ffffff",
+    strokeEnabled: true,
+    strokeColor: "#111111",
+    strokeWidth: 4,
+    shadowEnabled: true,
+    shadowColor: "#00e5ff",
+    shadowOpacity: 0.7,
+    shadowDistance: 4,
+    shadowBlur: 22,
+    animationPreset: "rise",
     wordsPerLine: 2,
     introVerticalPosition: "lower",
     replyVerticalPosition: "middle",
@@ -125,18 +188,24 @@ const DEFAULT_HOOK_STYLE: LocalHookStyleSettings = {
 
 const FONT_OPTIONS = [
   { value: "Arial Bold", label: "Arial Bold" },
+  { value: "Arial Black", label: "Arial Black" },
   { value: "Helvetica", label: "Helvetica" },
   { value: "Impact", label: "Impact" },
   { value: "Courier New", label: "Courier New" },
   { value: "Arial Rounded MT Bold", label: "Arial Rounded MT Bold" },
+  { value: "SF Pro Display", label: "SF Pro Display" },
+  { value: "System Rounded", label: "System Rounded" },
   { value: "Archivo Black", label: "Archivo Black" },
   { value: "Montserrat", label: "Montserrat" },
   { value: "Bebas Neue", label: "Bebas Neue" },
   { value: "Anton", label: "Anton" },
+  { value: "DIN Condensed", label: "DIN Condensed" },
   { value: "Futura", label: "Futura" },
   { value: "Avenir Next Heavy", label: "Avenir Next Heavy" },
   { value: "Gill Sans", label: "Gill Sans" },
   { value: "Trebuchet MS", label: "Trebuchet MS" },
+  { value: "Marker Felt", label: "Marker Felt" },
+  { value: "Noteworthy", label: "Noteworthy" },
 ];
 
 const hexToRgba = (hex = "#000000", alpha = 1) => {
@@ -155,6 +224,9 @@ const formatSubtitleSingleLine = (text: string) =>
     .trim();
 
 const clampValue = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const snapToValue = (value: number, target: number, threshold = 18) =>
+  Math.abs(value - target) <= threshold ? target : value;
+const canvasFontSize = (size: number) => `${(size / BASE_CANVAS_WIDTH) * 100}cqw`;
 
 const ClimaxVideoEditor = () => {
   const navigate = useNavigate();
@@ -178,10 +250,11 @@ const ClimaxVideoEditor = () => {
   const [renderError, setRenderError] = useState<string | null>(null);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [activeDragKind, setActiveDragKind] = useState<"video" | "hook" | "subtitle" | "logo" | "image" | null>(null);
   const previewCanvasRef = React.useRef<HTMLDivElement | null>(null);
   const autoTranscriptionRef = React.useRef<string | null>(null);
   const dragStateRef = React.useRef<{
-    kind: "hook" | "subtitle" | "logo" | "image";
+    kind: "video" | "hook" | "subtitle" | "logo" | "image";
     pointerId: number;
     startX: number;
     startY: number;
@@ -306,7 +379,7 @@ const ClimaxVideoEditor = () => {
   const mergedHookStyle = useMemo(() => ({ ...DEFAULT_HOOK_STYLE, ...hookStyle }), [hookStyle]);
   const subtitlePreviewStyle = useMemo(
     () => ({
-      fontSize: `${mergedSubtitleStyle.fontSize || subtitleSize}px`,
+      fontSize: canvasFontSize(mergedSubtitleStyle.fontSize || subtitleSize),
       color: mergedSubtitleStyle.textColor || "#ffffff",
       fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
       fontWeight: mergedSubtitleStyle.fontWeight || 900,
@@ -317,11 +390,19 @@ const ClimaxVideoEditor = () => {
         ? `0 ${mergedSubtitleStyle.shadowDistance || 4}px 0 ${hexToRgba(
             mergedSubtitleStyle.shadowColor || "#000000",
             mergedSubtitleStyle.shadowOpacity ?? 0.85
-          )}, 0 ${mergedSubtitleStyle.shadowDistance || 4}px 14px ${hexToRgba(
+          )}, 0 ${mergedSubtitleStyle.shadowDistance || 4}px ${mergedSubtitleStyle.shadowBlur ?? 14}px ${hexToRgba(
             mergedSubtitleStyle.shadowColor || "#000000",
             Math.min(0.55, (mergedSubtitleStyle.shadowOpacity ?? 0.85) * 0.55)
           )}`
         : undefined,
+      animation:
+        mergedSubtitleStyle.animationPreset === "pop"
+          ? "klimaxSubtitlePop 360ms cubic-bezier(.2,1.35,.3,1)"
+          : mergedSubtitleStyle.animationPreset === "bounce"
+            ? "klimaxSubtitleBounce 520ms cubic-bezier(.2,1.25,.2,1)"
+            : mergedSubtitleStyle.animationPreset === "rise"
+              ? "klimaxSubtitleRise 360ms ease-out"
+              : undefined,
     }),
     [mergedSubtitleStyle, subtitleSize]
   );
@@ -408,6 +489,7 @@ const ClimaxVideoEditor = () => {
       originX: origin.x,
       originY: origin.y,
     };
+    setActiveDragKind(kind);
     (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId);
     event.preventDefault();
     event.stopPropagation();
@@ -425,26 +507,28 @@ const ClimaxVideoEditor = () => {
       const deltaY = (event.clientY - drag.startY) / scaleY;
       const nextX = Math.round(drag.originX + deltaX);
       const nextY = Math.round(drag.originY + deltaY);
+      const overlayX = clampValue(snapToValue(nextX, 540), 40, 1040);
+      const overlayY = clampValue(snapToValue(nextY, 960), 50, 1840);
 
       if (drag.kind === "hook") {
         updateSelectedClip({
           hookPosition: {
-            x: clampValue(nextX, 40, 1040),
-            y: clampValue(nextY, 50, 1840),
+            x: overlayX,
+            y: overlayY,
           },
         });
       } else if (drag.kind === "subtitle") {
         updateSelectedClip({
           subtitlePosition: {
-            x: clampValue(nextX, 40, 1040),
-            y: clampValue(nextY, 50, 1840),
+            x: overlayX,
+            y: overlayY,
           },
         });
       } else if (drag.kind === "logo") {
         updateSelectedClip({
           logoPosition: {
-            x: clampValue(nextX, 40, 1040),
-            y: clampValue(nextY, 50, 1840),
+            x: overlayX,
+            y: overlayY,
           },
         });
       } else if (drag.kind === "image") {
@@ -470,6 +554,7 @@ const ClimaxVideoEditor = () => {
       const drag = dragStateRef.current;
       if (!drag || drag.pointerId !== event.pointerId) return;
       dragStateRef.current = null;
+      setActiveDragKind(null);
       previewCanvasRef.current?.releasePointerCapture(event.pointerId);
     };
 
@@ -565,6 +650,24 @@ const ClimaxVideoEditor = () => {
 
   return (
     <div className="min-h-screen bg-black text-white selection:bg-white selection:text-black overflow-hidden">
+      <style>
+        {`
+          @keyframes klimaxSubtitlePop {
+            0% { transform: scale(.72); opacity: .15; }
+            68% { transform: scale(1.08); opacity: 1; }
+            100% { transform: scale(1); opacity: 1; }
+          }
+          @keyframes klimaxSubtitleBounce {
+            0% { transform: translateY(18%) scale(.8); opacity: .2; }
+            55% { transform: translateY(-7%) scale(1.08); opacity: 1; }
+            100% { transform: translateY(0) scale(1); opacity: 1; }
+          }
+          @keyframes klimaxSubtitleRise {
+            0% { transform: translateY(18%); opacity: .1; }
+            100% { transform: translateY(0); opacity: 1; }
+          }
+        `}
+      </style>
       <div className="fixed inset-0 pointer-events-none bg-[linear-gradient(to_right,#ffffff08_1px,transparent_1px),linear-gradient(to_bottom,#ffffff06_1px,transparent_1px)] bg-[size:72px_72px]" />
       <div className="fixed inset-x-0 top-0 h-64 pointer-events-none bg-gradient-to-b from-white/[0.07] to-transparent" />
 
@@ -682,7 +785,11 @@ const ClimaxVideoEditor = () => {
           <div className="mx-auto max-w-6xl grid gap-6 lg:grid-cols-[minmax(320px,430px)_1fr] items-start">
             <div className="space-y-5">
               <div className="rounded-[32px] border border-white/10 bg-white/[0.04] p-4 shadow-2xl">
-                <div ref={previewCanvasRef} className="aspect-[9/16] rounded-[28px] bg-neutral-950 overflow-hidden relative border border-white/10 touch-none">
+                <div
+                  ref={previewCanvasRef}
+                  className="aspect-[9/16] rounded-[28px] bg-neutral-950 overflow-hidden relative border border-white/10 touch-none"
+                  style={{ containerType: "size" }}
+                >
                   <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_12%,#ffffff26,transparent_28%),linear-gradient(160deg,#1f1f1f,#050505_52%,#202020)]" />
                   {selectedSourceAsset?.fileUrl && (
                     <video
@@ -704,6 +811,16 @@ const ClimaxVideoEditor = () => {
                     <span>{selectedClip?.stage === "reply" ? "Personne 2" : "Personne 1"}</span>
                     <span>9:16</span>
                   </div>
+                  {activeDragKind && (
+                    <>
+                      <div className="pointer-events-none absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-white/45 shadow-[0_0_16px_rgba(255,255,255,0.65)]" />
+                      <div className="pointer-events-none absolute left-0 top-1/2 h-px w-full -translate-y-1/2 bg-white/35 shadow-[0_0_16px_rgba(255,255,255,0.55)]" />
+                      <div className="pointer-events-none absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/70 bg-black/30" />
+                      <div className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 rounded-full border border-white/15 bg-black/70 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-white/75">
+                        {activeDragKind === "video" ? "Recadrage video" : "Snap centre actif"}
+                      </div>
+                    </>
+                  )}
 
                   <div className="absolute inset-x-5 top-[16%] h-[42%] rounded-[28px] border border-white/10 bg-black/30 backdrop-blur-[2px] overflow-hidden">
                     <div className="absolute inset-0 grid place-items-center">
@@ -733,27 +850,25 @@ const ClimaxVideoEditor = () => {
                   {!selectedClip || selectedClip.stage === "intro" ? (
                     <>
                       <div
-                        className="absolute flex flex-col items-center"
+                        className="absolute flex justify-center"
                         style={{
                           left: `${(selectedClipPositions.hookPosition.x / BASE_CANVAS_WIDTH) * 100}%`,
                           top: `${(selectedClipPositions.hookPosition.y / BASE_CANVAS_HEIGHT) * 100}%`,
                           transform: "translate(-50%, -50%)",
+                          width: "92%",
                         }}
                       >
                         <div
-                          className="relative w-[96%] max-w-[96%] rounded-[999px] px-10 py-3 text-center shadow-[0_16px_50px_rgba(0,0,0,0.45)] cursor-move select-none"
+                          className="relative flex min-h-[72px] w-full max-w-full items-center justify-center rounded-[999px] px-12 py-4 text-center shadow-[0_16px_50px_rgba(0,0,0,0.45)] cursor-move select-none"
                           style={{ backgroundColor: mergedHookStyle.bubbleColor || "#ffffff", touchAction: "none" }}
                           onPointerDown={(event) => startClipDrag("hook", event)}
                         >
-                          <div
-                            className="absolute left-1/2 top-full h-5 w-8 -translate-x-1/2 rounded-b-full"
-                            style={{ backgroundColor: mergedHookStyle.bubbleColor || "#ffffff" }}
-                          />
                           <p
-                            className="relative z-10 whitespace-pre-line text-[18px] font-black leading-snug tracking-tight break-words"
+                            className="relative z-10 whitespace-pre-line font-black leading-snug tracking-tight break-words"
                             style={{
                               color: mergedHookStyle.textColor || "#000000",
                               fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
+                              fontSize: canvasFontSize(mergedHookStyle.fontSize || 46),
                             }}
                           >
                             {selectedClip?.hookText || hookText}
@@ -1017,6 +1132,9 @@ const ClimaxVideoEditor = () => {
                               { key: "impact", label: "Impact" },
                               { key: "clean", label: "Clean" },
                               { key: "highlight", label: "Highlight" },
+                              { key: "capcut", label: "CapCut" },
+                              { key: "punch", label: "Punch" },
+                              { key: "neon", label: "Neon" },
                             ].map((preset) => (
                               <button
                                 key={preset.key}
@@ -1068,7 +1186,28 @@ const ClimaxVideoEditor = () => {
                               </SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="2">2 mots max</SelectItem>
-                                <SelectItem value="3">3 mots max</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="space-y-2 md:col-span-2">
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Animation texte</Label>
+                            <Select
+                              value={mergedSubtitleStyle.animationPreset || "pop"}
+                              onValueChange={(value) =>
+                                setSubtitleStyle((current) => ({
+                                  ...current,
+                                  animationPreset: value as LocalSubtitleStyleSettings["animationPreset"],
+                                }))
+                              }
+                            >
+                              <SelectTrigger className="rounded-2xl border-white/10 bg-white/[0.03]">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="pop">Pop-up</SelectItem>
+                                <SelectItem value="bounce">Bounce</SelectItem>
+                                <SelectItem value="rise">Montee douce</SelectItem>
+                                <SelectItem value="none">Sans animation</SelectItem>
                               </SelectContent>
                             </Select>
                           </div>
@@ -1138,6 +1277,19 @@ const ClimaxVideoEditor = () => {
                                 onValueChange={([value]) => setSubtitleStyle((current) => ({ ...current, shadowDistance: value }))}
                               />
                             </div>
+                            <div className="mt-4">
+                              <div className="mb-3 flex items-center justify-between gap-3">
+                                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Flou</Label>
+                                <span className="text-sm font-black">{mergedSubtitleStyle.shadowBlur ?? 14}px</span>
+                              </div>
+                              <Slider
+                                value={[mergedSubtitleStyle.shadowBlur ?? 14]}
+                                min={0}
+                                max={28}
+                                step={1}
+                                onValueChange={([value]) => setSubtitleStyle((current) => ({ ...current, shadowBlur: value }))}
+                              />
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -1168,6 +1320,47 @@ const ClimaxVideoEditor = () => {
                           <div>
                             <p className="text-sm font-black uppercase tracking-wide">Placement direct</p>
                             <p className="text-xs text-white/45">Glisse les éléments sur la preview ou ajuste leurs coordonnées ici.</p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                updateSelectedClip({
+                                  videoTransform: { scale: 100, x: 0, y: 0 },
+                                })
+                              }
+                              className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                            >
+                              Reset cadrage
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                updateSelectedClip({
+                                  subtitlePosition: { x: 540, y: selectedClipPositions.subtitlePosition.y },
+                                })
+                              }
+                              className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                            >
+                              Centrer sous-titres
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                selectedClip.stage === "intro"
+                                  ? updateSelectedClip({ hookPosition: { x: 540, y: selectedClipPositions.hookPosition.y } })
+                                  : updateSelectedClip({ logoPosition: { x: 540, y: selectedClipPositions.logoPosition.y } })
+                              }
+                              className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                            >
+                              Centrer élément
+                            </Button>
                           </div>
                           <div className="grid gap-4 md:grid-cols-2">
                             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3 md:col-span-2">
