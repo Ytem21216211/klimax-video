@@ -981,7 +981,7 @@ const ClimaxVideoEditor = () => {
                       playsInline
                       style={{
                         touchAction: "none",
-                        objectPosition: `calc(50% + ${selectedClipPositions.videoTransform.x}px) calc(50% + ${selectedClipPositions.videoTransform.y}px)`,
+                        objectPosition: `calc(50% + ${canvasUnit(selectedClipPositions.videoTransform.x)}) calc(50% + ${canvasUnit(selectedClipPositions.videoTransform.y)})`,
                         transform: `translate(-50%, -50%) scale(${selectedClipPositions.videoTransform.scale / 100})`,
                       }}
                     />

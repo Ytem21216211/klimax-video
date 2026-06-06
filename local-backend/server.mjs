@@ -20,6 +20,7 @@ const renderRoot = path.join(dataRoot, "renders");
 const textRoot = path.join(dataRoot, "render-text");
 const systemRoot = path.join(dataRoot, "system");
 const tempRoot = path.join(dataRoot, "tmp");
+const fontRoot = path.join(dataRoot, "fonts");
 const publicSeedRoot = path.join(projectRoot, "public", "klimax-videos");
 const pythonBin = path.join(projectRoot, "local-backend", ".venv", "bin", "python");
 const transcribeScriptPath = path.join(projectRoot, "local-backend", "transcribe.py");
@@ -656,6 +657,57 @@ const fontDescriptor = (fontFamily) => {
   return known.find((item) => item.match.test(family)) || known[3];
 };
 
+const GOOGLE_EXPORT_FONTS = new Set([
+  "Anton",
+  "Archivo Black",
+  "Bebas Neue",
+  "Montserrat",
+]);
+
+const googleFontCssUrl = (family, weight) => {
+  const encodedFamily = encodeURIComponent(family).replace(/%20/g, "+");
+  const safeWeight = clamp(Math.round(safeNumber(weight, 800)), 400, 900);
+  return `https://fonts.googleapis.com/css2?family=${encodedFamily}:wght@${safeWeight}&display=swap`;
+};
+
+const downloadGoogleFont = async (family, weight) => {
+  await ensureDir(fontRoot);
+  const targetPath = path.join(fontRoot, `${normalizeFileName(`${family}-${weight}`)}.ttf`);
+  if (fsSync.existsSync(targetPath)) return targetPath;
+
+  const headers = { "User-Agent": "Mozilla/5.0 KlimaxVideo/1.0" };
+  let cssResponse = await fetch(googleFontCssUrl(family, weight), { headers });
+  let css = cssResponse.ok ? await cssResponse.text() : "";
+  if (!/url\((https:[^)]+)\)/.test(css)) {
+    const encodedFamily = encodeURIComponent(family).replace(/%20/g, "+");
+    cssResponse = await fetch(`https://fonts.googleapis.com/css2?family=${encodedFamily}&display=swap`, { headers });
+    css = cssResponse.ok ? await cssResponse.text() : "";
+  }
+
+  const fontUrl = css.match(/url\((https:[^)]+)\)/)?.[1];
+  if (!fontUrl) return null;
+
+  const fontResponse = await fetch(fontUrl, { headers });
+  if (!fontResponse.ok) return null;
+  const buffer = Buffer.from(await fontResponse.arrayBuffer());
+  await fs.writeFile(targetPath, buffer);
+  return targetPath;
+};
+
+const resolveFontDescriptor = async (fontFamily, fontWeight = 800) => {
+  const descriptor = fontDescriptor(fontFamily);
+  if (descriptor.fontPath || !GOOGLE_EXPORT_FONTS.has(descriptor.assName)) return descriptor;
+
+  try {
+    const fontPath = await downloadGoogleFont(descriptor.assName, fontWeight);
+    if (fontPath) return { ...descriptor, fontPath };
+  } catch (error) {
+    console.warn(`[font] fallback for ${descriptor.assName}: ${error.message}`);
+  }
+
+  return descriptor;
+};
+
 const assEscape = (text) =>
   String(text || "")
     .replace(/\r?\n/g, "\\N")
@@ -705,7 +757,7 @@ const subtitleAnimationOverride = (subtitleStyle, x, y, shadowDown) => {
 const buildAssSubtitleFile = async (project, clip, clipTranscription) => {
   const subtitleStyle = project.settings?.subtitleStyle || defaultSubtitleStyle;
   const clipLayout = normalizeClipLayout(clip);
-  const font = fontDescriptor(subtitleStyle.fontFamily);
+  const font = await resolveFontDescriptor(subtitleStyle.fontFamily, subtitleStyle.fontWeight || 800);
   const outline = subtitleStyle.strokeEnabled ? safeNumber(subtitleStyle.strokeWidth, 4) : 0;
   const shadow = subtitleStyle.shadowEnabled ? safeNumber(subtitleStyle.shadowDistance, 4) : 0;
   const backAlpha = subtitleStyle.shadowEnabled
@@ -749,7 +801,7 @@ const createHookBubbleOverlay = async (project, clip) => {
   const subtitleStyle = project.settings?.subtitleStyle || defaultSubtitleStyle;
   const hookStyle = project.settings?.hookStyle || defaultHookStyle;
   const clipLayout = normalizeClipLayout(clip);
-  const font = fontDescriptor(subtitleStyle.fontFamily);
+  const font = await resolveFontDescriptor(subtitleStyle.fontFamily, subtitleStyle.fontWeight || 800);
   const outputPath = path.join(tempRoot, `${project.id}-${clip.id}-hook.png`);
   const configPath = await writeJsonFile(project.id, `${clip.id}-hook-style`, {
     outputPath,
@@ -777,6 +829,7 @@ const renderProject = async (db, project, sourceGroup) => {
 
   await ensureDir(renderRoot);
   await ensureDir(tempRoot);
+  await ensureDir(fontRoot);
   const outputPath = path.join(renderRoot, `${project.id}-${Date.now()}.mp4`);
 
   const clipsToRender = project.clips.filter((clip) => sourceAssetForClip(sourceGroup, clip));
@@ -874,7 +927,7 @@ const renderProject = async (db, project, sourceGroup) => {
 
     const assFilePath = await buildAssSubtitleFile(project, clip, clipTranscription);
     const subtitledVideo = `vsub${clipIndex}`;
-    filterChains.push(`[${currentVideo}]subtitles='${assFilePath}'[${subtitledVideo}]`);
+    filterChains.push(`[${currentVideo}]subtitles='${assFilePath}':fontsdir='${fontRoot}'[${subtitledVideo}]`);
     filterChains.push(`[${sourceInput}:a]volume=2dB,aresample=async=1[acl${clipIndex}]`);
 
     // Audio SFX for this clip (if any). Mixed at the start of the clip audio.

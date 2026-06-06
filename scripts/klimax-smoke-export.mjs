@@ -179,7 +179,7 @@ const createSmokeProject = async () => {
     subtitleStyle: {
       ...(smoke.settings?.subtitleStyle || {}),
       stylePreset: "capcut",
-      fontFamily: "Arial Black",
+      fontFamily: "Montserrat",
       fontSize: 40,
       textColor: "#ffffff",
       strokeEnabled: true,
@@ -248,7 +248,7 @@ const main = async () => {
 
   const child = spawn(process.execPath, ["local-backend/server.mjs"], {
     cwd: projectRoot,
-    env: { ...process.env, KLIMAX_BACKEND_PORT: String(port) },
+    env: { ...process.env, KLIMAX_BACKEND_PORT: String(port), KLIMAX_SUPABASE_ENABLED: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let logs = "";
@@ -280,7 +280,7 @@ const main = async () => {
     if (!exported?.duration || exported.duration < 2) failures.push("duration too short");
     if (!exported?.sizeBytes || exported.sizeBytes < 100000) failures.push("file too small");
     if (!String(exported?.log || "").includes("klimax-pop-up.mov")) failures.push("logo animation not used");
-    if (!String(exported?.log || "").includes("Arial Black")) failures.push("Arial Black not used");
+    if (!String(exported?.log || "").includes("Montserrat")) failures.push("Montserrat not used");
 
     if (failures.length) {
       throw new Error(`Smoke export failed: ${failures.join(", ")}`);
