@@ -1516,42 +1516,6 @@ const ClimaxVideoEditor = () => {
                 </Button>
               </div>
 
-              <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-black uppercase tracking-[0.25em] text-white/35">Préparation export</p>
-                    <p className="mt-1 text-sm text-white/55">
-                      {canStartRender ? "La vidéo peut être créée." : "Il manque une base avant export."}
-                    </p>
-                  </div>
-                  {canStartRender ? (
-                    <BadgeCheck className="h-5 w-5 text-emerald-200" />
-                  ) : (
-                    <AlertTriangle className="h-5 w-5 text-amber-200" />
-                  )}
-                </div>
-                <div className="mt-4 grid gap-2">
-                  {projectDiagnostics.map((item) => (
-                    <div key={item.label} className="flex items-start gap-3 rounded-2xl border border-white/10 bg-black/35 p-3">
-                      <div
-                        className={cn(
-                          "mt-0.5 h-3 w-3 rounded-full border",
-                          item.ok
-                            ? "border-emerald-200 bg-emerald-300"
-                            : item.required
-                              ? "border-amber-200 bg-amber-300"
-                              : "border-white/20 bg-white/10"
-                        )}
-                      />
-                      <div className="min-w-0">
-                        <p className="text-sm font-black">{item.label}</p>
-                        <p className="text-xs text-white/45">{item.detail}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
               {(exportHistory.length > 0 || renderError) && (
                 <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
                   <div className="flex items-center justify-between gap-3">
