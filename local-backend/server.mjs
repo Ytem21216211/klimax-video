@@ -34,6 +34,9 @@ const logoPreviewTimeSeconds = 2;
 const whisperModelName = process.env.KLIMAX_WHISPER_MODEL || "tiny";
 const port = Number(process.env.KLIMAX_BACKEND_PORT || 8787);
 const transcriptionPipelineVersion = "caption-elision-logo-brand-v5";
+const maxStoredExports = 20;
+const maxResponseExports = 8;
+const maxStoredExportLogChars = 1600;
 
 const app = express();
 
@@ -186,6 +189,11 @@ const safeNumber = (value, fallback = 0) => {
 };
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+const truncateText = (value, maxLength) => {
+  const text = String(value || "");
+  if (!text || text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength)}\n...[log tronque pour garder l'editeur rapide]`;
+};
 
 const VIDEO_FILTERS = new Map([
   ["none", ""],
@@ -303,13 +311,28 @@ const defaultTranscription = () => ({
   clips: [],
 });
 
-const normalizeProject = (project) => {
+const normalizeExport = (entry, { includeLog = true } = {}) => {
+  if (!entry || typeof entry !== "object") return entry;
+  const next = { ...entry };
+  if (includeLog && typeof next.log === "string") {
+    next.log = truncateText(next.log, maxStoredExportLogChars);
+  }
+  if (!includeLog) {
+    delete next.log;
+  }
+  return next;
+};
+
+const normalizeProject = (project, { response = false } = {}) => {
   const settings = mergeProjectSettings(project?.settings || {});
-  const exports = Array.isArray(project?.exports)
+  const exportLimit = response ? maxResponseExports : maxStoredExports;
+  const exports = (Array.isArray(project?.exports)
     ? [...project.exports].sort((a, b) => String(b?.createdAt || "").localeCompare(String(a?.createdAt || "")))
     : project?.export
       ? [project.export]
-      : [];
+      : [])
+    .slice(0, exportLimit)
+    .map((entry) => normalizeExport(entry, { includeLog: !response }));
 
   return {
     ...project,
@@ -346,6 +369,12 @@ const readDb = async () => {
 const writeDb = async (db) => {
   await ensureDir(dataRoot);
   await fs.writeFile(dbPath, JSON.stringify(normalizeDb(db), null, 2));
+};
+
+const compactDb = async () => {
+  if (!fsSync.existsSync(dbPath)) return;
+  const db = await readDb();
+  await writeDb(db);
 };
 
 const assetFromFile = ({ file, category, groupId, groupTitle, videoPart, note }) => ({
@@ -387,7 +416,7 @@ const resolveProject = (db, projectId) => {
   const project = db.projects.find((item) => item.id === projectId);
   if (!project) return null;
   const sourceGroup = getVideoGroups(db.assets).find((group) => group.id === project.sourceGroupId) || null;
-  return { ...normalizeProject(project), sourceGroup };
+  return { ...normalizeProject(project, { response: true }), sourceGroup };
 };
 
 const runProcess = (command, args) =>
@@ -1314,7 +1343,7 @@ const renderProject = async (db, project, sourceGroup) => {
     throw new Error("Ce projet n'a aucun segment exploitable.");
   }
 
-  const inputArgs = ["-y"];
+  const inputArgs = ["-y", "-hide_banner", "-nostats", "-loglevel", "warning"];
   const filterChains = [];
   const concatPieces = [];
   let inputIndex = 0;
@@ -1524,7 +1553,9 @@ const renderProject = async (db, project, sourceGroup) => {
     "-c:v",
     "libx264",
     "-preset",
-    "veryfast",
+    "superfast",
+    "-threads",
+    "0",
     "-crf",
     "20",
     "-pix_fmt",
@@ -1544,7 +1575,7 @@ const renderProject = async (db, project, sourceGroup) => {
     url: publicUrlFor(outputPath),
     createdAt: new Date().toISOString(),
     ...metadata,
-    log: stderr,
+    log: truncateText(stderr, maxStoredExportLogChars),
   };
 };
 
@@ -1778,7 +1809,9 @@ app.post("/api/projects/:id/render", async (req, res) => {
     const exported = await renderProject(db, project, sourceGroup);
     project.status = "completed";
     project.render_progress = 100;
-    project.exports = [exported, ...(Array.isArray(project.exports) ? project.exports : [])];
+    project.exports = [exported, ...(Array.isArray(project.exports) ? project.exports : [])]
+      .slice(0, maxStoredExports)
+      .map((entry) => normalizeExport(entry, { includeLog: true }));
     project.export = exported;
     project.updated_at = new Date().toISOString();
     await writeDb(db);
@@ -1787,7 +1820,9 @@ app.post("/api/projects/:id/render", async (req, res) => {
     const failedExport = { status: "failed", error: error.message, createdAt: new Date().toISOString() };
     project.status = "failed";
     project.render_progress = 0;
-    project.exports = [failedExport, ...(Array.isArray(project.exports) ? project.exports : [])];
+    project.exports = [failedExport, ...(Array.isArray(project.exports) ? project.exports : [])]
+      .slice(0, maxStoredExports)
+      .map((entry) => normalizeExport(entry, { includeLog: true }));
     project.export = failedExport;
     project.updated_at = new Date().toISOString();
     await writeDb(db);
@@ -1978,6 +2013,7 @@ await Promise.all([
 ]);
 await ensureSystemAssets();
 await seedTailleVideos();
+await compactDb();
 
 app.listen(port, "127.0.0.1", () => {
   console.log(`Klimax local backend: http://127.0.0.1:${port}`);

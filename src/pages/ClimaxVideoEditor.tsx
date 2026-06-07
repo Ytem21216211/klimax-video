@@ -1783,7 +1783,7 @@ const ClimaxVideoEditor = () => {
                   </div>
                   {exportHistory[0]?.url ? (
                     <div className="mt-4 space-y-4">
-                      <video src={exportHistory[0].url} controls className="w-full rounded-2xl border border-white/10" />
+                      <video src={exportHistory[0].url} controls preload="metadata" className="w-full rounded-2xl border border-white/10" />
                       <div className="rounded-2xl border border-emerald-300/20 bg-emerald-300/[0.08] p-4">
                         <div className="flex items-start justify-between gap-3">
                           <div>
