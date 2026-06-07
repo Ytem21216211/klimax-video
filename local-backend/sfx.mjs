@@ -113,6 +113,14 @@ export const SFX_CATALOG = [
     durationMs: 240,
   },
   {
+    key: "effect_smooth_whoosh",
+    type: "effect",
+    label: "Smooth swosh",
+    description: "Whoosh doux pour accompagner les zooms smooth et zoom out.",
+    file: "effects/smooth-whoosh.wav",
+    durationMs: 620,
+  },
+  {
     key: "effect_boom",
     type: "effect",
     label: "Boom",
@@ -223,6 +231,16 @@ async function ensureEffectGlitch(file) {
   ], "glitch");
 }
 
+async function ensureEffectSmoothWhoosh(file) {
+  await runFfmpeg([
+    "-f", "lavfi", "-i", "anoisesrc=color=pink:duration=0.62:sample_rate=48000",
+    "-f", "lavfi", "-i", "sine=frequency=420:duration=0.62",
+    "-filter_complex", "[0:a]highpass=f=420,lowpass=f=5200,afade=t=in:st=0:d=0.08,afade=t=out:st=0.38:d=0.24,volume=0.72[n];[1:a]volume=0.14,afade=t=in:st=0:d=0.08,afade=t=out:st=0.34:d=0.28[t];[n][t]amix=inputs=2:duration=longest,acompressor=threshold=-16dB:ratio=5:attack=8:release=120",
+    "-ar", "48000", "-ac", "1",
+    file,
+  ], "smooth-whoosh");
+}
+
 async function ensureEffectBoom(file) {
   // 500ms boom: 60Hz with fast attack and slow decay.
   await runFfmpeg([
@@ -283,6 +301,7 @@ const GENERATORS = {
   effect_snap: ensureEffectSnap,
   effect_cash: ensureEffectCash,
   effect_glitch: ensureEffectGlitch,
+  effect_smooth_whoosh: ensureEffectSmoothWhoosh,
   effect_boom: ensureEffectBoom,
   effect_riser: ensureEffectRiser,
   transition_film_roll: ensureTransitionFilmRoll,

@@ -99,6 +99,14 @@ const defaultProjectSettings = () => ({
   videoVolumeDb: 2,
   brollEnabled: true,
   autoSfxEnabled: true,
+  autoZoomEnabled: true,
+  autoZoomMode: "cut",
+  autoZoomBoostPercent: 20,
+  autoZoomDurationSeconds: 2,
+  introZoomOutEnabled: false,
+  replyZoomOutEnabled: false,
+  zoomOutStartPercent: 180,
+  zoomOutDurationSeconds: 1.2,
   klimaxLogoEnabled: true,
   logoTriggerWord: "klimax",
   videoFilterKey: "none",
@@ -196,6 +204,8 @@ const videoFilterChain = (key) => {
   return filter ? `,${filter}` : "";
 };
 
+const escapeFfmpegExpression = (expression) => String(expression).replace(/,/g, "\\,");
+
 const mergeProjectSettings = (settings = {}) => {
   const defaults = defaultProjectSettings();
   const subtitleStyle = {
@@ -233,6 +243,9 @@ const mergeProjectSettings = (settings = {}) => {
   const musicVolumeDb = clamp(safeNumber(settings.musicVolumeDb, defaults.musicVolumeDb), -40, 0);
   const videoVolumeDb = clamp(safeNumber(settings.videoVolumeDb, defaults.videoVolumeDb), -12, 12);
   const videoFilterKey = normalizeVideoFilterKey(settings.videoFilterKey || defaults.videoFilterKey);
+  const autoZoomMode = ["cut", "smooth"].includes(String(settings.autoZoomMode || ""))
+    ? String(settings.autoZoomMode)
+    : defaults.autoZoomMode;
 
   return {
     ...defaults,
@@ -241,6 +254,14 @@ const mergeProjectSettings = (settings = {}) => {
     musicVolumeDb,
     videoVolumeDb,
     videoFilterKey,
+    autoZoomEnabled: settings.autoZoomEnabled !== false,
+    autoZoomMode,
+    autoZoomBoostPercent: clamp(safeNumber(settings.autoZoomBoostPercent, defaults.autoZoomBoostPercent), 5, 60),
+    autoZoomDurationSeconds: clamp(safeNumber(settings.autoZoomDurationSeconds, defaults.autoZoomDurationSeconds), 0.6, 4),
+    introZoomOutEnabled: settings.introZoomOutEnabled === true,
+    replyZoomOutEnabled: settings.replyZoomOutEnabled === true,
+    zoomOutStartPercent: clamp(safeNumber(settings.zoomOutStartPercent, defaults.zoomOutStartPercent), 110, 260),
+    zoomOutDurationSeconds: clamp(safeNumber(settings.zoomOutDurationSeconds, defaults.zoomOutDurationSeconds), 0.4, 3),
     subtitleStyle,
     hookStyle,
   };
@@ -654,6 +675,97 @@ const collectAutoSfxEvents = (clipTranscription, clipDuration, clipIndex, clipCo
   }
 
   return events.sort((a, b) => a.time - b.time);
+};
+
+const randomBetween = (min, max) => min + Math.random() * (max - min);
+
+const buildAutoZoomEvents = (clip, clipDuration, settings) => {
+  const events = [];
+  const duration = Math.max(0.1, safeNumber(clipDuration, 0));
+  const zoomDuration = clamp(safeNumber(settings.autoZoomDurationSeconds, 2), 0.6, 4);
+  const zoomBoost = clamp(safeNumber(settings.autoZoomBoostPercent, 20), 5, 60) / 100;
+
+  if (
+    settings.autoZoomEnabled !== false &&
+    clip?.stage === "reply" &&
+    duration >= zoomDuration + 2.2
+  ) {
+    const count = 2;
+    const availableStart = 0.8;
+    const availableEnd = Math.max(availableStart, duration - zoomDuration - 0.6);
+    const minGap = zoomDuration + 1.0;
+    const starts = [];
+    let attempts = 0;
+    while (starts.length < count && attempts < 80) {
+      attempts += 1;
+      const start = randomBetween(availableStart, availableEnd);
+      if (starts.every((value) => Math.abs(value - start) >= minGap)) {
+        starts.push(start);
+      }
+    }
+    if (starts.length < count) {
+      const first = availableStart + Math.max(0, availableEnd - availableStart) * 0.25;
+      const second = availableStart + Math.max(0, availableEnd - availableStart) * 0.72;
+      starts.splice(0, starts.length, first, second);
+    }
+
+    starts.slice(0, count).forEach((start, index) => {
+      events.push({
+        kind: settings.autoZoomMode === "smooth" ? "smooth" : "cut",
+        start: clamp(start, 0, Math.max(0, duration - zoomDuration)),
+        duration: zoomDuration,
+        boost: zoomBoost,
+        sfxKey: "effect_smooth_whoosh",
+        label: `auto-${index + 1}`,
+      });
+    });
+  }
+
+  const zoomOutEnabled = clip?.stage === "intro"
+    ? settings.introZoomOutEnabled === true
+    : settings.replyZoomOutEnabled === true;
+  if (zoomOutEnabled && duration > 0.6) {
+    events.push({
+      kind: "zoomOut",
+      start: 0,
+      duration: Math.min(clamp(safeNumber(settings.zoomOutDurationSeconds, 1.2), 0.4, 3), duration),
+      boost: clamp(safeNumber(settings.zoomOutStartPercent, 180), 110, 260) / 100 - 1,
+      sfxKey: "effect_smooth_whoosh",
+      label: "clip-start",
+    });
+  }
+
+  return events.sort((a, b) => a.start - b.start);
+};
+
+const zoomExpressionForEvents = (events) => {
+  if (!events.length) return "1";
+  const terms = events.map((event) => {
+    const start = Number(event.start).toFixed(3);
+    const end = Number(event.start + event.duration).toFixed(3);
+    const duration = Number(event.duration).toFixed(3);
+    const boost = Number(event.boost).toFixed(4);
+    if (event.kind === "smooth") {
+      return `${boost}*between(t,${start},${end})*sin(PI*(t-${start})/${duration})`;
+    }
+    if (event.kind === "zoomOut") {
+      return `${boost}*between(t,0,${duration})*(1-t/${duration})`;
+    }
+    return `${boost}*between(t,${start},${end})`;
+  });
+  return `1+${terms.join("+")}`;
+};
+
+const applyVideoZoomEvents = (filterChains, inputTag, outputTag, events) => {
+  const expression = zoomExpressionForEvents(events);
+  if (expression === "1") {
+    filterChains.push(`[${inputTag}]null[${outputTag}]`);
+    return;
+  }
+  const escaped = escapeFfmpegExpression(expression);
+  filterChains.push(
+    `[${inputTag}]scale=w='1080*(${escaped})':h='1920*(${escaped})':eval=frame,crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,setsar=1[${outputTag}]`
+  );
 };
 
 const createSourceFingerprint = async (project, sourceGroup) => {
@@ -1191,6 +1303,7 @@ const renderProject = async (db, project, sourceGroup) => {
     const clipTranscription = project.transcription?.clips?.find((entry) => entry.clipId === clip.id);
     const clipDuration = safeNumber(clipTranscription?.duration, 0);
     const clipLayout = normalizeClipLayout(clip);
+    const zoomEvents = buildAutoZoomEvents(clip, clipDuration, project.settings || {});
     totalDuration += clipDuration;
 
     inputArgs.push("-i", sourceAsset.filePath);
@@ -1204,6 +1317,9 @@ const renderProject = async (db, project, sourceGroup) => {
     filterChains.push(
       `[${sourceInput}:v]scale=1080*${baseScale}:1920*${baseScale}:force_original_aspect_ratio=increase,crop=1080:1920:min(max((in_w-1080)/2+${baseOffsetX}\\,0)\\,in_w-1080):min(max((in_h-1920)/2+${baseOffsetY}\\,0)\\,in_h-1920),setsar=1${videoFilterChain(project.settings?.videoFilterKey)},format=rgba[${currentVideo}]`
     );
+    const zoomedVideo = `vzoom${clipIndex}`;
+    applyVideoZoomEvents(filterChains, currentVideo, zoomedVideo, zoomEvents);
+    currentVideo = zoomedVideo;
 
     if (clip.stage === "intro") {
       const hookOverlayPath = await createHookBubbleOverlay(project, clip);
@@ -1282,6 +1398,9 @@ const renderProject = async (db, project, sourceGroup) => {
     if (clip.sfxEffect) sfxEvents.push({ key: clip.sfxEffect, time: 0, word: "manual" });
     if (project.settings?.autoSfxEnabled !== false) {
       sfxEvents.push(...collectAutoSfxEvents(clipTranscription, clipDuration, clipIndex, clipsToRender.length));
+    }
+    for (const event of zoomEvents) {
+      if (event.sfxKey) sfxEvents.push({ key: event.sfxKey, time: event.start, word: event.label });
     }
 
     const sfxMixTags = [];

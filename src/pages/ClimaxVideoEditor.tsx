@@ -709,6 +709,14 @@ const ClimaxVideoEditor = () => {
   const [selectedMusicId, setSelectedMusicId] = useState<string | null>(null);
   const [musicEnabled, setMusicEnabled] = useState(true);
   const [autoSfxEnabled, setAutoSfxEnabled] = useState(true);
+  const [autoZoomEnabled, setAutoZoomEnabled] = useState(true);
+  const [autoZoomMode, setAutoZoomMode] = useState<"cut" | "smooth">("cut");
+  const [autoZoomBoostPercent, setAutoZoomBoostPercent] = useState(20);
+  const [autoZoomDurationSeconds, setAutoZoomDurationSeconds] = useState(2);
+  const [introZoomOutEnabled, setIntroZoomOutEnabled] = useState(false);
+  const [replyZoomOutEnabled, setReplyZoomOutEnabled] = useState(false);
+  const [zoomOutStartPercent, setZoomOutStartPercent] = useState(180);
+  const [zoomOutDurationSeconds, setZoomOutDurationSeconds] = useState(1.2);
   const [klimaxLogoEnabled, setKlimaxLogoEnabled] = useState(true);
   const [brollEnabled, setBrollEnabled] = useState(true);
   const [isAutoPickingBrolls, setIsAutoPickingBrolls] = useState(false);
@@ -757,11 +765,19 @@ const ClimaxVideoEditor = () => {
       videoFilterKey,
       brollEnabled,
       autoSfxEnabled,
+      autoZoomEnabled,
+      autoZoomMode,
+      autoZoomBoostPercent,
+      autoZoomDurationSeconds,
+      introZoomOutEnabled,
+      replyZoomOutEnabled,
+      zoomOutStartPercent,
+      zoomOutDurationSeconds,
       klimaxLogoEnabled,
       logoTriggerWord: "klimax",
     });
     return () => { delete (window as any).__klimaxCurrentSnapshot; };
-  }, [hookText, subtitleSize, subtitleStyle, hookStyle, selectedMusicId, musicEnabled, musicVolumeDb, videoVolumeDb, videoFilterKey, brollEnabled, autoSfxEnabled, klimaxLogoEnabled]);
+  }, [hookText, subtitleSize, subtitleStyle, hookStyle, selectedMusicId, musicEnabled, musicVolumeDb, videoVolumeDb, videoFilterKey, brollEnabled, autoSfxEnabled, autoZoomEnabled, autoZoomMode, autoZoomBoostPercent, autoZoomDurationSeconds, introZoomOutEnabled, replyZoomOutEnabled, zoomOutStartPercent, zoomOutDurationSeconds, klimaxLogoEnabled]);
 
   // Apply a preset from the Presets panel: update local state, then save the project.
   React.useEffect(() => {
@@ -786,6 +802,14 @@ const ClimaxVideoEditor = () => {
       if (typeof detail.videoFilterKey === "string") setVideoFilterKey(detail.videoFilterKey);
       if (typeof detail.brollEnabled === "boolean") setBrollEnabled(detail.brollEnabled);
       if (typeof detail.autoSfxEnabled === "boolean") setAutoSfxEnabled(detail.autoSfxEnabled);
+      if (typeof detail.autoZoomEnabled === "boolean") setAutoZoomEnabled(detail.autoZoomEnabled);
+      if (detail.autoZoomMode === "cut" || detail.autoZoomMode === "smooth") setAutoZoomMode(detail.autoZoomMode);
+      if (typeof detail.autoZoomBoostPercent === "number") setAutoZoomBoostPercent(detail.autoZoomBoostPercent);
+      if (typeof detail.autoZoomDurationSeconds === "number") setAutoZoomDurationSeconds(detail.autoZoomDurationSeconds);
+      if (typeof detail.introZoomOutEnabled === "boolean") setIntroZoomOutEnabled(detail.introZoomOutEnabled);
+      if (typeof detail.replyZoomOutEnabled === "boolean") setReplyZoomOutEnabled(detail.replyZoomOutEnabled);
+      if (typeof detail.zoomOutStartPercent === "number") setZoomOutStartPercent(detail.zoomOutStartPercent);
+      if (typeof detail.zoomOutDurationSeconds === "number") setZoomOutDurationSeconds(detail.zoomOutDurationSeconds);
       if (typeof detail.klimaxLogoEnabled === "boolean") setKlimaxLogoEnabled(detail.klimaxLogoEnabled);
       toast({ title: "Preset appliqué", description: "Les réglages sont en place. Sauvegarde le projet pour les conserver." });
     };
@@ -866,6 +890,14 @@ const ClimaxVideoEditor = () => {
     setVideoVolumeDb(Number(project.settings?.videoVolumeDb ?? 2));
     setVideoFilterKey(String(project.settings?.videoFilterKey || "none"));
     setAutoSfxEnabled(project.settings?.autoSfxEnabled !== false);
+    setAutoZoomEnabled(project.settings?.autoZoomEnabled !== false);
+    setAutoZoomMode(project.settings?.autoZoomMode === "smooth" ? "smooth" : "cut");
+    setAutoZoomBoostPercent(Number(project.settings?.autoZoomBoostPercent ?? 20));
+    setAutoZoomDurationSeconds(Number(project.settings?.autoZoomDurationSeconds ?? 2));
+    setIntroZoomOutEnabled(project.settings?.introZoomOutEnabled === true);
+    setReplyZoomOutEnabled(project.settings?.replyZoomOutEnabled === true);
+    setZoomOutStartPercent(Number(project.settings?.zoomOutStartPercent ?? 180));
+    setZoomOutDurationSeconds(Number(project.settings?.zoomOutDurationSeconds ?? 1.2));
     setKlimaxLogoEnabled(project.settings?.klimaxLogoEnabled !== false);
     setBrollEnabled(project.settings?.brollEnabled !== false);
     setProjectSource(
@@ -1253,6 +1285,14 @@ const ClimaxVideoEditor = () => {
       videoVolumeDb,
       videoFilterKey,
       autoSfxEnabled,
+      autoZoomEnabled,
+      autoZoomMode,
+      autoZoomBoostPercent,
+      autoZoomDurationSeconds,
+      introZoomOutEnabled,
+      replyZoomOutEnabled,
+      zoomOutStartPercent,
+      zoomOutDurationSeconds,
       klimaxLogoEnabled,
       brollEnabled,
       logoTriggerWord: "klimax",
@@ -1272,18 +1312,26 @@ const ClimaxVideoEditor = () => {
   }, [
     applyProjectState,
     autoSfxEnabled,
+    autoZoomEnabled,
+    autoZoomMode,
+    autoZoomBoostPercent,
+    autoZoomDurationSeconds,
     brollEnabled,
     clips,
     hookText,
+    introZoomOutEnabled,
     isTranscribing,
     klimaxLogoEnabled,
     mergedHookStyle,
     mergedSubtitleStyle,
+    replyZoomOutEnabled,
     selectedMusicId,
     musicEnabled,
     musicVolumeDb,
     videoVolumeDb,
     videoFilterKey,
+    zoomOutStartPercent,
+    zoomOutDurationSeconds,
     projectId,
     subtitleSize,
   ]);
@@ -1325,6 +1373,14 @@ const ClimaxVideoEditor = () => {
       videoVolumeDb,
       videoFilterKey,
       autoSfxEnabled,
+      autoZoomEnabled,
+      autoZoomMode,
+      autoZoomBoostPercent,
+      autoZoomDurationSeconds,
+      introZoomOutEnabled,
+      replyZoomOutEnabled,
+      zoomOutStartPercent,
+      zoomOutDurationSeconds,
       klimaxLogoEnabled,
       brollEnabled,
       logoTriggerWord: "klimax",
@@ -2678,6 +2734,118 @@ const ClimaxVideoEditor = () => {
               }}
             />
           )}
+
+            <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5 space-y-5">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <Scissors className="h-5 w-5 text-white/60" />
+                  <div>
+                    <h3 className="font-black uppercase tracking-tight">Auto cut zoom</h3>
+                    <p className="text-xs text-white/45">2 zooms aléatoires sur Personne 2 à chaque export.</p>
+                  </div>
+                </div>
+                <Switch checked={autoZoomEnabled} onCheckedChange={setAutoZoomEnabled} />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { key: "cut", label: "Cut zoom", detail: "+ zoom direct 2s" },
+                  { key: "smooth", label: "Smooth zoom", detail: "zoom fluide + retour" },
+                ].map((mode) => (
+                  <button
+                    key={mode.key}
+                    type="button"
+                    onClick={() => setAutoZoomMode(mode.key as "cut" | "smooth")}
+                    className={cn(
+                      "rounded-2xl border px-3 py-3 text-left transition",
+                      autoZoomMode === mode.key
+                        ? "border-white bg-white text-black"
+                        : "border-white/10 bg-black text-white/65 hover:bg-white/10"
+                    )}
+                  >
+                    <p className="text-xs font-black">{mode.label}</p>
+                    <p className="text-[10px] opacity-60">{mode.detail}</p>
+                  </button>
+                ))}
+              </div>
+
+              <div className="space-y-4 rounded-2xl border border-white/10 bg-black p-4">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label className="text-[10px] font-black uppercase tracking-[0.18em] text-white/45">Puissance auto</Label>
+                    <span className="text-xs font-black text-white">{autoZoomBoostPercent}%</span>
+                  </div>
+                  <Slider
+                    value={[autoZoomBoostPercent]}
+                    min={5}
+                    max={60}
+                    step={1}
+                    onValueChange={([value]) => setAutoZoomBoostPercent(value)}
+                    disabled={!autoZoomEnabled}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label className="text-[10px] font-black uppercase tracking-[0.18em] text-white/45">Durée auto</Label>
+                    <span className="text-xs font-black text-white">{autoZoomDurationSeconds.toFixed(1)}s</span>
+                  </div>
+                  <Slider
+                    value={[autoZoomDurationSeconds]}
+                    min={0.6}
+                    max={4}
+                    step={0.1}
+                    onValueChange={([value]) => setAutoZoomDurationSeconds(Number(value.toFixed(1)))}
+                    disabled={!autoZoomEnabled}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-3 rounded-2xl border border-white/10 bg-black p-4">
+                <div className="flex items-center gap-2">
+                  <Zap className="h-4 w-4 text-white/45" />
+                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-white/45">Zoom out début clip</p>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="flex items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold">
+                    Personne 1
+                    <Switch checked={introZoomOutEnabled} onCheckedChange={setIntroZoomOutEnabled} />
+                  </label>
+                  <label className="flex items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold">
+                    Personne 2
+                    <Switch checked={replyZoomOutEnabled} onCheckedChange={setReplyZoomOutEnabled} />
+                  </label>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label className="text-[10px] font-black uppercase tracking-[0.18em] text-white/45">Départ zoom out</Label>
+                    <span className="text-xs font-black text-white">{zoomOutStartPercent}%</span>
+                  </div>
+                  <Slider
+                    value={[zoomOutStartPercent]}
+                    min={110}
+                    max={260}
+                    step={5}
+                    onValueChange={([value]) => setZoomOutStartPercent(value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label className="text-[10px] font-black uppercase tracking-[0.18em] text-white/45">Durée zoom out</Label>
+                    <span className="text-xs font-black text-white">{zoomOutDurationSeconds.toFixed(1)}s</span>
+                  </div>
+                  <Slider
+                    value={[zoomOutDurationSeconds]}
+                    min={0.4}
+                    max={3}
+                    step={0.1}
+                    onValueChange={([value]) => setZoomOutDurationSeconds(Number(value.toFixed(1)))}
+                  />
+                </div>
+                <p className="text-xs text-white/45 leading-relaxed">
+                  Le Smooth swosh se mixe automatiquement sur chaque zoom pour accentuer le mouvement.
+                </p>
+              </div>
+            </div>
 
             <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5 space-y-4">
               <div className="flex items-center gap-3">

@@ -91,6 +91,14 @@ export type LocalKlimaxProject = {
     videoFilterKey?: string;
     brollEnabled?: boolean;
     autoSfxEnabled?: boolean;
+    autoZoomEnabled?: boolean;
+    autoZoomMode?: string;
+    autoZoomBoostPercent?: number;
+    autoZoomDurationSeconds?: number;
+    introZoomOutEnabled?: boolean;
+    replyZoomOutEnabled?: boolean;
+    zoomOutStartPercent?: number;
+    zoomOutDurationSeconds?: number;
     klimaxLogoEnabled?: boolean;
     logoTriggerWord?: string;
     subtitleStyle?: LocalSubtitleStyleSettings;
