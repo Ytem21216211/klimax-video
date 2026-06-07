@@ -392,6 +392,43 @@ const snapToValue = (value: number, target: number, threshold = 18) =>
   Math.abs(value - target) <= threshold ? target : value;
 const canvasFontSize = (size: number) => `${(size / BASE_CANVAS_WIDTH) * 100}cqw`;
 const canvasUnit = (value: number) => `${(value / BASE_CANVAS_WIDTH) * 100}cqw`;
+const buildSubtitleTextPreviewStyle = (
+  style: LocalSubtitleStyleSettings,
+  fontSize: string,
+  options: {
+    animationPreset?: LocalSubtitleStyleSettings["animationPreset"];
+    loopAnimation?: boolean;
+    centerY?: boolean;
+  } = {}
+): React.CSSProperties => {
+  const previewStrokeWidth =
+    style.strokeEnabled === false ? 0 : clampValue(Math.max(style.strokeWidth || 5, 5), 0, 14);
+  const previewShadowDistance =
+    style.shadowEnabled === false ? 0 : clampValue(Math.max(style.shadowDistance || 5, 5), 0, 22);
+  const previewShadowBlur =
+    style.shadowEnabled === false ? 0 : clampValue(Math.max(style.shadowBlur ?? 16, 16), 0, 36);
+  const previewShadowOpacity =
+    style.shadowEnabled === false ? 0 : clampValue(Math.max(style.shadowOpacity ?? 0.9, 0.2), 0, 1);
+  const transformPrefix = options.centerY ? "translateY(-50%) " : "";
+
+  return {
+    fontSize,
+    color: style.textColor || "#ffffff",
+    fontFamily: style.fontFamily || "Arial Black, Arial, sans-serif",
+    fontWeight: Math.max(900, style.fontWeight || 900),
+    WebkitTextStroke: "0 transparent",
+    textShadow: buildOuterSubtitleShadow(
+      previewStrokeWidth,
+      style.strokeColor || "#000000",
+      previewShadowDistance,
+      previewShadowBlur,
+      style.shadowColor || "#000000",
+      previewShadowOpacity
+    ),
+    transform: `${transformPrefix}scaleX(${(style.fontScaleX || 104) / 100})`,
+    animation: subtitleAnimationCss(options.animationPreset ?? style.animationPreset, options.loopAnimation),
+  };
+};
 
 const KlimaxLogoPlacementPreview = () => {
   const freezeLogoFrame = React.useCallback((video: HTMLVideoElement) => {
@@ -772,32 +809,7 @@ const ClimaxVideoEditor = () => {
   const subtitlePreviewStyle = useMemo(
     () => {
       const previewFontSize = clampValue(Math.round((mergedSubtitleStyle.fontSize || subtitleSize) * 1.08), 38, 96);
-      const previewStrokeWidth =
-        mergedSubtitleStyle.strokeEnabled === false ? 0 : clampValue(Math.max(mergedSubtitleStyle.strokeWidth || 5, 5), 0, 14);
-      const previewShadowDistance =
-        mergedSubtitleStyle.shadowEnabled === false ? 0 : clampValue(Math.max(mergedSubtitleStyle.shadowDistance || 5, 5), 0, 22);
-      const previewShadowBlur =
-        mergedSubtitleStyle.shadowEnabled === false ? 0 : clampValue(Math.max(mergedSubtitleStyle.shadowBlur ?? 16, 16), 0, 36);
-      const previewShadowOpacity =
-        mergedSubtitleStyle.shadowEnabled === false ? 0 : clampValue(Math.max(mergedSubtitleStyle.shadowOpacity ?? 0.9, 0.2), 0, 1);
-
-      return {
-        fontSize: canvasFontSize(previewFontSize),
-        color: mergedSubtitleStyle.textColor || "#ffffff",
-        fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
-        fontWeight: Math.max(900, mergedSubtitleStyle.fontWeight || 900),
-        WebkitTextStroke: "0 transparent",
-        textShadow: buildOuterSubtitleShadow(
-          previewStrokeWidth,
-          mergedSubtitleStyle.strokeColor || "#000000",
-          previewShadowDistance,
-          previewShadowBlur,
-          mergedSubtitleStyle.shadowColor || "#000000",
-          previewShadowOpacity
-        ),
-        transform: `scaleX(${(mergedSubtitleStyle.fontScaleX || 104) / 100})`,
-        animation: subtitleAnimationCss(mergedSubtitleStyle.animationPreset),
-      };
+      return buildSubtitleTextPreviewStyle(mergedSubtitleStyle, canvasFontSize(previewFontSize));
     },
     [mergedSubtitleStyle, subtitleSize]
   );
@@ -2104,16 +2116,12 @@ const ClimaxVideoEditor = () => {
                                     preset.key === "proQuick" && "text-right lowercase"
                                   )}
                                   style={{
-                                    color: preview.textColor || "#ffffff",
-                                    fontFamily: preview.fontFamily || "Arial Black, Arial, sans-serif",
-                                    fontSize: preset.key === "quickFade" ? "12px" : preset.key === "orangeThe" ? "30px" : "26px",
-                                    WebkitTextStroke: `${preset.key === "quickFade" ? 0 : 1.5}px ${preview.strokeColor || "#000000"}`,
-                                    textShadow:
-                                      preset.key === "quickFade"
-                                        ? "none"
-                                        : `0 3px 0 ${preview.strokeColor || "#000000"}, 0 8px 18px rgba(0,0,0,.55)`,
+                                    ...buildSubtitleTextPreviewStyle(
+                                      preview,
+                                      preset.key === "quickFade" ? "12px" : preset.key === "orangeThe" ? "30px" : "26px",
+                                      { loopAnimation: true, centerY: true }
+                                    ),
                                     opacity: preset.key === "quickFade" ? 0.96 : 1,
-                                    animation: subtitleAnimationCss(preview.animationPreset, true),
                                   }}
                                 >
                                   {preset.sample}
@@ -2149,18 +2157,15 @@ const ClimaxVideoEditor = () => {
                                   <span
                                     className="absolute inset-x-2 top-1/2 block -translate-y-1/2 whitespace-nowrap text-center font-black leading-none"
                                     style={{
-                                      color: mergedSubtitleStyle.textColor || "#ffffff",
-                                      fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
-                                      fontSize: animationPreset.key === "rise" ? "30px" : "24px",
-                                      WebkitTextStroke:
-                                        mergedSubtitleStyle.strokeEnabled === false
-                                          ? "0 transparent"
-                                          : `1.5px ${mergedSubtitleStyle.strokeColor || "#000000"}`,
-                                      textShadow:
-                                        mergedSubtitleStyle.strokeEnabled === false
-                                          ? `0 5px 14px ${hexToRgba(mergedSubtitleStyle.shadowColor || "#000000", 0.45)}`
-                                          : `0 3px 0 ${mergedSubtitleStyle.strokeColor || "#000000"}, 0 8px 18px rgba(0,0,0,.55)`,
-                                      animation: subtitleAnimationCss(animationPreset.key, animationPreset.key !== "none"),
+                                      ...buildSubtitleTextPreviewStyle(
+                                        mergedSubtitleStyle,
+                                        animationPreset.key === "rise" ? "30px" : "24px",
+                                        {
+                                          animationPreset: animationPreset.key,
+                                          loopAnimation: animationPreset.key !== "none",
+                                          centerY: true,
+                                        }
+                                      ),
                                     }}
                                   >
                                     {animationPreset.sample}
