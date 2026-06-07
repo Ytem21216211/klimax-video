@@ -203,7 +203,7 @@ const mergeProjectSettings = (settings = {}) => {
   subtitleStyle.keywordTerms = Array.isArray(subtitleStyle.keywordTerms)
     ? subtitleStyle.keywordTerms.join(", ")
     : String(subtitleStyle.keywordTerms || "");
-  if (!["none", "pop", "bounce", "rise", "fade"].includes(subtitleStyle.animationPreset)) {
+  if (!["none", "pop", "bounce", "rise", "fade", "zoom", "slide", "shake", "typewriter", "flicker", "elastic"].includes(subtitleStyle.animationPreset)) {
     subtitleStyle.animationPreset = defaults.subtitleStyle.animationPreset;
   }
   hookStyle.fontSize = safeNumber(hookStyle.fontSize, 46);
@@ -881,6 +881,57 @@ const subtitleAnimationOverride = (subtitleStyle, x, y, shadowDown, options = {}
   }
   if (animation === "fade") {
     return `{${[...base, `\\pos(${x},${targetY})`, "\\alpha&HFF&", "\\t(0,180,\\alpha&H00&)"].join("")}}`;
+  }
+  if (animation === "zoom") {
+    return `{${[
+      ...base,
+      `\\pos(${x},${targetY})`,
+      "\\alpha&HFF&",
+      "\\fscx132",
+      "\\fscy132",
+      "\\t(0,220,\\alpha&H00&\\fscx100\\fscy100)",
+    ].join("")}}`;
+  }
+  if (animation === "slide") {
+    return `{${[...base, `\\move(${x - 120},${targetY},${x},${targetY},0,320)`, "\\alpha&H88&", "\\t(0,180,\\alpha&H00&)"].join("")}}`;
+  }
+  if (animation === "shake") {
+    return `{${[
+      ...base,
+      `\\pos(${x},${targetY})`,
+      "\\alpha&H88&",
+      "\\t(0,80,\\alpha&H00&\\fscx106\\fscy106)",
+      "\\t(80,170,\\frz-2)",
+      "\\t(170,260,\\frz2)",
+      "\\t(260,420,\\frz0\\fscx100\\fscy100)",
+    ].join("")}}`;
+  }
+  if (animation === "typewriter") {
+    return `{${[...base, `\\pos(${x},${targetY})`, "\\alpha&HFF&", "\\t(0,260,\\alpha&H00&)"].join("")}}`;
+  }
+  if (animation === "flicker") {
+    return `{${[
+      ...base,
+      `\\pos(${x},${targetY})`,
+      "\\alpha&HFF&",
+      "\\t(0,70,\\alpha&H00&)",
+      "\\t(70,130,\\alpha&H88&)",
+      "\\t(130,220,\\alpha&H00&)",
+      "\\t(220,300,\\alpha&H44&)",
+      "\\t(300,420,\\alpha&H00&)",
+    ].join("")}}`;
+  }
+  if (animation === "elastic") {
+    return `{${[
+      ...base,
+      `\\pos(${x},${targetY})`,
+      "\\alpha&HCC&",
+      "\\fscx55",
+      "\\fscy128",
+      "\\t(0,210,\\alpha&H00&\\fscx118\\fscy88)",
+      "\\t(210,390,\\fscx94\\fscy106)",
+      "\\t(390,560,\\fscx100\\fscy100)",
+    ].join("")}}`;
   }
   return `{${[
     ...base,

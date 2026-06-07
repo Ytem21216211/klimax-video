@@ -287,18 +287,149 @@ const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
     keywordSecondaryColor: "#45f08a",
     keywordTerms: "",
   },
+  yellowPop: {
+    stylePreset: "yellowPop",
+    fontFamily: "Arial Black",
+    fontSize: 48,
+    textColor: "#ffe14a",
+    strokeEnabled: true,
+    strokeColor: "#000000",
+    strokeWidth: 8,
+    shadowEnabled: true,
+    shadowColor: "#000000",
+    shadowOpacity: 0.95,
+    shadowDistance: 7,
+    shadowBlur: 18,
+    animationPreset: "elastic",
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 900,
+    fontScaleX: 106,
+    keywordHighlightEnabled: true,
+    keywordColor: "#ffffff",
+    keywordSecondaryColor: "#ff7a00",
+    keywordTerms: "",
+  },
+  pinkPunch: {
+    stylePreset: "pinkPunch",
+    fontFamily: "Anton",
+    fontSize: 52,
+    textColor: "#ffffff",
+    strokeEnabled: true,
+    strokeColor: "#000000",
+    strokeWidth: 7,
+    shadowEnabled: true,
+    shadowColor: "#ff2d8f",
+    shadowOpacity: 0.82,
+    shadowDistance: 7,
+    shadowBlur: 24,
+    animationPreset: "shake",
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 900,
+    fontScaleX: 106,
+    keywordHighlightEnabled: true,
+    keywordColor: "#ff4fd8",
+    keywordSecondaryColor: "#ffe14a",
+    keywordTerms: "",
+  },
+  cyanGlow: {
+    stylePreset: "cyanGlow",
+    fontFamily: "Montserrat",
+    fontSize: 44,
+    textColor: "#dffcff",
+    strokeEnabled: true,
+    strokeColor: "#001014",
+    strokeWidth: 5,
+    shadowEnabled: true,
+    shadowColor: "#18e8ff",
+    shadowOpacity: 0.9,
+    shadowDistance: 4,
+    shadowBlur: 28,
+    animationPreset: "flicker",
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 900,
+    fontScaleX: 104,
+    keywordHighlightEnabled: true,
+    keywordColor: "#18e8ff",
+    keywordSecondaryColor: "#ffffff",
+    keywordTerms: "",
+  },
+  whiteBox: {
+    stylePreset: "whiteBox",
+    fontFamily: "Impact",
+    fontSize: 42,
+    textColor: "#000000",
+    strokeEnabled: false,
+    strokeColor: "#000000",
+    strokeWidth: 0,
+    shadowEnabled: true,
+    shadowColor: "#ffffff",
+    shadowOpacity: 0.65,
+    shadowDistance: 3,
+    shadowBlur: 14,
+    animationPreset: "slide",
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 900,
+    fontScaleX: 102,
+    keywordHighlightEnabled: true,
+    keywordColor: "#ff7a00",
+    keywordSecondaryColor: "#ffe14a",
+    keywordTerms: "",
+  },
+  creatorClean: {
+    stylePreset: "creatorClean",
+    fontFamily: "Avenir Next Heavy",
+    fontSize: 40,
+    textColor: "#ffffff",
+    strokeEnabled: true,
+    strokeColor: "#000000",
+    strokeWidth: 4,
+    shadowEnabled: true,
+    shadowColor: "#000000",
+    shadowOpacity: 0.72,
+    shadowDistance: 5,
+    shadowBlur: 18,
+    animationPreset: "typewriter",
+    wordsPerLine: 2,
+    introVerticalPosition: "lower",
+    replyVerticalPosition: "middle",
+    fontWeight: 900,
+    fontScaleX: 102,
+    keywordHighlightEnabled: true,
+    keywordColor: "#45f08a",
+    keywordSecondaryColor: "#ffe14a",
+    keywordTerms: "",
+  },
 };
 
 const DEFAULT_SUBTITLE_STYLE = SUBTITLE_PRESETS.impact;
 const VISUAL_SUBTITLE_PRESETS = [
   { key: "quickFade", label: "Quick opacite", sample: "THE QUICK BROWN FOX", badge: null },
   { key: "orangeThe", label: "THE orange", sample: "THE", badge: null },
-  { key: "proQuick", label: "Pro quick", sample: "quick", badge: "Pro" },
+  { key: "proQuick", label: "Quick", sample: "quick", badge: null },
+  { key: "yellowPop", label: "Yellow pop", sample: "WAIT", badge: null },
+  { key: "pinkPunch", label: "Pink punch", sample: "NO WAY", badge: null },
+  { key: "cyanGlow", label: "Cyan glow", sample: "viral", badge: null },
+  { key: "whiteBox", label: "White box", sample: "FACT", badge: null },
+  { key: "creatorClean", label: "Creator clean", sample: "clean", badge: null },
 ] as const;
 const SUBTITLE_ANIMATION_PRESETS: { key: NonNullable<LocalSubtitleStyleSettings["animationPreset"]>; label: string; sample: string }[] = [
   { key: "pop", label: "Pop-up", sample: "POP" },
   { key: "bounce", label: "Bounce", sample: "BOUNCE" },
   { key: "rise", label: "Montee", sample: "THE" },
+  { key: "zoom", label: "Zoom cut", sample: "ZOOM" },
+  { key: "slide", label: "Slide", sample: "SLIDE" },
+  { key: "shake", label: "Shake", sample: "SHAKE" },
+  { key: "typewriter", label: "Type", sample: "TYPE" },
+  { key: "flicker", label: "Flash", sample: "FLASH" },
+  { key: "elastic", label: "Elastic", sample: "ELASTIC" },
   { key: "fade", label: "Opacite", sample: "quick" },
   { key: "none", label: "Fixe", sample: "FIXE" },
 ];
@@ -309,6 +440,12 @@ const subtitleAnimationCss = (animation?: LocalSubtitleStyleSettings["animationP
   if (animation === "bounce") return `klimaxSubtitleBounce 520ms cubic-bezier(.2,1.25,.2,1)${repeat}`;
   if (animation === "rise") return `klimaxSubtitleRise 360ms ease-out${repeat}`;
   if (animation === "fade") return `klimaxSubtitleFade 760ms ease-out${repeat}`;
+  if (animation === "zoom") return `klimaxSubtitleZoom 340ms cubic-bezier(.15,.95,.2,1)${repeat}`;
+  if (animation === "slide") return `klimaxSubtitleSlide 420ms cubic-bezier(.2,1,.2,1)${repeat}`;
+  if (animation === "shake") return `klimaxSubtitleShake 520ms ease-out${repeat}`;
+  if (animation === "typewriter") return `klimaxSubtitleType 820ms steps(7,end)${repeat}`;
+  if (animation === "flicker") return `klimaxSubtitleFlicker 620ms linear${repeat}`;
+  if (animation === "elastic") return `klimaxSubtitleElastic 620ms cubic-bezier(.2,1.35,.2,1)${repeat}`;
   return undefined;
 };
 
@@ -1203,6 +1340,42 @@ const ClimaxVideoEditor = () => {
             0% { opacity: 0; }
             100% { opacity: 1; }
           }
+          @keyframes klimaxSubtitleZoom {
+            0% { transform: scale(1.32); opacity: 0; filter: blur(2px); }
+            100% { transform: scale(1); opacity: 1; filter: blur(0); }
+          }
+          @keyframes klimaxSubtitleSlide {
+            0% { transform: translateX(-24%) scale(.94); opacity: 0; }
+            72% { transform: translateX(3%) scale(1.02); opacity: 1; }
+            100% { transform: translateX(0) scale(1); opacity: 1; }
+          }
+          @keyframes klimaxSubtitleShake {
+            0% { transform: translateX(0) scale(1); opacity: .2; }
+            18% { transform: translateX(-7%) scale(1.05); opacity: 1; }
+            36% { transform: translateX(6%) scale(1.05); }
+            54% { transform: translateX(-4%) scale(1.02); }
+            72% { transform: translateX(3%) scale(1.01); }
+            100% { transform: translateX(0) scale(1); opacity: 1; }
+          }
+          @keyframes klimaxSubtitleType {
+            0% { clip-path: inset(0 100% 0 0); opacity: 1; }
+            100% { clip-path: inset(0 0 0 0); opacity: 1; }
+          }
+          @keyframes klimaxSubtitleFlicker {
+            0% { opacity: 0; }
+            12% { opacity: 1; }
+            22% { opacity: .18; }
+            34% { opacity: 1; }
+            48% { opacity: .55; }
+            62% { opacity: 1; }
+            100% { opacity: 1; }
+          }
+          @keyframes klimaxSubtitleElastic {
+            0% { transform: scale(.55,1.28); opacity: .08; }
+            42% { transform: scale(1.18,.88); opacity: 1; }
+            66% { transform: scale(.94,1.06); }
+            100% { transform: scale(1); opacity: 1; }
+          }
         `}
       </style>
       <div className="fixed inset-0 pointer-events-none bg-[linear-gradient(to_right,#ffffff08_1px,transparent_1px),linear-gradient(to_bottom,#ffffff06_1px,transparent_1px)] bg-[size:72px_72px]" />
@@ -2059,7 +2232,7 @@ const ClimaxVideoEditor = () => {
                       <div className="rounded-2xl border border-white/10 bg-black p-4 space-y-4">
                         <div className="flex items-center justify-between gap-3">
                           <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Style sous-titres</Label>
-                          <div className="flex gap-2">
+                          <div className="flex flex-wrap gap-2">
                             {[
                               { key: "impact", label: "Impact" },
                               { key: "clean", label: "Clean" },
@@ -2067,6 +2240,11 @@ const ClimaxVideoEditor = () => {
                               { key: "capcut", label: "CapCut" },
                               { key: "punch", label: "Punch" },
                               { key: "neon", label: "Neon" },
+                              { key: "yellowPop", label: "Yellow" },
+                              { key: "pinkPunch", label: "Pink" },
+                              { key: "cyanGlow", label: "Glow" },
+                              { key: "whiteBox", label: "Box" },
+                              { key: "creatorClean", label: "Creator" },
                             ].map((preset) => (
                               <button
                                 key={preset.key}
@@ -2087,7 +2265,7 @@ const ClimaxVideoEditor = () => {
                             ))}
                           </div>
                         </div>
-                        <div className="grid gap-3 md:grid-cols-3">
+                        <div className="grid gap-3 md:grid-cols-4">
                           {VISUAL_SUBTITLE_PRESETS.map((preset) => {
                             const preview = SUBTITLE_PRESETS[preset.key];
                             const active = mergedSubtitleStyle.stylePreset === preset.key;
@@ -2118,7 +2296,7 @@ const ClimaxVideoEditor = () => {
                                   style={{
                                     ...buildSubtitleTextPreviewStyle(
                                       preview,
-                                      preset.key === "quickFade" ? "12px" : preset.key === "orangeThe" ? "30px" : "26px",
+                                      preset.key === "quickFade" ? "12px" : preset.key === "orangeThe" ? "30px" : "24px",
                                       { loopAnimation: true, centerY: true }
                                     ),
                                     opacity: preset.key === "quickFade" ? 0.96 : 1,
@@ -2135,7 +2313,7 @@ const ClimaxVideoEditor = () => {
                         </div>
                         <div className="space-y-3">
                           <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Animations sous-titres</Label>
-                          <div className="grid gap-3 md:grid-cols-5">
+                          <div className="grid gap-3 md:grid-cols-4">
                             {SUBTITLE_ANIMATION_PRESETS.map((animationPreset) => {
                               const active = (mergedSubtitleStyle.animationPreset || "pop") === animationPreset.key;
 
@@ -2159,7 +2337,7 @@ const ClimaxVideoEditor = () => {
                                     style={{
                                       ...buildSubtitleTextPreviewStyle(
                                         mergedSubtitleStyle,
-                                        animationPreset.key === "rise" ? "30px" : "24px",
+                                        animationPreset.key === "rise" ? "30px" : animationPreset.key === "elastic" ? "20px" : "23px",
                                         {
                                           animationPreset: animationPreset.key,
                                           loopAnimation: animationPreset.key !== "none",

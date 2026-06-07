@@ -15,7 +15,7 @@ export type LocalSubtitleStyleSettings = {
   shadowOpacity?: number;
   shadowDistance?: number;
   shadowBlur?: number;
-  animationPreset?: "none" | "pop" | "bounce" | "rise" | "fade";
+  animationPreset?: "none" | "pop" | "bounce" | "rise" | "fade" | "zoom" | "slide" | "shake" | "typewriter" | "flicker" | "elastic";
   wordsPerLine?: number;
   introVerticalPosition?: "lower" | "middle";
   replyVerticalPosition?: "lower" | "middle";
