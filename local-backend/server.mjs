@@ -94,6 +94,7 @@ const defaultProjectSettings = () => ({
   hookText: "Tu connais cette sensation ?",
   subtitleSize: 34,
   musicEnabled: true,
+  musicId: null,
   musicVolumeDb: -17,
   videoVolumeDb: 2,
   brollEnabled: true,
@@ -1150,7 +1151,7 @@ const renderProject = async (db, project, sourceGroup) => {
     }
   }
 
-  const musicAssetId = clipsToRender.find((clip) => clip.musicId)?.musicId || null;
+  const musicAssetId = project.settings?.musicId || clipsToRender.find((clip) => clip.musicId)?.musicId || null;
   const musicAsset = project.settings?.musicEnabled
     ? db.assets.find((asset) => asset.id === musicAssetId && asset.category === "music")
     : null;

@@ -84,6 +84,7 @@ export type LocalKlimaxProject = {
   settings: {
     hookText?: string;
     subtitleSize?: number;
+    musicId?: string | null;
     musicEnabled?: boolean;
     musicVolumeDb?: number;
     videoVolumeDb?: number;

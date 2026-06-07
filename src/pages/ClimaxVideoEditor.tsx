@@ -518,6 +518,7 @@ const ClimaxVideoEditor = () => {
   const [projectSource, setProjectSource] = useState<KlimaxProjectSource | null>(() => loadKlimaxProjectSource(projectId));
   const [localProject, setLocalProject] = useState<LocalKlimaxProject | null>(null);
   const [hookText, setHookText] = useState("Tu connais cette sensation ?");
+  const [selectedMusicId, setSelectedMusicId] = useState<string | null>(null);
   const [musicEnabled, setMusicEnabled] = useState(true);
   const [autoSfxEnabled, setAutoSfxEnabled] = useState(true);
   const [klimaxLogoEnabled, setKlimaxLogoEnabled] = useState(true);
@@ -560,6 +561,7 @@ const ClimaxVideoEditor = () => {
       subtitleSize,
       subtitleStyle,
       hookStyle,
+      musicId: selectedMusicId,
       musicEnabled,
       musicVolumeDb,
       videoVolumeDb,
@@ -569,7 +571,7 @@ const ClimaxVideoEditor = () => {
       logoTriggerWord: "klimax",
     });
     return () => { delete (window as any).__klimaxCurrentSnapshot; };
-  }, [hookText, subtitleSize, subtitleStyle, hookStyle, musicEnabled, musicVolumeDb, videoVolumeDb, brollEnabled, autoSfxEnabled, klimaxLogoEnabled]);
+  }, [hookText, subtitleSize, subtitleStyle, hookStyle, selectedMusicId, musicEnabled, musicVolumeDb, videoVolumeDb, brollEnabled, autoSfxEnabled, klimaxLogoEnabled]);
 
   // Apply a preset from the Presets panel: update local state, then save the project.
   React.useEffect(() => {
@@ -587,6 +589,7 @@ const ClimaxVideoEditor = () => {
       if (detail.hookStyle && typeof detail.hookStyle === "object") {
         setHookStyle((current) => ({ ...current, ...detail.hookStyle }));
       }
+      if (typeof detail.musicId === "string" || detail.musicId === null) setSelectedMusicId(detail.musicId);
       if (typeof detail.musicEnabled === "boolean") setMusicEnabled(detail.musicEnabled);
       if (typeof detail.musicVolumeDb === "number") setMusicVolumeDb(detail.musicVolumeDb);
       if (typeof detail.videoVolumeDb === "number") setVideoVolumeDb(detail.videoVolumeDb);
@@ -662,6 +665,11 @@ const ClimaxVideoEditor = () => {
     setSubtitleSize(Number(nextSubtitleStyle.fontSize || 34));
     setHookStyle({ ...DEFAULT_HOOK_STYLE, ...(project.settings?.hookStyle || {}) });
     setHookText(project.settings?.hookText || project.clips?.[0]?.hookText || "Tu connais cette sensation ?");
+    setSelectedMusicId(
+      typeof project.settings?.musicId === "string"
+        ? project.settings.musicId
+        : project.clips?.find((clip) => clip.musicId)?.musicId || null
+    );
     setMusicEnabled(project.settings?.musicEnabled !== false);
     setMusicVolumeDb(Number(project.settings?.musicVolumeDb ?? -17));
     setVideoVolumeDb(Number(project.settings?.videoVolumeDb ?? 2));
@@ -911,8 +919,12 @@ const ClimaxVideoEditor = () => {
   const canStartRender = projectDiagnostics.filter((item) => item.required).every((item) => item.ok);
 
   const selectBankAsset = (category: Exclude<KlimaxAssetCategory, "video">, assetId: string) => {
+    if (category === "music") {
+      setSelectedMusicId(assetId);
+      setClips((current) => current.map((clip) => ({ ...clip, musicId: assetId })));
+      return;
+    }
     if (!selectedClip) return;
-    if (category === "music") updateSelectedClip({ musicId: assetId });
     if ((category === "broll" || category === "image") && !selectedClipCanUseBroll) {
       toast({
         title: "B-roll réservé à Personne 2",
@@ -1064,6 +1076,7 @@ const ClimaxVideoEditor = () => {
     const settings = {
       hookText,
       subtitleSize,
+      musicId: selectedMusicId,
       musicEnabled,
       musicVolumeDb,
       videoVolumeDb,
@@ -1094,6 +1107,7 @@ const ClimaxVideoEditor = () => {
     klimaxLogoEnabled,
     mergedHookStyle,
     mergedSubtitleStyle,
+    selectedMusicId,
     musicEnabled,
     musicVolumeDb,
     videoVolumeDb,
@@ -1132,6 +1146,7 @@ const ClimaxVideoEditor = () => {
     const settings = {
       hookText,
       subtitleSize,
+      musicId: selectedMusicId,
       musicEnabled,
       musicVolumeDb,
       videoVolumeDb,
@@ -2651,20 +2666,26 @@ const ClimaxVideoEditor = () => {
                 </TabsContent>
                 <TabsContent value="music" className="mt-4">
                   <div className="space-y-3">
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                      <p className="text-sm font-black uppercase tracking-wide">Musique globale</p>
+                      <p className="mt-1 text-xs text-white/45">
+                        Une seule musique pour toute la vidéo. Changer Personne 1 ou Personne 2 ne change pas ce choix.
+                      </p>
+                    </div>
                     {bankByCategory.music.map((asset) => (
                       <button
                         key={asset.id}
                         onClick={() => selectBankAsset("music", asset.id)}
                         className={cn(
                           "w-full rounded-2xl border p-4 flex items-center justify-between gap-3 text-left transition",
-                          selectedClip?.musicId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
+                          selectedMusicId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
                         )}
                       >
                         <div>
                           <p className="font-black text-sm">{asset.title}</p>
-                          <p className={cn("text-xs", selectedClip?.musicId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
+                          <p className={cn("text-xs", selectedMusicId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
                         </div>
-                        <ChevronRight className={cn("h-4 w-4", selectedClip?.musicId === asset.id ? "text-black/40" : "text-white/30")} />
+                        <ChevronRight className={cn("h-4 w-4", selectedMusicId === asset.id ? "text-black/40" : "text-white/30")} />
                       </button>
                     ))}
                     {bankByCategory.music.length === 0 && <p className="text-sm text-white/45">Ajoute des musiques dans la Banque.</p>}
