@@ -9,10 +9,11 @@ type Props = {
   projectId: string;
   clips: { id: string; stage: string; sfxEffect?: string | null }[];
   transitionKey?: string | null;
+  autoSfxEnabled?: boolean;
   onChange: () => void;
 };
 
-const SfxPanel: React.FC<Props> = ({ projectId, clips, transitionKey, onChange }) => {
+const SfxPanel: React.FC<Props> = ({ projectId, clips, transitionKey, autoSfxEnabled = true, onChange }) => {
   const { toast } = useToast();
   const [sfx, setSfx] = useState<LocalKlimaxSfx[]>([]);
   const [loading, setLoading] = useState(true);
@@ -76,9 +77,12 @@ const SfxPanel: React.FC<Props> = ({ projectId, clips, transitionKey, onChange }
           {saving && <Loader2 className="ml-auto h-3 w-3 animate-spin text-white/40" />}
         </div>
         <p className="mt-2 text-xs text-white/55 leading-relaxed">
-          3 transitions visuelles et 3 effets audio. La transition s'applique entre les 2 clips,
-          l'effet audio se mixe au début de chaque clip.
+          Les SFX automatiques détectent les mots forts de la transcription, placent un son environ toutes les 3-4s à -8 dB,
+          et ajoutent un riser avant Personne 2. Les effets manuels restent disponibles clip par clip.
         </p>
+        <div className="mt-3 rounded-2xl border border-white/10 bg-black px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/45">
+          Auto SFX: {autoSfxEnabled ? "actif" : "désactivé dans réglages rapides"}
+        </div>
       </div>
 
       <div className="space-y-2">
@@ -119,7 +123,7 @@ const SfxPanel: React.FC<Props> = ({ projectId, clips, transitionKey, onChange }
       </div>
 
       <div className="space-y-3">
-        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/35">Effet audio par clip</p>
+        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/35">Effet audio manuel par clip</p>
         {clips.map((clip) => (
           <div key={clip.id} className="rounded-2xl border border-white/10 bg-black p-3 space-y-2">
             <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/55">

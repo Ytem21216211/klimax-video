@@ -1,14 +1,14 @@
-// SFX library: 3 visual transitions + 3 audio effects, generated on first run
+// SFX library: visual transitions + original audio effects, generated on first run
 // with ffmpeg into `local-data/klimax/system/sfx/`. The library is exposed via
 // /api/sfx and consumed by the editor + render pipeline.
 //
 // Each entry: { key, label, type: "transition" | "effect", file, durationMs, description }.
 // "transition" files are short MP4s (alpha channel for overlays) or generated via
-// FFmpeg's color source. "effect" files are short WAV/MP3 audio clips.
+// FFmpeg's color source. "effect" files are short generated WAV clips.
 //
 // The render pipeline applies the selected transition between clips via the
-// ffmpeg `xfade` filter, and mixes the selected effect at the start of the
-// owning clip via `adelay`+`amix`.
+// ffmpeg `xfade` filter. Manual and automatic audio SFX are mixed via
+// `adelay`+`amix`.
 
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -57,6 +57,14 @@ export const SFX_CATALOG = [
     durationMs: 180,
   },
   {
+    key: "effect_fahh",
+    type: "effect",
+    label: "FAHH",
+    description: "Souffle viral court pour ouvrir l'attention.",
+    file: "effects/fahh.wav",
+    durationMs: 420,
+  },
+  {
     key: "effect_ding",
     type: "effect",
     label: "Ding",
@@ -65,12 +73,60 @@ export const SFX_CATALOG = [
     durationMs: 350,
   },
   {
+    key: "effect_bell",
+    type: "effect",
+    label: "Cloche",
+    description: "Double cloche brillante pour souligner un mot fort.",
+    file: "effects/bell.wav",
+    durationMs: 520,
+  },
+  {
+    key: "effect_tick",
+    type: "effect",
+    label: "Tick",
+    description: "Tick net pour rythmer les coupes rapides.",
+    file: "effects/tick.wav",
+    durationMs: 90,
+  },
+  {
+    key: "effect_snap",
+    type: "effect",
+    label: "Snap",
+    description: "Clap sec pour marquer un reveal ou une réaction.",
+    file: "effects/snap.wav",
+    durationMs: 140,
+  },
+  {
+    key: "effect_cash",
+    type: "effect",
+    label: "Cash",
+    description: "Tintement léger type notification virale.",
+    file: "effects/cash.wav",
+    durationMs: 380,
+  },
+  {
+    key: "effect_glitch",
+    type: "effect",
+    label: "Glitch",
+    description: "Texture digitale courte pour casser la répétition.",
+    file: "effects/glitch.wav",
+    durationMs: 240,
+  },
+  {
     key: "effect_boom",
     type: "effect",
     label: "Boom",
     description: "Impact basse fréquence, parfait pour les punchlines.",
     file: "effects/boom.wav",
     durationMs: 500,
+  },
+  {
+    key: "effect_riser",
+    type: "effect",
+    label: "Riser",
+    description: "Montée d'attention avant la deuxième personne.",
+    file: "effects/riser.wav",
+    durationMs: 1150,
   },
 ];
 
@@ -109,6 +165,64 @@ async function ensureEffectDing(file) {
   ], "ding");
 }
 
+async function ensureEffectFahh(file) {
+  // 420ms breath/noise burst with a tonal layer. Original, generated locally.
+  await runFfmpeg([
+    "-f", "lavfi", "-i", "anoisesrc=color=pink:duration=0.42:sample_rate=48000",
+    "-f", "lavfi", "-i", "sine=frequency=220:duration=0.42",
+    "-filter_complex", "[0:a]highpass=f=650,lowpass=f=4200,afade=t=in:st=0:d=0.01,afade=t=out:st=0.13:d=0.29,volume=1.05[n];[1:a]volume=0.28,afade=t=out:st=0.08:d=0.34[t];[n][t]amix=inputs=2:duration=longest,acompressor=threshold=-14dB:ratio=8:attack=3:release=80",
+    "-ar", "48000", "-ac", "1",
+    file,
+  ], "fahh");
+}
+
+async function ensureEffectBell(file) {
+  await runFfmpeg([
+    "-f", "lavfi", "-i", "sine=frequency=1260:duration=0.52",
+    "-f", "lavfi", "-i", "sine=frequency=2520:duration=0.52",
+    "-filter_complex", "[0:a]volume=0.9[a];[1:a]volume=0.35[b];[a][b]amix=inputs=2:duration=longest,afade=t=in:st=0:d=0.005,afade=t=out:st=0.10:d=0.42,acompressor=threshold=-16dB:ratio=5:attack=2:release=100",
+    "-ar", "48000", "-ac", "1",
+    file,
+  ], "bell");
+}
+
+async function ensureEffectTick(file) {
+  await runFfmpeg([
+    "-f", "lavfi", "-i", "sine=frequency=2600:duration=0.09",
+    "-af", "afade=t=in:st=0:d=0.002,afade=t=out:st=0.018:d=0.072,volume=1.4,acompressor=threshold=-12dB:ratio=10:attack=1:release=30",
+    "-ar", "48000", "-ac", "1",
+    file,
+  ], "tick");
+}
+
+async function ensureEffectSnap(file) {
+  await runFfmpeg([
+    "-f", "lavfi", "-i", "anoisesrc=color=white:duration=0.14:sample_rate=48000",
+    "-af", "highpass=f=1200,lowpass=f=7600,afade=t=in:st=0:d=0.002,afade=t=out:st=0.018:d=0.122,volume=0.95,acompressor=threshold=-12dB:ratio=10:attack=1:release=35",
+    "-ar", "48000", "-ac", "1",
+    file,
+  ], "snap");
+}
+
+async function ensureEffectCash(file) {
+  await runFfmpeg([
+    "-f", "lavfi", "-i", "sine=frequency=980:duration=0.38",
+    "-f", "lavfi", "-i", "sine=frequency=1960:duration=0.38",
+    "-filter_complex", "[0:a]volume=0.65[a];[1:a]volume=0.5,adelay=65[b];[a][b]amix=inputs=2:duration=longest,afade=t=out:st=0.05:d=0.33,tremolo=f=18:d=0.45,acompressor=threshold=-15dB:ratio=5:attack=2:release=80",
+    "-ar", "48000", "-ac", "1",
+    file,
+  ], "cash");
+}
+
+async function ensureEffectGlitch(file) {
+  await runFfmpeg([
+    "-f", "lavfi", "-i", "anoisesrc=color=violet:duration=0.24:sample_rate=48000",
+    "-af", "highpass=f=900,lowpass=f=5200,tremolo=f=42:d=0.85,afade=t=in:st=0:d=0.004,afade=t=out:st=0.12:d=0.12,volume=0.85,acompressor=threshold=-14dB:ratio=9:attack=2:release=45",
+    "-ar", "48000", "-ac", "1",
+    file,
+  ], "glitch");
+}
+
 async function ensureEffectBoom(file) {
   // 500ms boom: 60Hz with fast attack and slow decay.
   await runFfmpeg([
@@ -117,6 +231,16 @@ async function ensureEffectBoom(file) {
     "-ar", "48000", "-ac", "1",
     file,
   ], "boom");
+}
+
+async function ensureEffectRiser(file) {
+  await runFfmpeg([
+    "-f", "lavfi", "-i", "anoisesrc=color=pink:duration=1.15:sample_rate=48000",
+    "-f", "lavfi", "-i", "sine=frequency=620:duration=1.15",
+    "-filter_complex", "[0:a]highpass=f=500,lowpass=f=6800,afade=t=in:st=0:d=0.12,afade=t=out:st=0.98:d=0.17,volume=0.72[n];[1:a]volume=0.22,afade=t=in:st=0:d=0.2,afade=t=out:st=0.98:d=0.17[t];[n][t]amix=inputs=2:duration=longest,acompressor=threshold=-15dB:ratio=7:attack=6:release=120",
+    "-ar", "48000", "-ac", "1",
+    file,
+  ], "riser");
 }
 
 async function ensureTransitionFilmRoll(file) {
@@ -152,8 +276,15 @@ async function ensureTransitionFlash(file) {
 
 const GENERATORS = {
   effect_pop: ensureEffectPop,
+  effect_fahh: ensureEffectFahh,
   effect_ding: ensureEffectDing,
+  effect_bell: ensureEffectBell,
+  effect_tick: ensureEffectTick,
+  effect_snap: ensureEffectSnap,
+  effect_cash: ensureEffectCash,
+  effect_glitch: ensureEffectGlitch,
   effect_boom: ensureEffectBoom,
+  effect_riser: ensureEffectRiser,
   transition_film_roll: ensureTransitionFilmRoll,
   transition_whoosh: ensureTransitionWhoosh,
   transition_flash: ensureTransitionFlash,

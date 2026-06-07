@@ -101,6 +101,7 @@ const defaultProjectSettings = () => ({
   autoSfxEnabled: true,
   klimaxLogoEnabled: true,
   logoTriggerWord: "klimax",
+  videoFilterKey: "none",
   subtitleStyle: { ...defaultSubtitleStyle },
   hookStyle: { ...defaultHookStyle },
 });
@@ -174,6 +175,27 @@ const safeNumber = (value, fallback = 0) => {
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
+const VIDEO_FILTERS = new Map([
+  ["none", ""],
+  ["clean_boost", "eq=contrast=1.06:saturation=1.07:brightness=0.006"],
+  ["warm_viral", "colorbalance=rs=0.055:gs=0.018:bs=-0.045,eq=contrast=1.05:saturation=1.10:brightness=0.008"],
+  ["cold_crisp", "colorbalance=rs=-0.045:gs=0.01:bs=0.07,eq=contrast=1.07:saturation=1.04"],
+  ["contrast_punch", "eq=contrast=1.16:saturation=1.13:brightness=-0.004"],
+  ["soft_glow", "eq=contrast=1.03:saturation=1.06:brightness=0.014,unsharp=5:5:0.35:3:3:0.15"],
+  ["grain_light", "noise=alls=7:allf=t+u,eq=contrast=1.05:saturation=1.04"],
+  ["mono_noir", "hue=s=0,eq=contrast=1.15:brightness=0.01"],
+  ["green_tint", "colorbalance=rs=-0.035:gs=0.055:bs=-0.035,eq=contrast=1.05:saturation=1.06"],
+  ["pink_pop", "colorbalance=rs=0.07:gs=-0.025:bs=0.045,eq=contrast=1.06:saturation=1.16"],
+  ["vhs_lite", "noise=alls=10:allf=t+u,eq=contrast=1.08:saturation=0.95"],
+]);
+
+const normalizeVideoFilterKey = (key) => (VIDEO_FILTERS.has(String(key || "")) ? String(key) : "none");
+
+const videoFilterChain = (key) => {
+  const filter = VIDEO_FILTERS.get(normalizeVideoFilterKey(key));
+  return filter ? `,${filter}` : "";
+};
+
 const mergeProjectSettings = (settings = {}) => {
   const defaults = defaultProjectSettings();
   const subtitleStyle = {
@@ -210,6 +232,7 @@ const mergeProjectSettings = (settings = {}) => {
   hookStyle.fontFamily = String(hookStyle.fontFamily || defaults.hookStyle.fontFamily);
   const musicVolumeDb = clamp(safeNumber(settings.musicVolumeDb, defaults.musicVolumeDb), -40, 0);
   const videoVolumeDb = clamp(safeNumber(settings.videoVolumeDb, defaults.videoVolumeDb), -12, 12);
+  const videoFilterKey = normalizeVideoFilterKey(settings.videoFilterKey || defaults.videoFilterKey);
 
   return {
     ...defaults,
@@ -217,6 +240,7 @@ const mergeProjectSettings = (settings = {}) => {
     subtitleSize: subtitleStyle.fontSize,
     musicVolumeDb,
     videoVolumeDb,
+    videoFilterKey,
     subtitleStyle,
     hookStyle,
   };
@@ -521,6 +545,115 @@ const buildCaptionCues = (words, wordsPerLine = 4) => {
 
   flush();
   return cues;
+};
+
+const sfxStopWords = new Set([
+  "alors", "apres", "avant", "avec", "aussi", "autre", "avoir", "cette", "comme", "dans",
+  "donc", "elle", "elles", "etre", "faire", "faut", "mais", "meme", "moi", "nous",
+  "parce", "pour", "quand", "quoi", "sans", "sont", "tout", "tous", "tres", "voila",
+  "vous", "vrai", "vraiment",
+]);
+
+const sfxKeywordHints = new Set([
+  "klimax", "climax", "taille", "compte", "important", "secret", "argent", "amour",
+  "application", "video", "tiktok", "femme", "homme", "message", "attention", "probleme",
+  "reponse", "choix", "viral", "buzz", "choc", "preuve", "resultat",
+]);
+
+const autoSfxKeys = [
+  "effect_fahh",
+  "effect_bell",
+  "effect_pop",
+  "effect_tick",
+  "effect_snap",
+  "effect_cash",
+  "effect_glitch",
+  "effect_ding",
+  "effect_boom",
+];
+
+const normalizeSfxWord = (word = "") =>
+  stripCaptionPunctuation(word)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9%]+/g, "")
+    .toLowerCase();
+
+const scoreSfxWord = (word = "") => {
+  const token = normalizeSfxWord(word);
+  if (!token || sfxStopWords.has(token)) return 0;
+  let score = 0;
+  if (token.length >= 5) score += token.length;
+  if (/^[0-9]+%?$/.test(token)) score += 16;
+  if (sfxKeywordHints.has(token)) score += 18;
+  if (token === "klimax" || token === "climax") score += 24;
+  if (/[A-Z]{2,}/.test(String(word))) score += 4;
+  return score;
+};
+
+const fallbackWordsFromCues = (clipTranscription) => {
+  const words = [];
+  for (const cue of clipTranscription?.cues || []) {
+    const tokens = stripCaptionPunctuation(cue.text).split(" ").filter(Boolean);
+    if (!tokens.length) continue;
+    const start = safeNumber(cue.start, 0);
+    const duration = Math.max(0.12, safeNumber(cue.end, start + 0.3) - start);
+    const step = duration / tokens.length;
+    tokens.forEach((word, index) => {
+      words.push({ word, start: start + step * index, end: start + step * (index + 1) });
+    });
+  }
+  return words;
+};
+
+const collectAutoSfxEvents = (clipTranscription, clipDuration, clipIndex, clipCount) => {
+  if (!clipDuration || clipDuration < 0.6) return [];
+  const words = Array.isArray(clipTranscription?.words) && clipTranscription.words.length
+    ? clipTranscription.words
+    : fallbackWordsFromCues(clipTranscription);
+  const candidates = words
+    .map((word) => ({
+      key: null,
+      word: word.word,
+      time: clamp(safeNumber(word.start, 0), 0, Math.max(0, clipDuration - 0.08)),
+      score: scoreSfxWord(word.word),
+    }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => a.time - b.time);
+
+  const events = [];
+  const minGap = 3.0;
+  const maxGap = 4.4;
+  let cursor = 0.35;
+  let effectCursor = clipIndex % autoSfxKeys.length;
+
+  while (cursor < clipDuration - 0.25 && events.length < 12) {
+    const windowStart = Math.max(0, cursor - 0.45);
+    const windowEnd = Math.min(clipDuration, cursor + maxGap);
+    const windowCandidates = candidates
+      .filter((item) => item.time >= windowStart && item.time <= windowEnd)
+      .sort((a, b) => b.score - a.score || a.time - b.time);
+    const picked = windowCandidates[0];
+    const nextTime = picked
+      ? Math.max(cursor, picked.time)
+      : Math.min(clipDuration - 0.25, cursor + 0.15);
+    if (!events.length || nextTime - events[events.length - 1].time >= minGap) {
+      events.push({
+        key: autoSfxKeys[effectCursor % autoSfxKeys.length],
+        time: nextTime,
+        word: picked?.word || "",
+      });
+      effectCursor += 1;
+    }
+    cursor = (events[events.length - 1]?.time || cursor) + 3.6;
+  }
+
+  if (clipIndex === 0 && clipCount > 1 && clipDuration > 1.4) {
+    const riserTime = Math.max(0, clipDuration - 1.15);
+    events.push({ key: "effect_riser", time: riserTime, word: "riser" });
+  }
+
+  return events.sort((a, b) => a.time - b.time);
 };
 
 const createSourceFingerprint = async (project, sourceGroup) => {
@@ -1069,7 +1202,7 @@ const renderProject = async (db, project, sourceGroup) => {
     const baseOffsetX = safeNumber(clipLayout.videoTransform.x, 0);
     const baseOffsetY = safeNumber(clipLayout.videoTransform.y, 0);
     filterChains.push(
-      `[${sourceInput}:v]scale=1080*${baseScale}:1920*${baseScale}:force_original_aspect_ratio=increase,crop=1080:1920:min(max((in_w-1080)/2+${baseOffsetX}\\,0)\\,in_w-1080):min(max((in_h-1920)/2+${baseOffsetY}\\,0)\\,in_h-1920),setsar=1,format=rgba[${currentVideo}]`
+      `[${sourceInput}:v]scale=1080*${baseScale}:1920*${baseScale}:force_original_aspect_ratio=increase,crop=1080:1920:min(max((in_w-1080)/2+${baseOffsetX}\\,0)\\,in_w-1080):min(max((in_h-1920)/2+${baseOffsetY}\\,0)\\,in_h-1920),setsar=1${videoFilterChain(project.settings?.videoFilterKey)},format=rgba[${currentVideo}]`
     );
 
     if (clip.stage === "intro") {
@@ -1143,17 +1276,35 @@ const renderProject = async (db, project, sourceGroup) => {
     const videoVolumeDb = safeNumber(project.settings?.videoVolumeDb, 2);
     filterChains.push(`[${sourceInput}:a]volume=${videoVolumeDb}dB,aresample=async=1[acl${clipIndex}]`);
 
-    // Audio SFX for this clip (if any). Mixed at the start of the clip audio.
-    const sfxPath = clip.sfxEffect ? getSfxPath(clip.sfxEffect) : null;
-    if (sfxPath) {
-      inputArgs.push("-i", sfxPath);
+    // Manual SFX + automatic viral SFX. Every effect is mixed at -8 dB so it
+    // stays present without crushing the original voice (+2 dB by default).
+    const sfxEvents = [];
+    if (clip.sfxEffect) sfxEvents.push({ key: clip.sfxEffect, time: 0, word: "manual" });
+    if (project.settings?.autoSfxEnabled !== false) {
+      sfxEvents.push(...collectAutoSfxEvents(clipTranscription, clipDuration, clipIndex, clipsToRender.length));
+    }
+
+    const sfxMixTags = [];
+    const usedSfxEvents = sfxEvents
+      .map((event) => ({ ...event, path: getSfxPath(event.key) }))
+      .filter((event) => event.path && safeNumber(event.time, 0) < clipDuration);
+
+    for (let eventIndex = 0; eventIndex < usedSfxEvents.length; eventIndex += 1) {
+      const event = usedSfxEvents[eventIndex];
+      inputArgs.push("-i", event.path);
       const sfxInput = inputIndex;
       inputIndex += 1;
+      const delayMs = Math.max(0, Math.round(safeNumber(event.time, 0) * 1000));
+      const tag = `asfx${clipIndex}_${eventIndex}`;
       filterChains.push(
-        `[${sfxInput}:a]aresample=async=1,atrim=0:${Math.max(0.1, clipDuration).toFixed(3)},asetpts=PTS-STARTPTS[asfx${clipIndex}]`
+        `[${sfxInput}:a]volume=-8dB,aresample=async=1,adelay=${delayMs}:all=1,atrim=0:${Math.max(0.1, clipDuration).toFixed(3)},asetpts=PTS-STARTPTS[${tag}]`
       );
+      sfxMixTags.push(`[${tag}]`);
+    }
+
+    if (sfxMixTags.length) {
       filterChains.push(
-        `[acl${clipIndex}][asfx${clipIndex}]amix=inputs=2:duration=first:dropout_transition=0:weights=0.85 1.0[a${clipIndex}]`
+        `[acl${clipIndex}]${sfxMixTags.join("")}amix=inputs=${sfxMixTags.length + 1}:duration=first:dropout_transition=0:weights=${["1", ...sfxMixTags.map(() => "1")].join(" ")}[a${clipIndex}]`
       );
     } else {
       filterChains.push(`[acl${clipIndex}]anull[a${clipIndex}]`);

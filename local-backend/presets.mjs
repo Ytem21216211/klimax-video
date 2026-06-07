@@ -25,6 +25,7 @@ export const PRESET_FIELDS = [
   "hookStyle",
   "musicEnabled",
   "musicVolumeDb",
+  "videoFilterKey",
   "brollEnabled",
   "autoSfxEnabled",
   "klimaxLogoEnabled",

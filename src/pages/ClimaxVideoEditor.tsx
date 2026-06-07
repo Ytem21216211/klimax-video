@@ -67,6 +67,20 @@ const antiShadowbanSteps = [
   "Insertion image ou b-roll selon le sens",
 ];
 
+const VIDEO_FILTER_PRESETS = [
+  { key: "none", label: "Aucun", note: "Image source", css: "none" },
+  { key: "clean_boost", label: "Clean Boost", note: "Contraste léger", css: "contrast(1.06) saturate(1.07) brightness(1.006)" },
+  { key: "warm_viral", label: "Warm Viral", note: "Chaud + vivant", css: "contrast(1.05) saturate(1.1) sepia(0.08) brightness(1.008)" },
+  { key: "cold_crisp", label: "Cold Crisp", note: "Froid + net", css: "contrast(1.07) saturate(1.04) hue-rotate(7deg)" },
+  { key: "contrast_punch", label: "Punch", note: "Plus impactant", css: "contrast(1.16) saturate(1.13) brightness(0.996)" },
+  { key: "soft_glow", label: "Soft Glow", note: "Plus lumineux", css: "contrast(1.03) saturate(1.06) brightness(1.014)" },
+  { key: "grain_light", label: "Grain Light", note: "Texture fine", css: "contrast(1.05) saturate(1.04)" },
+  { key: "mono_noir", label: "Mono Noir", note: "Noir et blanc", css: "grayscale(1) contrast(1.15) brightness(1.01)" },
+  { key: "green_tint", label: "Green Tint", note: "Tint vert subtil", css: "contrast(1.05) saturate(1.06) hue-rotate(15deg)" },
+  { key: "pink_pop", label: "Pink Pop", note: "Rouge pop", css: "contrast(1.06) saturate(1.16) hue-rotate(-8deg)" },
+  { key: "vhs_lite", label: "VHS Lite", note: "Texture repost", css: "contrast(1.08) saturate(0.95)" },
+] as const;
+
 const KLIMAX_LOGO_PREVIEW_URL = `${LOCAL_KLIMAX_API}/files/system/klimax-pop-up.mov`;
 const KLIMAX_LOGO_PLACEMENT_TIME_SECONDS = 2;
 
@@ -703,6 +717,7 @@ const ClimaxVideoEditor = () => {
   const [presetsRefresh, setPresetsRefresh] = useState(0);
   const [musicVolumeDb, setMusicVolumeDb] = useState(-17);
   const [videoVolumeDb, setVideoVolumeDb] = useState(2);
+  const [videoFilterKey, setVideoFilterKey] = useState("none");
   const [subtitleSize, setSubtitleSize] = useState(34);
   const [subtitleStyle, setSubtitleStyle] = useState<LocalSubtitleStyleSettings>({ ...DEFAULT_SUBTITLE_STYLE });
   const [hookStyle, setHookStyle] = useState<LocalHookStyleSettings>({ ...DEFAULT_HOOK_STYLE });
@@ -739,13 +754,14 @@ const ClimaxVideoEditor = () => {
       musicEnabled,
       musicVolumeDb,
       videoVolumeDb,
+      videoFilterKey,
       brollEnabled,
       autoSfxEnabled,
       klimaxLogoEnabled,
       logoTriggerWord: "klimax",
     });
     return () => { delete (window as any).__klimaxCurrentSnapshot; };
-  }, [hookText, subtitleSize, subtitleStyle, hookStyle, selectedMusicId, musicEnabled, musicVolumeDb, videoVolumeDb, brollEnabled, autoSfxEnabled, klimaxLogoEnabled]);
+  }, [hookText, subtitleSize, subtitleStyle, hookStyle, selectedMusicId, musicEnabled, musicVolumeDb, videoVolumeDb, videoFilterKey, brollEnabled, autoSfxEnabled, klimaxLogoEnabled]);
 
   // Apply a preset from the Presets panel: update local state, then save the project.
   React.useEffect(() => {
@@ -767,6 +783,7 @@ const ClimaxVideoEditor = () => {
       if (typeof detail.musicEnabled === "boolean") setMusicEnabled(detail.musicEnabled);
       if (typeof detail.musicVolumeDb === "number") setMusicVolumeDb(detail.musicVolumeDb);
       if (typeof detail.videoVolumeDb === "number") setVideoVolumeDb(detail.videoVolumeDb);
+      if (typeof detail.videoFilterKey === "string") setVideoFilterKey(detail.videoFilterKey);
       if (typeof detail.brollEnabled === "boolean") setBrollEnabled(detail.brollEnabled);
       if (typeof detail.autoSfxEnabled === "boolean") setAutoSfxEnabled(detail.autoSfxEnabled);
       if (typeof detail.klimaxLogoEnabled === "boolean") setKlimaxLogoEnabled(detail.klimaxLogoEnabled);
@@ -847,6 +864,7 @@ const ClimaxVideoEditor = () => {
     setMusicEnabled(project.settings?.musicEnabled !== false);
     setMusicVolumeDb(Number(project.settings?.musicVolumeDb ?? -17));
     setVideoVolumeDb(Number(project.settings?.videoVolumeDb ?? 2));
+    setVideoFilterKey(String(project.settings?.videoFilterKey || "none"));
     setAutoSfxEnabled(project.settings?.autoSfxEnabled !== false);
     setKlimaxLogoEnabled(project.settings?.klimaxLogoEnabled !== false);
     setBrollEnabled(project.settings?.brollEnabled !== false);
@@ -913,6 +931,10 @@ const ClimaxVideoEditor = () => {
   const selectedImageAsset = useMemo(
     () => (selectedClipCanUseBroll && selectedClip?.imageId ? bankAssets.find((asset) => asset.id === selectedClip.imageId) || null : null),
     [bankAssets, selectedClip?.imageId, selectedClipCanUseBroll]
+  );
+  const selectedVideoFilter = useMemo(
+    () => VIDEO_FILTER_PRESETS.find((filter) => filter.key === videoFilterKey) || VIDEO_FILTER_PRESETS[0],
+    [videoFilterKey]
   );
   const selectedClipPositions = useMemo(() => getClipPositions(selectedClip), [getClipPositions, selectedClip]);
   const selectedSourceVideoSize = selectedSourceAsset?.id ? sourceVideoSizes[selectedSourceAsset.id] : null;
@@ -1229,6 +1251,7 @@ const ClimaxVideoEditor = () => {
       musicEnabled,
       musicVolumeDb,
       videoVolumeDb,
+      videoFilterKey,
       autoSfxEnabled,
       klimaxLogoEnabled,
       brollEnabled,
@@ -1260,6 +1283,7 @@ const ClimaxVideoEditor = () => {
     musicEnabled,
     musicVolumeDb,
     videoVolumeDb,
+    videoFilterKey,
     projectId,
     subtitleSize,
   ]);
@@ -1299,6 +1323,7 @@ const ClimaxVideoEditor = () => {
       musicEnabled,
       musicVolumeDb,
       videoVolumeDb,
+      videoFilterKey,
       autoSfxEnabled,
       klimaxLogoEnabled,
       brollEnabled,
@@ -1521,6 +1546,7 @@ const ClimaxVideoEditor = () => {
                         ...previewVideoFrameStyle,
                         maxWidth: "none",
                         maxHeight: "none",
+                        filter: selectedVideoFilter.css,
                         touchAction: "none",
                       }}
                     />
@@ -2639,6 +2665,7 @@ const ClimaxVideoEditor = () => {
               projectId={projectId}
               clips={(localProject?.transcription?.clips || []).map((c) => ({ id: c.clipId, stage: c.stage, sfxEffect: c.sfxEffect }))}
               transitionKey={localProject?.settings?.sfxTransition}
+              autoSfxEnabled={autoSfxEnabled}
               onChange={async () => {
                 // Re-fetch the project to reflect the updated sfxEffect on each clip.
                 if (!projectId) return;
@@ -2651,6 +2678,53 @@ const ClimaxVideoEditor = () => {
               }}
             />
           )}
+
+            <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5 space-y-4">
+              <div className="flex items-center gap-3">
+                <ShieldCheck className="h-5 w-5 text-white/60" />
+                <div>
+                  <h3 className="font-black uppercase tracking-tight">FILTRE</h3>
+                  <p className="text-xs text-white/45">10 variations exportées par FFmpeg pour différencier les reposts.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setVideoFilterKey("none")}
+                className={cn(
+                  "w-full rounded-2xl border px-4 py-3 text-left transition",
+                  videoFilterKey === "none"
+                    ? "border-white bg-white text-black"
+                    : "border-white/10 bg-black text-white/65 hover:bg-white/10"
+                )}
+              >
+                <p className="text-sm font-black">Aucun filtre</p>
+                <p className="text-xs opacity-60">Garde l'image source intacte.</p>
+              </button>
+              <div className="grid grid-cols-2 gap-2">
+                {VIDEO_FILTER_PRESETS.filter((filter) => filter.key !== "none").map((filter) => (
+                  <button
+                    key={filter.key}
+                    type="button"
+                    onClick={() => setVideoFilterKey(filter.key)}
+                    className={cn(
+                      "rounded-2xl border p-2 text-left transition",
+                      videoFilterKey === filter.key
+                        ? "border-white bg-white text-black"
+                        : "border-white/10 bg-black text-white/65 hover:bg-white/10"
+                    )}
+                  >
+                    <div
+                      className="mb-2 h-16 overflow-hidden rounded-xl border border-white/10 bg-[linear-gradient(135deg,#111,#777_45%,#f3d5b5)]"
+                      style={{ filter: filter.css }}
+                    >
+                      <div className="h-full w-full bg-[radial-gradient(circle_at_24%_32%,#fff6,transparent_18%),linear-gradient(90deg,transparent,#0004)]" />
+                    </div>
+                    <p className="text-xs font-black">{filter.label}</p>
+                    <p className="text-[10px] opacity-60">{filter.note}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
 
             <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
