@@ -87,7 +87,7 @@ const defaultClipLayout = (stage) => ({
     x: 540,
     y: 1385,
   },
-  logoSize: 320,
+  logoSize: 520,
 });
 
 const defaultProjectSettings = () => ({
@@ -243,7 +243,7 @@ const normalizeClipLayout = (clip) => ({
     x: safeNumber(clip?.logoPosition?.x, 540),
     y: safeNumber(clip?.logoPosition?.y, 1385),
   },
-  logoSize: clamp(safeNumber(clip?.logoSize, 320), 120, 620),
+  logoSize: clamp(safeNumber(clip?.logoSize, 520), 80, 1080),
 });
 
 const defaultTranscription = () => ({
@@ -1079,7 +1079,7 @@ const renderProject = async (db, project, sourceGroup) => {
           `[${shiftedLogo}]trim=duration=${logoDuration.toFixed(3)},setpts=PTS-STARTPTS+${logoStart.toFixed(3)}/TB[${shiftedLogo}_delayed]`
         );
         filterChains.push(
-          `[${currentVideo}][${shiftedLogo}_delayed]overlay=x=${Math.round(logoX - logoSize / 2)}:y=${Math.round(logoY - logoSize / 2)}:eof_action=pass[${nextVideo}]`
+          `[${currentVideo}][${shiftedLogo}_delayed]overlay=x=${Math.round(logoX)}-w/2:y=${Math.round(logoY)}-h/2:eof_action=pass[${nextVideo}]`
         );
         currentVideo = nextVideo;
       }

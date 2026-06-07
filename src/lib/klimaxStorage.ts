@@ -295,7 +295,7 @@ export const createKlimaxProjectClip = (
     x: 540,
     y: 1385,
   },
-  logoSize: 320,
+  logoSize: 520,
   imageTransform: {
     scale: 100,
     x: 0,

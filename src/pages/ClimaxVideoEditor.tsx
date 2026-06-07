@@ -68,6 +68,7 @@ const antiShadowbanSteps = [
 ];
 
 const KLIMAX_LOGO_PREVIEW_URL = `${LOCAL_KLIMAX_API}/files/system/klimax-pop-up.mov`;
+const KLIMAX_LOGO_PLACEMENT_TIME_SECONDS = 2;
 
 const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
   impact: {
@@ -391,6 +392,38 @@ const snapToValue = (value: number, target: number, threshold = 18) =>
   Math.abs(value - target) <= threshold ? target : value;
 const canvasFontSize = (size: number) => `${(size / BASE_CANVAS_WIDTH) * 100}cqw`;
 const canvasUnit = (value: number) => `${(value / BASE_CANVAS_WIDTH) * 100}cqw`;
+
+const KlimaxLogoPlacementPreview = () => {
+  const freezeLogoFrame = React.useCallback((video: HTMLVideoElement) => {
+    const targetTime = Number.isFinite(video.duration)
+      ? Math.min(KLIMAX_LOGO_PLACEMENT_TIME_SECONDS, Math.max(0, video.duration - 0.05))
+      : KLIMAX_LOGO_PLACEMENT_TIME_SECONDS;
+
+    try {
+      if (Math.abs(video.currentTime - targetTime) > 0.05) video.currentTime = targetTime;
+    } catch {
+      // Some browsers can reject seeking before the MOV metadata is ready.
+    }
+    video.pause();
+  }, []);
+
+  return (
+    <video
+      src={KLIMAX_LOGO_PREVIEW_URL}
+      muted
+      playsInline
+      preload="auto"
+      className="block pointer-events-none"
+      style={{
+        width: "100%",
+        height: "auto",
+      }}
+      onLoadedMetadata={(event) => freezeLogoFrame(event.currentTarget)}
+      onSeeked={(event) => event.currentTarget.pause()}
+      onPlay={(event) => freezeLogoFrame(event.currentTarget)}
+    />
+  );
+};
 const previewKeywordStopWords = new Set(["mais", "avec", "pour", "dans", "plus", "tout", "tous", "elle", "cette", "vraiment"]);
 const normalizePreviewKeyword = (value: string) =>
   value
@@ -606,7 +639,7 @@ const ClimaxVideoEditor = () => {
         x: 540,
         y: 1385,
       },
-      logoSize: clip?.logoSize || 320,
+      logoSize: clip?.logoSize || 520,
       imageTransform: clip?.imageTransform || {
         scale: 100,
         x: 0,
@@ -1405,27 +1438,22 @@ const ClimaxVideoEditor = () => {
                       </div>
                       {klimaxLogoEnabled && (
                         <div
-                          className="absolute rounded-[24px] border border-white/20 bg-black/70 p-2 cursor-move"
+                          className="absolute cursor-move"
                           style={{
                             left: `${(selectedClipPositions.logoPosition.x / BASE_CANVAS_WIDTH) * 100}%`,
                             top: `${(selectedClipPositions.logoPosition.y / BASE_CANVAS_HEIGHT) * 100}%`,
+                            width: `${(selectedClipPositions.logoSize / BASE_CANVAS_WIDTH) * 100}%`,
                             transform: "translate(-50%, -50%)",
                             touchAction: "none",
+                            outline: activeDragKind === "logo" ? "2px solid rgba(255,255,255,0.85)" : "1px solid rgba(255,255,255,0.28)",
+                            outlineOffset: "4px",
                           }}
                           onPointerDown={(event) => startClipDrag("logo", event)}
                         >
-                          <video
-                            src={KLIMAX_LOGO_PREVIEW_URL}
-                            autoPlay
-                            loop
-                            muted
-                            playsInline
-                            className="rounded-2xl object-contain pointer-events-none"
-                            style={{
-                              width: canvasUnit(selectedClipPositions.logoSize),
-                              height: canvasUnit(selectedClipPositions.logoSize),
-                            }}
-                          />
+                          <KlimaxLogoPlacementPreview />
+                          <span className="pointer-events-none absolute left-1/2 top-full mt-3 -translate-x-1/2 whitespace-nowrap rounded-full border border-white/15 bg-black/75 px-3 py-1 text-[9px] font-black uppercase tracking-[0.18em] text-white/70">
+                            Logo figé à 2s · {selectedClipPositions.logoSize}px
+                          </span>
                         </div>
                       )}
                     </>
@@ -1966,11 +1994,25 @@ const ClimaxVideoEditor = () => {
                                 </div>
                                 <Slider
                                   value={[selectedClipPositions.logoSize]}
-                                  min={120}
-                                  max={620}
+                                  min={80}
+                                  max={1080}
                                   step={10}
                                   onValueChange={([value]) => updateSelectedClip({ logoSize: value })}
                                 />
+                                <div className="flex flex-wrap gap-2">
+                                  {[320, 520, 720, 900].map((size) => (
+                                    <Button
+                                      key={size}
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => updateSelectedClip({ logoSize: size })}
+                                      className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                                    >
+                                      {size}px
+                                    </Button>
+                                  ))}
+                                </div>
                               </div>
                             )}
                           </div>
