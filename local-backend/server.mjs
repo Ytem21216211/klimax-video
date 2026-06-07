@@ -25,8 +25,12 @@ const publicSeedRoot = path.join(projectRoot, "public", "klimax-videos");
 const pythonBin = path.join(projectRoot, "local-backend", ".venv", "bin", "python");
 const transcribeScriptPath = path.join(projectRoot, "local-backend", "transcribe.py");
 const hookBubbleScriptPath = path.join(projectRoot, "local-backend", "render_hook_bubble.py");
+const cropAlphaScriptPath = path.join(projectRoot, "local-backend", "crop_alpha_image.py");
 const logoAnimationSourceCandidate = "/Users/juliengoussale/Downloads/pop up klimax app store.mov";
 const logoAnimationPath = path.join(systemRoot, "klimax-pop-up.mov");
+const logoPreviewRawPath = path.join(systemRoot, "klimax-logo-preview.raw.png");
+const logoPreviewPath = path.join(systemRoot, "klimax-logo-preview.png");
+const logoPreviewTimeSeconds = 2;
 const whisperModelName = process.env.KLIMAX_WHISPER_MODEL || "tiny";
 const port = Number(process.env.KLIMAX_BACKEND_PORT || 8787);
 const transcriptionPipelineVersion = "caption-elision-logo-brand-v5";
@@ -445,6 +449,25 @@ const ensureSystemAssets = async () => {
   await ensureDir(systemRoot);
   if (fsSync.existsSync(logoAnimationSourceCandidate) && !fsSync.existsSync(logoAnimationPath)) {
     await fs.copyFile(logoAnimationSourceCandidate, logoAnimationPath);
+  }
+  if (ffmpegPath && fsSync.existsSync(logoAnimationPath)) {
+    try {
+      await runProcess(ffmpegPath, [
+        "-y",
+        "-ss",
+        String(logoPreviewTimeSeconds),
+        "-i",
+        logoAnimationPath,
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=1080:-1,format=rgba",
+        logoPreviewRawPath,
+      ]);
+      await runProcess(pythonBin, [cropAlphaScriptPath, logoPreviewRawPath, logoPreviewPath, "36"]);
+    } catch (error) {
+      console.warn("[system] logo preview generation skipped:", error.message);
+    }
   }
 };
 
@@ -1533,6 +1556,7 @@ app.get("/api/health", async (_req, res) => {
     dataRoot,
     python: fsSync.existsSync(pythonBin) ? pythonBin : null,
     logoAnimation: fsSync.existsSync(logoAnimationPath) ? publicUrlFor(logoAnimationPath) : null,
+    logoPreview: fsSync.existsSync(logoPreviewPath) ? publicUrlFor(logoPreviewPath) : null,
   });
 });
 

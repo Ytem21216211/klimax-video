@@ -81,7 +81,7 @@ const VIDEO_FILTER_PRESETS = [
   { key: "vhs_lite", label: "VHS Lite", note: "Texture repost", css: "contrast(1.08) saturate(0.95)" },
 ] as const;
 
-const KLIMAX_LOGO_PREVIEW_URL = `${LOCAL_KLIMAX_API}/files/system/klimax-pop-up.mov`;
+const KLIMAX_LOGO_PREVIEW_URL = `${LOCAL_KLIMAX_API}/files/system/klimax-logo-preview.png`;
 const KLIMAX_LOGO_PLACEMENT_TIME_SECONDS = 2;
 
 const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
@@ -582,34 +582,26 @@ const buildSubtitleTextPreviewStyle = (
 };
 
 const KlimaxLogoPlacementPreview = () => {
-  const freezeLogoFrame = React.useCallback((video: HTMLVideoElement) => {
-    const targetTime = Number.isFinite(video.duration)
-      ? Math.min(KLIMAX_LOGO_PLACEMENT_TIME_SECONDS, Math.max(0, video.duration - 0.05))
-      : KLIMAX_LOGO_PLACEMENT_TIME_SECONDS;
-
-    try {
-      if (Math.abs(video.currentTime - targetTime) > 0.05) video.currentTime = targetTime;
-    } catch {
-      // Some browsers can reject seeking before the MOV metadata is ready.
-    }
-    video.pause();
-  }, []);
+  const [failed, setFailed] = React.useState(false);
 
   return (
-    <video
-      src={KLIMAX_LOGO_PREVIEW_URL}
-      muted
-      playsInline
-      preload="auto"
-      className="block pointer-events-none"
-      style={{
-        width: "100%",
-        height: "auto",
-      }}
-      onLoadedMetadata={(event) => freezeLogoFrame(event.currentTarget)}
-      onSeeked={(event) => event.currentTarget.pause()}
-      onPlay={(event) => freezeLogoFrame(event.currentTarget)}
-    />
+    <div className="pointer-events-none grid w-full place-items-center">
+      {!failed ? (
+        <img
+          src={`${KLIMAX_LOGO_PREVIEW_URL}?t=${KLIMAX_LOGO_PLACEMENT_TIME_SECONDS}`}
+          alt="Logo KLIMAX figé"
+          className="block w-full select-none object-contain"
+          style={{
+            filter: "drop-shadow(0 12px 30px rgba(0,0,0,0.65)) drop-shadow(0 0 18px rgba(255,255,255,0.42))",
+          }}
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <div className="grid aspect-square w-full place-items-center rounded-[18%] bg-black/70 text-white shadow-[0_0_30px_rgba(255,255,255,0.35)]">
+          <span className="font-black leading-none" style={{ fontSize: "68cqw" }}>K</span>
+        </div>
+      )}
+    </div>
   );
 };
 const previewKeywordStopWords = new Set(["mais", "avec", "pour", "dans", "plus", "tout", "tous", "elle", "cette", "vraiment"]);
