@@ -294,6 +294,22 @@ const VISUAL_SUBTITLE_PRESETS = [
   { key: "orangeThe", label: "THE orange", sample: "THE", badge: null },
   { key: "proQuick", label: "Pro quick", sample: "quick", badge: "Pro" },
 ] as const;
+const SUBTITLE_ANIMATION_PRESETS: { key: NonNullable<LocalSubtitleStyleSettings["animationPreset"]>; label: string; sample: string }[] = [
+  { key: "pop", label: "Pop-up", sample: "POP" },
+  { key: "bounce", label: "Bounce", sample: "BOUNCE" },
+  { key: "rise", label: "Montee", sample: "THE" },
+  { key: "fade", label: "Opacite", sample: "quick" },
+  { key: "none", label: "Fixe", sample: "FIXE" },
+];
+
+const subtitleAnimationCss = (animation?: LocalSubtitleStyleSettings["animationPreset"], loop = false) => {
+  const repeat = loop ? " infinite" : "";
+  if (animation === "pop") return `klimaxSubtitlePop 360ms cubic-bezier(.2,1.35,.3,1)${repeat}`;
+  if (animation === "bounce") return `klimaxSubtitleBounce 520ms cubic-bezier(.2,1.25,.2,1)${repeat}`;
+  if (animation === "rise") return `klimaxSubtitleRise 360ms ease-out${repeat}`;
+  if (animation === "fade") return `klimaxSubtitleFade 760ms ease-out${repeat}`;
+  return undefined;
+};
 
 const buildOuterSubtitleShadow = (
   strokeWidth: number,
@@ -738,16 +754,7 @@ const ClimaxVideoEditor = () => {
           previewShadowOpacity
         ),
         transform: `scaleX(${(mergedSubtitleStyle.fontScaleX || 104) / 100})`,
-        animation:
-          mergedSubtitleStyle.animationPreset === "pop"
-            ? "klimaxSubtitlePop 360ms cubic-bezier(.2,1.35,.3,1)"
-            : mergedSubtitleStyle.animationPreset === "bounce"
-              ? "klimaxSubtitleBounce 520ms cubic-bezier(.2,1.25,.2,1)"
-              : mergedSubtitleStyle.animationPreset === "rise"
-                ? "klimaxSubtitleRise 360ms ease-out"
-                : mergedSubtitleStyle.animationPreset === "fade"
-                  ? "klimaxSubtitleFade 260ms ease-out"
-                  : undefined,
+        animation: subtitleAnimationCss(mergedSubtitleStyle.animationPreset),
       };
     },
     [mergedSubtitleStyle, subtitleSize]
@@ -881,6 +888,14 @@ const ClimaxVideoEditor = () => {
     }
     if (category === "broll") updateSelectedClip({ brollId: assetId });
     if (category === "image") updateSelectedClip({ imageId: assetId, imageTransform: selectedClip.imageTransform || { scale: 100, x: 0, y: 0 } });
+  };
+
+  const applySubtitleTextPreset = (preset: LocalSubtitleStyleSettings) => {
+    setSubtitleStyle((current) => ({
+      ...preset,
+      animationPreset: current.animationPreset || preset.animationPreset,
+    }));
+    setSubtitleSize(preset.fontSize || 34);
   };
 
   const addClip = (stage: KlimaxClipStage) => {
@@ -2006,8 +2021,7 @@ const ClimaxVideoEditor = () => {
                                 type="button"
                                 onClick={() => {
                                   const next = SUBTITLE_PRESETS[preset.key];
-                                  setSubtitleStyle({ ...next });
-                                  setSubtitleSize(next.fontSize || 34);
+                                  applySubtitleTextPreset(next);
                                 }}
                                 className={cn(
                                   "rounded-full border px-3 py-1 text-xs font-black transition",
@@ -2031,8 +2045,7 @@ const ClimaxVideoEditor = () => {
                                 key={preset.key}
                                 type="button"
                                 onClick={() => {
-                                  setSubtitleStyle({ ...preview });
-                                  setSubtitleSize(preview.fontSize || 40);
+                                  applySubtitleTextPreset(preview);
                                 }}
                                 className={cn(
                                   "relative h-24 overflow-hidden rounded-2xl border bg-white/[0.04] p-3 text-left transition hover:bg-white/[0.08]",
@@ -2060,6 +2073,7 @@ const ClimaxVideoEditor = () => {
                                         ? "none"
                                         : `0 3px 0 ${preview.strokeColor || "#000000"}, 0 8px 18px rgba(0,0,0,.55)`,
                                     opacity: preset.key === "quickFade" ? 0.96 : 1,
+                                    animation: subtitleAnimationCss(preview.animationPreset, true),
                                   }}
                                 >
                                   {preset.sample}
@@ -2070,6 +2084,54 @@ const ClimaxVideoEditor = () => {
                               </button>
                             );
                           })}
+                        </div>
+                        <div className="space-y-3">
+                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Animations sous-titres</Label>
+                          <div className="grid gap-3 md:grid-cols-5">
+                            {SUBTITLE_ANIMATION_PRESETS.map((animationPreset) => {
+                              const active = (mergedSubtitleStyle.animationPreset || "pop") === animationPreset.key;
+
+                              return (
+                                <button
+                                  key={animationPreset.key}
+                                  type="button"
+                                  onClick={() =>
+                                    setSubtitleStyle((current) => ({
+                                      ...current,
+                                      animationPreset: animationPreset.key,
+                                    }))
+                                  }
+                                  className={cn(
+                                    "relative h-24 overflow-hidden rounded-2xl border bg-white/[0.04] p-3 transition hover:bg-white/[0.08]",
+                                    active ? "border-white shadow-[0_0_0_1px_rgba(255,255,255,0.45)]" : "border-white/10"
+                                  )}
+                                >
+                                  <span
+                                    className="absolute inset-x-2 top-1/2 block -translate-y-1/2 whitespace-nowrap text-center font-black leading-none"
+                                    style={{
+                                      color: mergedSubtitleStyle.textColor || "#ffffff",
+                                      fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
+                                      fontSize: animationPreset.key === "rise" ? "30px" : "24px",
+                                      WebkitTextStroke:
+                                        mergedSubtitleStyle.strokeEnabled === false
+                                          ? "0 transparent"
+                                          : `1.5px ${mergedSubtitleStyle.strokeColor || "#000000"}`,
+                                      textShadow:
+                                        mergedSubtitleStyle.strokeEnabled === false
+                                          ? `0 5px 14px ${hexToRgba(mergedSubtitleStyle.shadowColor || "#000000", 0.45)}`
+                                          : `0 3px 0 ${mergedSubtitleStyle.strokeColor || "#000000"}, 0 8px 18px rgba(0,0,0,.55)`,
+                                      animation: subtitleAnimationCss(animationPreset.key, animationPreset.key !== "none"),
+                                    }}
+                                  >
+                                    {animationPreset.sample}
+                                  </span>
+                                  <span className="absolute bottom-2 left-3 right-3 truncate text-left text-[10px] font-black uppercase tracking-[0.18em] text-white/45">
+                                    {animationPreset.label}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
                         </div>
                         <div className="grid gap-4 md:grid-cols-2">
                           <div className="space-y-2">
@@ -2101,29 +2163,6 @@ const ClimaxVideoEditor = () => {
                               </SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="2">2 mots max</SelectItem>
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          <div className="space-y-2 md:col-span-2">
-                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Animation texte</Label>
-                            <Select
-                              value={mergedSubtitleStyle.animationPreset || "pop"}
-                              onValueChange={(value) =>
-                                setSubtitleStyle((current) => ({
-                                  ...current,
-                                  animationPreset: value as LocalSubtitleStyleSettings["animationPreset"],
-                                }))
-                              }
-                            >
-                              <SelectTrigger className="rounded-2xl border-white/10 bg-white/[0.03]">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="pop">Pop-up</SelectItem>
-                                <SelectItem value="bounce">Bounce</SelectItem>
-                                <SelectItem value="rise">Montee douce</SelectItem>
-                                <SelectItem value="fade">Fade opacite</SelectItem>
-                                <SelectItem value="none">Sans animation</SelectItem>
                               </SelectContent>
                             </Select>
                           </div>
