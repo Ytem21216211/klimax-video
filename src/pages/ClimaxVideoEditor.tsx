@@ -589,6 +589,7 @@ const ClimaxVideoEditor = () => {
         x: 540,
         y: 1385,
       },
+      logoSize: clip?.logoSize || 320,
       imageTransform: clip?.imageTransform || {
         scale: 100,
         x: 0,
@@ -1403,7 +1404,11 @@ const ClimaxVideoEditor = () => {
                             loop
                             muted
                             playsInline
-                            className="h-20 w-20 rounded-2xl object-contain pointer-events-none"
+                            className="rounded-2xl object-contain pointer-events-none"
+                            style={{
+                              width: canvasUnit(selectedClipPositions.logoSize),
+                              height: canvasUnit(selectedClipPositions.logoSize),
+                            }}
                           />
                         </div>
                       )}
@@ -1920,6 +1925,17 @@ const ClimaxVideoEditor = () => {
                                       },
                                     })
                                   }
+                                />
+                                <div className="flex items-center justify-between gap-3">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Taille</Label>
+                                  <span className="text-sm font-black">{selectedClipPositions.logoSize}px</span>
+                                </div>
+                                <Slider
+                                  value={[selectedClipPositions.logoSize]}
+                                  min={120}
+                                  max={620}
+                                  step={10}
+                                  onValueChange={([value]) => updateSelectedClip({ logoSize: value })}
                                 />
                               </div>
                             )}

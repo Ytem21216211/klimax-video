@@ -56,6 +56,7 @@ export type KlimaxProjectClip = {
     x: number;
     y: number;
   };
+  logoSize?: number;
   imageTransform?: {
     scale: number;
     x: number;
@@ -294,6 +295,7 @@ export const createKlimaxProjectClip = (
     x: 540,
     y: 1385,
   },
+  logoSize: 320,
   imageTransform: {
     scale: 100,
     x: 0,
