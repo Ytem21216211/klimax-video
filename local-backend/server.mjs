@@ -61,6 +61,7 @@ const defaultSubtitleStyle = {
 const defaultHookStyle = {
   bubbleColor: "#ffffff",
   textColor: "#000000",
+  fontFamily: "Arial Black",
   fontSize: 46,
 };
 
@@ -205,6 +206,7 @@ const mergeProjectSettings = (settings = {}) => {
     subtitleStyle.animationPreset = defaults.subtitleStyle.animationPreset;
   }
   hookStyle.fontSize = safeNumber(hookStyle.fontSize, 46);
+  hookStyle.fontFamily = String(hookStyle.fontFamily || defaults.hookStyle.fontFamily);
   const musicVolumeDb = clamp(safeNumber(settings.musicVolumeDb, defaults.musicVolumeDb), -40, 0);
   const videoVolumeDb = clamp(safeNumber(settings.videoVolumeDb, defaults.videoVolumeDb), -12, 12);
 
@@ -954,10 +956,9 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription) => {
 };
 
 const createHookBubbleOverlay = async (project, clip) => {
-  const subtitleStyle = project.settings?.subtitleStyle || defaultSubtitleStyle;
   const hookStyle = project.settings?.hookStyle || defaultHookStyle;
   const clipLayout = normalizeClipLayout(clip);
-  const font = await resolveFontDescriptor(subtitleStyle.fontFamily, subtitleStyle.fontWeight || 800);
+  const font = await resolveFontDescriptor(hookStyle.fontFamily, hookStyle.fontWeight || 800);
   const outputPath = path.join(tempRoot, `${project.id}-${clip.id}-hook.png`);
   const configPath = await writeJsonFile(project.id, `${clip.id}-hook-style`, {
     outputPath,

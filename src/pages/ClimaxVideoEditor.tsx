@@ -345,6 +345,7 @@ const buildOuterSubtitleShadow = (
 const DEFAULT_HOOK_STYLE: LocalHookStyleSettings = {
   bubbleColor: "#ffffff",
   textColor: "#000000",
+  fontFamily: "Arial Black",
   fontSize: 46,
 };
 
@@ -1358,7 +1359,7 @@ const ClimaxVideoEditor = () => {
                             className="relative z-10 whitespace-pre-line font-black leading-snug tracking-tight break-words"
                             style={{
                               color: mergedHookStyle.textColor || "#000000",
-                              fontFamily: mergedSubtitleStyle.fontFamily || "Arial Black, Arial, sans-serif",
+                              fontFamily: mergedHookStyle.fontFamily || "Arial Black, Arial, sans-serif",
                               fontSize: canvasFontSize(mergedHookStyle.fontSize || 46),
                               maxWidth: canvasUnit(Math.max(120, selectedClipPositions.hookSize.width - 128)),
                             }}
@@ -1642,6 +1643,24 @@ const ClimaxVideoEditor = () => {
                         />
                       </div>
                       <div className="grid gap-3 md:grid-cols-2">
+                        <div className="rounded-2xl border border-white/10 bg-black p-4 md:col-span-2">
+                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Police hook text</Label>
+                          <Select
+                            value={mergedHookStyle.fontFamily || "Arial Black"}
+                            onValueChange={(value) => setHookStyle((current) => ({ ...current, fontFamily: value }))}
+                          >
+                            <SelectTrigger className="mt-3 rounded-2xl border-white/10 bg-white/[0.03]">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {FONT_OPTIONS.map((font) => (
+                                <SelectItem key={font.value} value={font.value}>
+                                  {font.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
                         <div className="rounded-2xl border border-white/10 bg-black p-4">
                           <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Couleur bulle hook</Label>
                           <div className="mt-3 flex items-center gap-3">

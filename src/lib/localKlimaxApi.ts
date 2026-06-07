@@ -30,6 +30,7 @@ export type LocalSubtitleStyleSettings = {
 export type LocalHookStyleSettings = {
   bubbleColor?: string;
   textColor?: string;
+  fontFamily?: string;
   fontSize?: number;
 };
 
