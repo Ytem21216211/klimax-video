@@ -670,6 +670,7 @@ const ClimaxVideoEditor = () => {
     () => (selectedClip ? transcriptionByClipId.get(selectedClip.id) || null : null),
     [selectedClip, transcriptionByClipId]
   );
+  const selectedClipCanUseBroll = selectedClip?.stage === "reply";
   const selectedSourceAsset = useMemo(() => {
     if (!selectedClip || !localProject?.sourceGroup) return null;
     const { person1, person2 } = localProject.sourceGroup;
@@ -677,8 +678,8 @@ const ClimaxVideoEditor = () => {
     return person1 || person2 || null;
   }, [localProject?.sourceGroup, selectedClip]);
   const selectedImageAsset = useMemo(
-    () => (selectedClip?.imageId ? bankAssets.find((asset) => asset.id === selectedClip.imageId) || null : null),
-    [bankAssets, selectedClip?.imageId]
+    () => (selectedClipCanUseBroll && selectedClip?.imageId ? bankAssets.find((asset) => asset.id === selectedClip.imageId) || null : null),
+    [bankAssets, selectedClip?.imageId, selectedClipCanUseBroll]
   );
   const selectedClipPositions = useMemo(() => getClipPositions(selectedClip), [getClipPositions, selectedClip]);
   const selectedSourceVideoSize = selectedSourceAsset?.id ? sourceVideoSizes[selectedSourceAsset.id] : null;
@@ -870,6 +871,13 @@ const ClimaxVideoEditor = () => {
   const selectBankAsset = (category: Exclude<KlimaxAssetCategory, "video">, assetId: string) => {
     if (!selectedClip) return;
     if (category === "music") updateSelectedClip({ musicId: assetId });
+    if ((category === "broll" || category === "image") && !selectedClipCanUseBroll) {
+      toast({
+        title: "B-roll réservé à Personne 2",
+        description: "Les images et B-rolls se placent uniquement sur le deuxième clip.",
+      });
+      return;
+    }
     if (category === "broll") updateSelectedClip({ brollId: assetId });
     if (category === "image") updateSelectedClip({ imageId: assetId, imageTransform: selectedClip.imageTransform || { scale: 100, x: 0, y: 0 } });
   };
@@ -1287,7 +1295,7 @@ const ClimaxVideoEditor = () => {
                     <div className="absolute inset-0 grid place-items-center">
                       <CirclePlay className="h-16 w-16 text-white/70" />
                     </div>
-                    {selectedImageAsset?.fileUrl && (
+                    {selectedClipCanUseBroll && selectedImageAsset?.fileUrl && (
                       <img
                         src={selectedImageAsset.fileUrl}
                         alt={selectedImageAsset.title}
@@ -1301,9 +1309,9 @@ const ClimaxVideoEditor = () => {
                         }}
                       />
                     )}
-                    {brollEnabled && (
+                    {selectedClipCanUseBroll && brollEnabled && (
                       <div className="absolute bottom-4 left-4 right-4 rounded-2xl bg-white text-black px-4 py-3 text-xs font-black uppercase tracking-wide">
-                        B-roll reserve · image sous le texte
+                        B-roll reserve · image ou vidéo sous le texte
                       </div>
                     )}
                   </div>
@@ -2387,45 +2395,61 @@ const ClimaxVideoEditor = () => {
                   <TabsTrigger value="music" className="rounded-xl"><Music className="h-4 w-4" /></TabsTrigger>
                 </TabsList>
                 <TabsContent value="broll" className="mt-4 space-y-3">
-                  {bankByCategory.broll.map((asset) => (
-                    <button
-                      key={asset.id}
-                      onClick={() => selectBankAsset("broll", asset.id)}
-                      className={cn(
-                        "w-full rounded-2xl border p-4 flex items-center justify-between gap-3 text-left transition",
-                        selectedClip?.brollId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
-                      )}
-                    >
-                      <div>
-                        <p className="font-black text-sm">{asset.title}</p>
-                        <p className={cn("text-xs", selectedClip?.brollId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
-                      </div>
-                      <ChevronRight className={cn("h-4 w-4", selectedClip?.brollId === asset.id ? "text-black/40" : "text-white/30")} />
-                    </button>
-                  ))}
-                  {bankByCategory.broll.length === 0 && <p className="text-sm text-white/45">Ajoute des B-rolls dans la Banque.</p>}
+                  {!selectedClipCanUseBroll ? (
+                    <p className="rounded-2xl border border-white/10 bg-black p-4 text-sm text-white/55">
+                      Les B-rolls se placent uniquement sur Personne 2.
+                    </p>
+                  ) : (
+                    <>
+                      {bankByCategory.broll.map((asset) => (
+                        <button
+                          key={asset.id}
+                          onClick={() => selectBankAsset("broll", asset.id)}
+                          className={cn(
+                            "w-full rounded-2xl border p-4 flex items-center justify-between gap-3 text-left transition",
+                            selectedClip?.brollId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
+                          )}
+                        >
+                          <div>
+                            <p className="font-black text-sm">{asset.title}</p>
+                            <p className={cn("text-xs", selectedClip?.brollId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
+                          </div>
+                          <ChevronRight className={cn("h-4 w-4", selectedClip?.brollId === asset.id ? "text-black/40" : "text-white/30")} />
+                        </button>
+                      ))}
+                      {bankByCategory.broll.length === 0 && <p className="text-sm text-white/45">Ajoute des B-rolls dans la Banque.</p>}
+                    </>
+                  )}
                 </TabsContent>
                 <TabsContent value="images" className="mt-4">
                   <div className="space-y-3">
-                    {bankByCategory.image.map((asset) => (
-                      <button
-                        key={asset.id}
-                        onClick={() => selectBankAsset("image", asset.id)}
-                        className={cn(
-                          "w-full rounded-2xl border p-4 flex items-center justify-between gap-3 text-left transition",
-                          selectedClip?.imageId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
-                        )}
-                      >
-                        <div>
-                          <p className="font-black text-sm">{asset.title}</p>
-                          <p className={cn("text-xs", selectedClip?.imageId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
-                        </div>
-                        <ChevronRight className={cn("h-4 w-4", selectedClip?.imageId === asset.id ? "text-black/40" : "text-white/30")} />
-                      </button>
-                    ))}
-                    {bankByCategory.image.length === 0 && <p className="text-sm text-white/45">Ajoute des images dans la Banque.</p>}
+                    {!selectedClipCanUseBroll ? (
+                      <p className="rounded-2xl border border-white/10 bg-black p-4 text-sm text-white/55">
+                        Les images d'illustration se placent uniquement sur Personne 2.
+                      </p>
+                    ) : (
+                      <>
+                        {bankByCategory.image.map((asset) => (
+                          <button
+                            key={asset.id}
+                            onClick={() => selectBankAsset("image", asset.id)}
+                            className={cn(
+                              "w-full rounded-2xl border p-4 flex items-center justify-between gap-3 text-left transition",
+                              selectedClip?.imageId === asset.id ? "border-white bg-white text-black" : "border-white/10 bg-black hover:bg-white/[0.05]"
+                            )}
+                          >
+                            <div>
+                              <p className="font-black text-sm">{asset.title}</p>
+                              <p className={cn("text-xs", selectedClip?.imageId === asset.id ? "text-black/60" : "text-white/40")}>{asset.note}</p>
+                            </div>
+                            <ChevronRight className={cn("h-4 w-4", selectedClip?.imageId === asset.id ? "text-black/40" : "text-white/30")} />
+                          </button>
+                        ))}
+                        {bankByCategory.image.length === 0 && <p className="text-sm text-white/45">Ajoute des images dans la Banque.</p>}
+                      </>
+                    )}
                   </div>
-                  {selectedClip?.imageId && (
+                  {selectedClipCanUseBroll && selectedClip?.imageId && (
                     <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
                       <div className="flex items-center justify-between gap-3">
                         <div>

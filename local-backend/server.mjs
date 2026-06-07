@@ -1030,7 +1030,9 @@ const renderProject = async (db, project, sourceGroup) => {
 
     // Image overlay: manual `imageId` (category "image") wins. If none, fall back to
     // `autoBrollId` (category "broll") set by the b-roll intelligence module.
-    const overlayId = clip.imageId || clip.autoBrollId;
+    const overlayId = clip.stage === "reply" && project.settings?.brollEnabled !== false
+      ? clip.imageId || clip.brollId || clip.autoBrollId
+      : null;
     if (overlayId) {
       const overlayAsset = db.assets.find((asset) => asset.id === overlayId && (asset.category === "image" || asset.category === "broll"));
       if (overlayAsset?.filePath) {
@@ -1400,11 +1402,11 @@ app.post("/api/projects/:id/render", async (req, res) => {
     // also doesn't already have an `autoBrollId` from a previous run. This is
     // best-effort: if the AI isn't configured or fails, we still render.
     try {
-      const needsPick = project.clips.some((c) => !c.imageId && !c.autoBrollId);
+      const needsPick = project.clips.some((c) => c.stage === "reply" && !c.imageId && !c.autoBrollId);
       const hasBrolls = db.assets.some((a) => a.category === "broll" && (a.note || a.title));
       if (needsPick && hasBrolls) {
         const { pickBrollsForClips } = await import("./brollIntelligence.mjs");
-        const clipsPayload = project.clips.map((clip) => {
+        const clipsPayload = project.clips.filter((clip) => clip.stage === "reply").map((clip) => {
           const tc = project.transcription?.clips?.find((c) => c.clipId === clip.id);
           return { id: clip.id, transcript: (tc?.cues || []).map((cue) => cue.text).join(" ").trim() };
         });
@@ -1414,7 +1416,7 @@ app.post("/api/projects/:id/render", async (req, res) => {
         const picks = await pickBrollsForClips({ clips: clipsPayload, brolls: brollsPayload });
         for (const pick of picks) {
           const clip = project.clips.find((c) => c.id === pick.clipId);
-          if (!clip || clip.imageId) continue;
+          if (!clip || clip.stage !== "reply" || clip.imageId) continue;
           if (pick.brollId) clip.autoBrollId = pick.brollId;
         }
         await writeDb(db);
@@ -1594,7 +1596,7 @@ app.post("/api/projects/:id/auto-brolls", async (req, res) => {
     return res.status(400).json({ error: "Aucun b-roll labellisé dans la banque. Ajoute des descriptions." });
   }
 
-  const clipsPayload = project.clips.map((clip) => {
+  const clipsPayload = project.clips.filter((clip) => clip.stage === "reply").map((clip) => {
     const tc = project.transcription?.clips?.find((c) => c.clipId === clip.id);
     const text = (tc?.cues || []).map((c) => c.text).join(" ").trim();
     return { id: clip.id, transcript: text };
