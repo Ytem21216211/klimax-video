@@ -1,13 +1,13 @@
 import * as React from "react";
 const { useEffect, useMemo, useRef, useState } = React;
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft, Library, Plus, Trash2, Music, Film, Image as ImageIcon, CirclePlay, Upload, AudioLines, Wand2, Sparkles } from "lucide-react";
+import { ArrowLeft, Library, Plus, Trash2, Music, Film, Image as ImageIcon, CirclePlay, Upload, AudioLines, Wand2, Sparkles, Loader2, Users, Pencil, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { localKlimaxApi, type LocalKlimaxSfx } from "@/lib/localKlimaxApi";
+import { localKlimaxApi, LOCAL_KLIMAX_API, type LocalKlimaxSfx } from "@/lib/localKlimaxApi";
 import { cn } from "@/lib/utils";
 import {
   createKlimaxBankAsset,
@@ -23,6 +23,7 @@ const categoryMeta: Record<KlimaxAssetCategory, { label: string; description: st
   broll: { label: "B-roll", description: "Plans d'illustration", icon: <Film className="h-4 w-4" /> },
   image: { label: "Images", description: "Visuels sous le texte", icon: <ImageIcon className="h-4 w-4" /> },
   video: { label: "Vidéos", description: "2 parties liées", icon: <CirclePlay className="h-4 w-4" /> },
+  speaker: { label: "2e speaker", description: "Clips Shelly / Julien à incruster (haut / bas)", icon: <Users className="h-4 w-4" /> },
 };
 
 type SelectedVideoFile = {
@@ -37,6 +38,77 @@ const stripFileExtension = (fileName: string) => fileName.replace(/\.[^/.]+$/, "
 const formatFileSize = (size: number) => {
   if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))} Ko`;
   return `${(size / (1024 * 1024)).toFixed(1)} Mo`;
+};
+
+// Inline-renamable title. Click the pencil → edit → Enter / blur saves, Escape
+// cancels. Used for the base clips (personne 1 / 2) and the 2e-speaker clips so a
+// name (e.g. "Julien" / "Shelly") can be attached to each source.
+const EditableTitle = ({
+  value,
+  placeholder,
+  className,
+  onSave,
+}: {
+  value: string;
+  placeholder?: string;
+  className?: string;
+  onSave: (next: string) => void;
+}) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  useEffect(() => {
+    if (!editing) setDraft(value);
+  }, [value, editing]);
+
+  if (editing) {
+    const commit = () => {
+      const next = draft.trim();
+      setEditing(false);
+      if (next && next !== value) onSave(next);
+      else setDraft(value);
+    };
+    return (
+      <div className="flex items-center gap-2">
+        <input
+          autoFocus
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") commit();
+            if (event.key === "Escape") {
+              setDraft(value);
+              setEditing(false);
+            }
+          }}
+          className="min-w-0 flex-1 rounded-lg border border-white/25 bg-black px-2 py-1 text-sm font-bold text-white outline-none focus:border-white/60"
+        />
+        <button
+          type="button"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={commit}
+          className="shrink-0 text-emerald-400/80 transition hover:text-emerald-300"
+          title="Valider"
+        >
+          <Check className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <p className={cn("min-w-0 flex-1 truncate", className)}>{value || placeholder}</p>
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        className="shrink-0 text-white/35 transition hover:text-white"
+        title="Renommer"
+      >
+        <Pencil className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
 };
 
 const AssetBank = () => {
@@ -64,7 +136,7 @@ const AssetBank = () => {
           acc[asset.category].push(asset);
           return acc;
         },
-        { music: [], broll: [], image: [], video: [] }
+        { music: [], broll: [], image: [], video: [], speaker: [] }
       ),
     [assets]
   );
@@ -135,21 +207,43 @@ const AssetBank = () => {
       setAssetFile(null);
       if (assetInputRef.current) assetInputRef.current.value = "";
       toast({ title: "Asset ajouté", description: assetFile.name });
-    } catch {
-      const nextAsset = createKlimaxBankAsset({
-        category,
-        title: title.trim() || assetFile.name,
-        note: note.trim() || categoryMeta[category].label,
-        fileName: assetFile.name,
-        fileSize: assetFile.size,
-        mimeType: assetFile.type,
+    } catch (error: any) {
+      // Do NOT fall back to a localStorage-only asset: without a backend file it
+      // can't be rendered, so it would show in the Banque/preview but silently
+      // disappear at export. Surface the error instead.
+      toast({
+        variant: "destructive",
+        title: "Backend local",
+        description: error?.message || "Upload impossible — démarre le backend local et réessaie.",
       });
-      persist([nextAsset, ...assets]);
     } finally {
       setIsSaving(false);
     }
     setTitle("");
     setNote("");
+  };
+
+  const [uploadingSfx, setUploadingSfx] = useState(false);
+  const uploadSfxFile = async (file: File | null) => {
+    if (!file || uploadingSfx) return;
+    setUploadingSfx(true);
+    try {
+      const { sfx: nextSfx } = await localKlimaxApi.uploadSfx(file);
+      setSfx(nextSfx);
+      toast({ title: "SFX ajouté", description: file.name });
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "SFX", description: error.message });
+    } finally {
+      setUploadingSfx(false);
+    }
+  };
+  const removeSfx = async (key: string) => {
+    try {
+      const { sfx: nextSfx } = await localKlimaxApi.deleteSfx(key);
+      setSfx(nextSfx);
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "SFX", description: error.message });
+    }
   };
 
   const selectVideoFile = (file: File | null, person: "one" | "two" | "asset") => {
@@ -172,6 +266,20 @@ const AssetBank = () => {
       .deleteAsset(groupId)
       .then(({ assets: nextAssets }) => persist(nextAssets))
       .catch(() => persist(assets.filter((asset) => asset.id !== groupId && asset.groupId !== groupId)));
+  };
+
+  const renameAsset = (assetId: string, nextTitle: string) => {
+    localKlimaxApi
+      .renameAsset(assetId, nextTitle)
+      .then(({ assets: nextAssets }) => {
+        persist(nextAssets);
+        toast({ title: "Clip renommé", description: nextTitle });
+      })
+      .catch((error: Error) => {
+        // Backend éteint : on garde le nom en local au moins.
+        persist(assets.map((asset) => (asset.id === assetId ? { ...asset, title: nextTitle } : asset)));
+        toast({ variant: "destructive", title: "Backend local", description: error?.message || "Renommé en local uniquement." });
+      });
   };
 
   return (
@@ -373,15 +481,16 @@ const AssetBank = () => {
           </div>
 
           <Tabs defaultValue="music" value={initialTab} onValueChange={setInitialTab} className="mt-6">
-            <TabsList className="grid grid-cols-5 bg-black border border-white/10 rounded-2xl p-1 h-12">
+            <TabsList className="grid grid-cols-6 bg-black border border-white/10 rounded-2xl p-1 h-12">
               <TabsTrigger value="music" className="rounded-xl text-[10px]">Musique</TabsTrigger>
               <TabsTrigger value="broll" className="rounded-xl text-[10px]">B-roll</TabsTrigger>
               <TabsTrigger value="image" className="rounded-xl text-[10px]">Images</TabsTrigger>
               <TabsTrigger value="video" className="rounded-xl text-[10px]">Vidéos</TabsTrigger>
+              <TabsTrigger value="speaker" className="rounded-xl text-[10px]">2e speaker</TabsTrigger>
               <TabsTrigger value="sfx" className="rounded-xl text-[10px]">SFX</TabsTrigger>
             </TabsList>
 
-            {(["music", "broll", "image", "video", "sfx"] as (KlimaxAssetCategory | "sfx")[]).map((cat) => (
+            {(["music", "broll", "image", "video", "speaker", "sfx"] as (KlimaxAssetCategory | "sfx")[]).map((cat) => (
               <TabsContent key={cat} value={cat} className="mt-6">
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                   {cat === "video" ? (
@@ -404,11 +513,31 @@ const AssetBank = () => {
                           <div className="mt-4 grid gap-2 text-xs">
                             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
                               <span className="font-black uppercase tracking-[0.2em] text-white/35">Personne 1</span>
-                              <p className="mt-1 font-bold text-white">{group.person1?.title || "A ajouter"}</p>
+                              {group.person1 ? (
+                                <div className="mt-1">
+                                  <EditableTitle
+                                    value={group.person1.title}
+                                    className="font-bold text-white"
+                                    onSave={(next) => renameAsset(group.person1!.id, next)}
+                                  />
+                                </div>
+                              ) : (
+                                <p className="mt-1 font-bold text-white">A ajouter</p>
+                              )}
                             </div>
                             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
                               <span className="font-black uppercase tracking-[0.2em] text-white/35">Personne 2</span>
-                              <p className="mt-1 font-bold text-white">{group.person2?.title || "A ajouter"}</p>
+                              {group.person2 ? (
+                                <div className="mt-1">
+                                  <EditableTitle
+                                    value={group.person2.title}
+                                    className="font-bold text-white"
+                                    onSave={(next) => renameAsset(group.person2!.id, next)}
+                                  />
+                                </div>
+                              ) : (
+                                <p className="mt-1 font-bold text-white">A ajouter</p>
+                              )}
                             </div>
                           </div>
                         </article>
@@ -425,7 +554,15 @@ const AssetBank = () => {
                         <article key={asset.id} className="rounded-[22px] border border-white/10 bg-black p-4">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <p className="font-black uppercase tracking-tight truncate">{asset.title}</p>
+                              {cat === "speaker" ? (
+                                <EditableTitle
+                                  value={asset.title}
+                                  className="font-black uppercase tracking-tight"
+                                  onSave={(next) => renameAsset(asset.id, next)}
+                                />
+                              ) : (
+                                <p className="font-black uppercase tracking-tight truncate">{asset.title}</p>
+                              )}
                               <p className="mt-1 text-xs text-white/45">{asset.note}</p>
                             </div>
                             <button
@@ -449,43 +586,96 @@ const AssetBank = () => {
                       <div className="sm:col-span-2 xl:col-span-3 rounded-[22px] border border-white/10 bg-black/40 p-4 space-y-3">
                         <div className="flex items-start justify-between gap-3">
                           <div>
-                            <p className="font-black uppercase tracking-tight text-white">SFX Klimax</p>
+                            <p className="font-black uppercase tracking-tight text-white">SFX par défaut</p>
                             <p className="mt-1 text-xs text-white/45">
-                              3 transitions visuelles (film roll, whoosh, flash) et 3 effets audio (pop, ding, boom).
-                              Sélectionnables dans l'éditeur de projet, puis mixés au rendu.
+                              Quand « Sound effects » est activé dans l'éditeur, un de ces sons est ajouté
+                              au hasard ~toutes les 4 s (-9 dB). Le riser, lui, termine le 1er clip (-15 dB).
                             </p>
                           </div>
                           <AudioLines className="h-5 w-5 text-white/50" />
                         </div>
                         <div className="grid gap-3 sm:grid-cols-3">
-                          {sfx.filter((s) => s.type === "transition").map((item) => (
+                          {sfx.filter((s) => !s.user).map((item) => (
                             <div key={item.key} className="rounded-2xl border border-white/10 bg-black p-3">
                               <div className="flex items-center gap-2 text-white">
-                                <Sparkles className="h-4 w-4 text-white/60" />
-                                <span className="font-black">{item.label}</span>
-                                <span className="ml-auto text-[10px] uppercase tracking-[0.2em] text-white/30">Transition</span>
+                                {item.type === "riser" ? (
+                                  <Sparkles className="h-4 w-4 text-white/60" />
+                                ) : (
+                                  <Wand2 className="h-4 w-4 text-white/60" />
+                                )}
+                                <span className="font-black truncate">{item.label}</span>
+                                <span className="ml-auto text-[10px] uppercase tracking-[0.2em] text-white/30">
+                                  {item.type === "riser" ? "Riser" : "Effet"}
+                                </span>
                               </div>
                               <p className="mt-2 text-xs text-white/45">{item.description}</p>
-                              <p className="mt-2 text-[10px] text-white/30">
-                                {item.ready ? `${item.durationMs} ms · prêt` : "Génération à la volée au premier usage"}
-                              </p>
+                              <audio
+                                controls
+                                src={`${LOCAL_KLIMAX_API}/api/sfx/${encodeURIComponent(item.key)}/file`}
+                                className="mt-2 w-full h-8"
+                              />
                             </div>
                           ))}
                         </div>
+                      </div>
+
+                      <div className="sm:col-span-2 xl:col-span-3 rounded-[22px] border border-white/10 bg-black/40 p-4 space-y-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="font-black uppercase tracking-tight text-white">Mes SFX (MP3)</p>
+                            <p className="mt-1 text-xs text-white/45">
+                              Importe tes propres sons (mp3, wav, m4a…). Ils rejoignent la rotation automatique :
+                              quand « Sound effects » est activé, ils peuvent tomber au hasard ~toutes les 4 s.
+                            </p>
+                          </div>
+                          <label
+                            className={cn(
+                              "inline-flex shrink-0 cursor-pointer items-center gap-2 rounded-xl border border-white/10 bg-white text-black px-4 py-2 text-xs font-black uppercase tracking-wider transition hover:bg-white/90",
+                              uploadingSfx && "opacity-60 pointer-events-none"
+                            )}
+                          >
+                            {uploadingSfx ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                            {uploadingSfx ? "Import…" : "Importer un SFX"}
+                            <input
+                              type="file"
+                              accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac"
+                              className="hidden"
+                              disabled={uploadingSfx}
+                              onChange={(e) => {
+                                const f = e.target.files?.[0] || null;
+                                uploadSfxFile(f);
+                                e.target.value = "";
+                              }}
+                            />
+                          </label>
+                        </div>
                         <div className="grid gap-3 sm:grid-cols-3">
-                          {sfx.filter((s) => s.type === "effect").map((item) => (
+                          {sfx.filter((s) => s.user).map((item) => (
                             <div key={item.key} className="rounded-2xl border border-white/10 bg-black p-3">
                               <div className="flex items-center gap-2 text-white">
-                                <Wand2 className="h-4 w-4 text-white/60" />
-                                <span className="font-black">{item.label}</span>
-                                <span className="ml-auto text-[10px] uppercase tracking-[0.2em] text-white/30">Effet</span>
+                                <AudioLines className="h-4 w-4 text-white/60" />
+                                <span className="font-black truncate">{item.label}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => removeSfx(item.key)}
+                                  title="Supprimer"
+                                  className="ml-auto text-white/40 hover:text-red-400 transition"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
                               </div>
-                              <p className="mt-2 text-xs text-white/45">{item.description}</p>
-                              <p className="mt-2 text-[10px] text-white/30">
-                                {item.ready ? `${item.durationMs} ms · prêt` : "Génération à la volée au premier usage"}
-                              </p>
+                              <audio
+                                controls
+                                src={`${LOCAL_KLIMAX_API}/api/sfx/${encodeURIComponent(item.key)}/file`}
+                                className="mt-2 w-full h-8"
+                              />
                             </div>
                           ))}
+                          {sfx.filter((s) => s.user).length === 0 && (
+                            <div className="sm:col-span-3 rounded-2xl border border-dashed border-white/10 bg-black/50 p-4 text-xs text-white/45">
+                              Aucun SFX importé. Clique sur « Importer un SFX » pour ajouter les tiens.
+                            </div>
+                          )}
                         </div>
                       </div>
                     </>

@@ -100,6 +100,8 @@ export type LocalKlimaxProject = {
     zoomOutStartPercent?: number;
     zoomOutDurationSeconds?: number;
     klimaxLogoEnabled?: boolean;
+    clipTransitionsEnabled?: boolean;
+    clipTransitionType?: "random" | "opacity" | "camera_flash";
     logoTriggerWord?: string;
     subtitleStyle?: LocalSubtitleStyleSettings;
     hookStyle?: LocalHookStyleSettings;
@@ -148,7 +150,7 @@ export const localKlimaxApi = {
     );
   },
 
-  async uploadAsset(category: "music" | "broll" | "image", file: File, note = "") {
+  async uploadAsset(category: "music" | "broll" | "image" | "speaker", file: File, note = "") {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("note", note);
@@ -163,6 +165,16 @@ export const localKlimaxApi = {
   async deleteAsset(assetOrGroupId: string) {
     return parseResponse<{ ok: boolean; assets: KlimaxBankAsset[]; videoGroups: KlimaxVideoGroup[] }>(
       await fetch(`${LOCAL_KLIMAX_API}/api/assets/${assetOrGroupId}`, { method: "DELETE" })
+    );
+  },
+
+  async renameAsset(assetId: string, title: string) {
+    return parseResponse<{ ok: boolean; asset: KlimaxBankAsset; assets: KlimaxBankAsset[]; videoGroups: KlimaxVideoGroup[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/assets/${assetId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      })
     );
   },
 
@@ -252,6 +264,18 @@ export const localKlimaxApi = {
   async listSfx() {
     return parseResponse<{ sfx: LocalKlimaxSfx[] }>(await fetch(`${LOCAL_KLIMAX_API}/api/sfx`));
   },
+  async uploadSfx(file: File) {
+    const formData = new FormData();
+    formData.append("file", file);
+    return parseResponse<{ sfx: LocalKlimaxSfx[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/sfx/upload`, { method: "POST", body: formData })
+    );
+  },
+  async deleteSfx(key: string) {
+    return parseResponse<{ sfx: LocalKlimaxSfx[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/sfx/${encodeURIComponent(key)}`, { method: "DELETE" })
+    );
+  },
   async setProjectSfx(projectId: string, payload: { transitionKey?: string | null; clipSfx?: Record<string, string | null> }) {
     return parseResponse<{ project: LocalKlimaxProject }>(
       await fetch(`${LOCAL_KLIMAX_API}/api/projects/${projectId}/sfx`, {
@@ -265,12 +289,13 @@ export const localKlimaxApi = {
 
 export type LocalKlimaxSfx = {
   key: string;
-  type: "transition" | "effect";
+  type: "transition" | "effect" | "riser";
   label: string;
   description: string;
   file: string;
   durationMs: number;
   ready: boolean;
+  user?: boolean;
 };
 
 export type LocalKlimaxPreset = {

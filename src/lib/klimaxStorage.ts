@@ -1,4 +1,4 @@
-export type KlimaxAssetCategory = "music" | "broll" | "image" | "video";
+export type KlimaxAssetCategory = "music" | "broll" | "image" | "video" | "speaker";
 export type KlimaxClipStage = "intro" | "reply";
 export type KlimaxVideoPart = "person1" | "person2";
 
@@ -62,6 +62,16 @@ export type KlimaxProjectClip = {
     x: number;
     y: number;
   };
+  dualSpeakerEnabled?: boolean;
+  dualSpeakerSource?: string | null;       // asset id of the added speaker clip
+  dualSpeakerPosition?: "top" | "bottom";  // where the ADDED band goes
+  dualSpeakerSplitRatio?: number;          // 0..1 = TOP band fraction of 1920, default 0.5
+  dualSpeakerMainCropY?: number;           // px vertical crop offset for the MAIN band, bounded -480..480
+  dualSpeakerAddedCropY?: number;          // px vertical crop offset for the ADDED band, bounded -480..480
+  dualSpeakerMainCropX?: number;           // px horizontal crop offset for the MAIN band, bounded -480..480
+  dualSpeakerAddedCropX?: number;          // px horizontal crop offset for the ADDED band, bounded -480..480
+  dualSpeakerMainZoom?: number;            // percent zoom for the MAIN band, 100..220
+  dualSpeakerAddedZoom?: number;           // percent zoom for the ADDED band, 100..220
 };
 
 export type KlimaxProjectSource = {
@@ -301,4 +311,14 @@ export const createKlimaxProjectClip = (
     x: 0,
     y: 0,
   },
+  dualSpeakerEnabled: false,
+  dualSpeakerSource: null,
+  dualSpeakerPosition: "top",
+  dualSpeakerSplitRatio: 0.5,
+  dualSpeakerMainCropY: 0,
+  dualSpeakerAddedCropY: 0,
+  dualSpeakerMainCropX: 0,
+  dualSpeakerAddedCropX: 0,
+  dualSpeakerMainZoom: 100,
+  dualSpeakerAddedZoom: 100,
 });

@@ -463,10 +463,7 @@ const Dashboard = () => {
               <p className="px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">Tableau de bord</p>
               <div className="space-y-1">
                 <SidebarItem icon={<Plus className="w-4 h-4" />} text="Nouveau projet" onClick={() => setNewProjectOpen(true)} active={false} />
-                <SidebarItem icon={<BarChart3 className="w-4 h-4" />} text="Analyses" onClick={() => navigate("/analytics")} />
-                <SidebarItem icon={<Brain className="w-4 h-4" />} text="Tableau IA" onClick={() => navigate("/agentik-flow")} />
-                <SidebarItem icon={<ScrollText className="w-4 h-4" />} text="Écriture" onClick={() => navigate("/scriptforge")} />
-                <SidebarItem icon={<Eye className="w-4 h-4" />} text="Vision vidéo" onClick={() => navigate("/vizion")} />
+                <SidebarItem icon={<Zap className="w-4 h-4" />} text="Mode automatique" onClick={() => navigate("/automatic-mode")} active={window.location.pathname === "/automatic-mode"} />
               </div>
             </div>
 
@@ -497,9 +494,6 @@ const Dashboard = () => {
             <div className="pt-4 border-t border-white/5">
               <p className="px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">Catégories</p>
               <SidebarItem icon={<Library className="w-4 h-4" />} text="Banque" onClick={() => navigate("/asset-bank")} />
-              <SidebarItem icon={<Upload className="w-4 h-4" />} text="Imports" onClick={() => navigate("/imports")} />
-
-              <SidebarItem icon={<MessageSquare className="w-4 h-4" />} text="Commentaires" onClick={() => navigate("/comment-library")} active={window.location.pathname === "/comment-library"} />
               <SidebarItem icon={<Settings className="w-4 h-4" />} text="Paramètres" onClick={() => navigate("/parametres")} active={window.location.pathname === "/parametres"} />
             </div>
           </div>
@@ -601,7 +595,7 @@ const Dashboard = () => {
                   <span className="px-5 py-2 rounded-full bg-white/5 border border-white/10 text-xs font-medium cursor-pointer hover:bg-white/10 transition-all">Moteur IA</span>
                 </div>
 
-                <div className="mt-10 grid w-full gap-4 text-left sm:grid-cols-3">
+                <div className="mt-10 grid w-full gap-4 text-left sm:grid-cols-2 xl:grid-cols-4">
                   <DashboardShortcutCard
                     label="Banque"
                     description="Musiques, B-rolls, images, SFX. La source de tout ce que tu insères dans un montage."
@@ -622,6 +616,12 @@ const Dashboard = () => {
                     }}
                     disabled={loading}
                     subtle={mostRecentProject ? `Mis à jour ${formatRelativeDate(mostRecentProject.updated_at)}` : null}
+                  />
+                  <DashboardShortcutCard
+                    label="Mode automatique"
+                    description="Génère plusieurs variantes d'un coup : choisis ce qui varie (b-roll, sous-titres, hook, musique…) et lance le batch."
+                    icon={<Zap className="h-5 w-5" />}
+                    onClick={() => navigate("/automatic-mode")}
                   />
                   <DashboardShortcutCard
                     label="SFX"

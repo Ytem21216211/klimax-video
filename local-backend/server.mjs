@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { mergeFrenchElisionWords } from "./captionWords.mjs";
 import { buildLogoMoments, normalizeLogoWords } from "./logoMoments.mjs";
+import { claudeChatHandler, runClaude } from "./claudeBridge.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
@@ -31,6 +32,11 @@ const logoAnimationPath = path.join(systemRoot, "klimax-pop-up.mov");
 const logoPreviewRawPath = path.join(systemRoot, "klimax-logo-preview.raw.png");
 const logoPreviewPath = path.join(systemRoot, "klimax-logo-preview.png");
 const logoPreviewTimeSeconds = 2;
+// Camera-flash transition clip (1920x1080, ~1.25s). Rotated 90° + scaled to fill
+// the 1080x1920 frame and "lighten"-blended over the cut. Its brightest frame is
+// at ~0.92s (measured), which is what we align to the clip cut.
+const cameraFlashTransitionPath = path.join(projectRoot, "local-backend", "transition-assets", "camera-flash-2.mp4");
+const CAMERA_FLASH_PEAK_SEC = 0.92;
 const whisperModelName = process.env.KLIMAX_WHISPER_MODEL || "tiny";
 const port = Number(process.env.KLIMAX_BACKEND_PORT || 8787);
 const transcriptionPipelineVersion = "caption-elision-logo-brand-v5";
@@ -43,7 +49,7 @@ const app = express();
 const defaultSubtitleStyle = {
   stylePreset: "impact",
   fontFamily: "Arial Bold",
-  fontSize: 40,
+  fontSize: 53,
   textColor: "#ffffff",
   strokeEnabled: true,
   strokeColor: "#000000",
@@ -69,7 +75,7 @@ const defaultHookStyle = {
   bubbleColor: "#ffffff",
   textColor: "#000000",
   fontFamily: "Arial Black",
-  fontSize: 46,
+  fontSize: 53,
 };
 
 const defaultClipLayout = (stage) => ({
@@ -99,7 +105,7 @@ const defaultClipLayout = (stage) => ({
 
 const defaultProjectSettings = () => ({
   hookText: "Tu connais cette sensation ?",
-  subtitleSize: 34,
+  subtitleSize: 53,
   musicEnabled: true,
   musicId: null,
   musicVolumeDb: -17,
@@ -124,6 +130,9 @@ const defaultProjectSettings = () => ({
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "25mb" }));
 app.use("/files", express.static(dataRoot));
+
+// OpenAI-compatible AI brain backed by the local `claude` CLI.
+app.post("/v1/chat/completions", claudeChatHandler);
 
 const ensureDir = async (dir) => {
   await fs.mkdir(dir, { recursive: true });
@@ -250,7 +259,7 @@ const mergeProjectSettings = (settings = {}) => {
   if (!["none", "pop", "bounce", "rise", "fade", "zoom", "slide", "shake", "typewriter", "flicker", "elastic"].includes(subtitleStyle.animationPreset)) {
     subtitleStyle.animationPreset = defaults.subtitleStyle.animationPreset;
   }
-  hookStyle.fontSize = safeNumber(hookStyle.fontSize, 46);
+  hookStyle.fontSize = safeNumber(hookStyle.fontSize, 53);
   hookStyle.fontFamily = String(hookStyle.fontFamily || defaults.hookStyle.fontFamily);
   const musicVolumeDb = clamp(safeNumber(settings.musicVolumeDb, defaults.musicVolumeDb), -40, 0);
   const videoVolumeDb = clamp(safeNumber(settings.videoVolumeDb, defaults.videoVolumeDb), -12, 12);
@@ -272,6 +281,10 @@ const mergeProjectSettings = (settings = {}) => {
     autoZoomDurationSeconds: clamp(safeNumber(settings.autoZoomDurationSeconds, defaults.autoZoomDurationSeconds), 0.6, 4),
     introZoomOutEnabled: settings.introZoomOutEnabled === true,
     replyZoomOutEnabled: settings.replyZoomOutEnabled === true,
+    clipTransitionsEnabled: settings.clipTransitionsEnabled === true,
+    clipTransitionType: ["opacity", "camera_flash", "random"].includes(settings.clipTransitionType)
+      ? settings.clipTransitionType
+      : "random",
     zoomOutStartPercent: clamp(safeNumber(settings.zoomOutStartPercent, defaults.zoomOutStartPercent), 110, 260),
     zoomOutDurationSeconds: clamp(safeNumber(settings.zoomOutDurationSeconds, defaults.zoomOutDurationSeconds), 0.4, 3),
     subtitleStyle,
@@ -350,8 +363,20 @@ const normalizeProject = (project, { response = false } = {}) => {
   };
 };
 
+// Legacy second-speaker clips (Shelly / Julien) were stored as standalone
+// "video" assets (a video with no videoPart). They are NOT podcast sources —
+// they're filler clips incrusted as the dual-speaker band — so promote them to
+// their own "speaker" category. Real podcast sources always arrive as a pair and
+// keep their videoPart, so they stay "video".
+const normalizeAsset = (asset) => {
+  if (asset && asset.category === "video" && !asset.videoPart) {
+    return { ...asset, category: "speaker" };
+  }
+  return asset;
+};
+
 const normalizeDb = (raw) => ({
-  assets: Array.isArray(raw?.assets) ? raw.assets : [],
+  assets: Array.isArray(raw?.assets) ? raw.assets.map(normalizeAsset) : [],
   projects: Array.isArray(raw?.projects) ? raw.projects.map(normalizeProject) : [],
 });
 
@@ -448,6 +473,16 @@ const runJson = async (command, args) => {
 
 const ffprobeJson = (filePath) =>
   runJson(ffprobe.path, ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", filePath]);
+
+// Duration of a media file in seconds (0 if it can't be probed).
+const probeMediaDurationSec = async (filePath) => {
+  try {
+    const probe = await ffprobeJson(filePath);
+    return safeNumber(probe.format?.duration, 0);
+  } catch {
+    return 0;
+  }
+};
 
 const exportMetadata = async (filePath) => {
   const [probe, stat] = await Promise.all([ffprobeJson(filePath), fs.stat(filePath)]);
@@ -633,18 +668,6 @@ const sfxKeywordHints = new Set([
   "reponse", "choix", "viral", "buzz", "choc", "preuve", "resultat",
 ]);
 
-const autoSfxKeys = [
-  "effect_fahh",
-  "effect_bell",
-  "effect_pop",
-  "effect_tick",
-  "effect_snap",
-  "effect_cash",
-  "effect_glitch",
-  "effect_ding",
-  "effect_boom",
-];
-
 const normalizeSfxWord = (word = "") =>
   stripCaptionPunctuation(word)
     .normalize("NFD")
@@ -679,54 +702,71 @@ const fallbackWordsFromCues = (clipTranscription) => {
   return words;
 };
 
-const collectAutoSfxEvents = (clipTranscription, clipDuration, clipIndex, clipCount) => {
-  if (!clipDuration || clipDuration < 0.6) return [];
-  const words = Array.isArray(clipTranscription?.words) && clipTranscription.words.length
-    ? clipTranscription.words
-    : fallbackWordsFromCues(clipTranscription);
-  const candidates = words
-    .map((word) => ({
-      key: null,
-      word: word.word,
-      time: clamp(safeNumber(word.start, 0), 0, Math.max(0, clipDuration - 0.08)),
-      score: scoreSfxWord(word.word),
-    }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => a.time - b.time);
+// Viral SFX placement, "script-logical": drop a few punchy effects on the
+// strongest keyword moments of the WHOLE video. We aim for SFX_PER_VIDEO effects,
+// kept at least SFX_MIN_GAP_SECONDS apart, with a random sound each (the "fahh"
+// quieter). The metallic riser is handled separately in the render.
+const SFX_EFFECT_VOLUME_DB = -13;
+const SFX_FAHH_KEY = "effect_fahhh";
+const SFX_FAHH_VOLUME_DB = -19;
+const SFX_PER_VIDEO = 3;          // target number of effects per video
+const SFX_MIN_GAP_SECONDS = 4;    // minimum spacing between two effects
 
-  const events = [];
-  const minGap = 3.0;
-  const maxGap = 4.4;
-  let cursor = 0.35;
-  let effectCursor = clipIndex % autoSfxKeys.length;
+// clipMeta = [{ transcription, duration }] in play order. Returns a flat plan of
+// { clipIndex, time (in-clip seconds), key, volumeDb, word } — up to 3 events,
+// on the highest-scoring keywords, spread >= 4 s apart. If the keywords are too
+// few/clustered to reach 3, we fill from any word position keeping the spacing.
+const buildVideoSfxPlan = (clipMeta, poolKeys) => {
+  if (!Array.isArray(poolKeys) || poolKeys.length === 0) return [];
 
-  while (cursor < clipDuration - 0.25 && events.length < 12) {
-    const windowStart = Math.max(0, cursor - 0.45);
-    const windowEnd = Math.min(clipDuration, cursor + maxGap);
-    const windowCandidates = candidates
-      .filter((item) => item.time >= windowStart && item.time <= windowEnd)
-      .sort((a, b) => b.score - a.score || a.time - b.time);
-    const picked = windowCandidates[0];
-    const nextTime = picked
-      ? Math.max(cursor, picked.time)
-      : Math.min(clipDuration - 0.25, cursor + 0.15);
-    if (!events.length || nextTime - events[events.length - 1].time >= minGap) {
-      events.push({
-        key: autoSfxKeys[effectCursor % autoSfxKeys.length],
-        time: nextTime,
-        word: picked?.word || "",
-      });
-      effectCursor += 1;
+  let clipStart = 0;
+  const candidates = []; // scored keywords (preferred)
+  const fallback = [];   // every word position (used only to reach the target)
+  for (let clipIndex = 0; clipIndex < clipMeta.length; clipIndex += 1) {
+    const { transcription, duration } = clipMeta[clipIndex];
+    if (duration && duration >= 1.0) {
+      const words = Array.isArray(transcription?.words) && transcription.words.length
+        ? transcription.words
+        : fallbackWordsFromCues(transcription);
+      for (const word of words) {
+        const inClip = clamp(safeNumber(word.start, 0), 0, Math.max(0, duration - 0.15));
+        const entry = { clipIndex, time: inClip, globalTime: clipStart + inClip, word: word.word };
+        fallback.push(entry);
+        const score = scoreSfxWord(word.word);
+        if (score > 0) candidates.push({ ...entry, score });
+      }
     }
-    cursor = (events[events.length - 1]?.time || cursor) + 3.6;
+    clipStart += duration > 0 ? duration : 0;
+  }
+  if (!fallback.length) return [];
+
+  const chosen = [];
+  const farEnough = (g) => chosen.every((p) => Math.abs(p.globalTime - g) >= SFX_MIN_GAP_SECONDS);
+  // 1) best keywords first
+  for (const cand of [...candidates].sort((a, b) => b.score - a.score || a.globalTime - b.globalTime)) {
+    if (chosen.length >= SFX_PER_VIDEO) break;
+    if (farEnough(cand.globalTime)) chosen.push(cand);
+  }
+  // 2) top up from any word position (keeps the 4 s spacing) so we reach 3
+  if (chosen.length < SFX_PER_VIDEO) {
+    for (const cand of [...fallback].sort((a, b) => a.globalTime - b.globalTime)) {
+      if (chosen.length >= SFX_PER_VIDEO) break;
+      if (farEnough(cand.globalTime)) chosen.push(cand);
+    }
   }
 
-  if (clipIndex === 0 && clipCount > 1 && clipDuration > 1.4) {
-    const riserTime = Math.max(0, clipDuration - 1.15);
-    events.push({ key: "effect_riser", time: riserTime, word: "riser" });
-  }
-
-  return events.sort((a, b) => a.time - b.time);
+  chosen.sort((a, b) => a.globalTime - b.globalTime);
+  let lastKey = null;
+  const plan = chosen.map((cand) => {
+    let key = poolKeys[Math.floor(Math.random() * poolKeys.length)];
+    if (poolKeys.length > 1 && key === lastKey) {
+      key = poolKeys[(poolKeys.indexOf(key) + 1) % poolKeys.length];
+    }
+    lastKey = key;
+    const volumeDb = key === SFX_FAHH_KEY ? SFX_FAHH_VOLUME_DB : SFX_EFFECT_VOLUME_DB;
+    return { clipIndex: cand.clipIndex, time: cand.time, key, volumeDb, word: cand.word };
+  });
+  return plan;
 };
 
 const randomBetween = (min, max) => min + Math.random() * (max - min);
@@ -767,7 +807,6 @@ const buildAutoZoomEvents = (clip, clipDuration, settings) => {
         start: clamp(start, 0, Math.max(0, duration - zoomDuration)),
         duration: zoomDuration,
         boost: zoomBoost,
-        sfxKey: "effect_smooth_whoosh",
         label: `auto-${index + 1}`,
       });
     });
@@ -782,7 +821,6 @@ const buildAutoZoomEvents = (clip, clipDuration, settings) => {
       start: 0,
       duration: Math.min(clamp(safeNumber(settings.zoomOutDurationSeconds, 1.2), 0.4, 3), duration),
       boost: clamp(safeNumber(settings.zoomOutStartPercent, 180), 110, 260) / 100 - 1,
-      sfxKey: "effect_smooth_whoosh",
       label: "clip-start",
     });
   }
@@ -815,8 +853,22 @@ const applyVideoZoomEvents = (filterChains, inputTag, outputTag, events) => {
     return;
   }
   const escaped = escapeFfmpegExpression(expression);
+  // The input is the ALREADY scaled+positioned 1080x1920 clip frame (vbase), so
+  // the zoom must center on THAT frame's centre — not on the raw source — to keep
+  // the clip's own framing. Default anchor 0.5 = true centre (both axes);
+  // KLIMAX_ZOOM_VERTICAL_ANCHOR can bias it upward (0 = top) for talking heads.
+  const vAnchor = clamp(safeNumber(process.env.KLIMAX_ZOOM_VERTICAL_ANCHOR, 0.5), 0, 0.5);
+  // Smooth, jitter-free zoom at 2x supersampling: scale the clip UP by the zoom
+  // expression (2160x3840 at zoom=1, larger as it zooms in), crop a FIXED
+  // 2160x3840 window centred on the clip, then downscale once to 1080x1920.
+  // A fixed-size crop keeps the filter chain stable — a per-frame-varying crop
+  // size makes ffmpeg fail ("reinitializing filters") — and the 2x resolution
+  // turns the per-frame integer crop offset into a sub-pixel move at output, so
+  // there's no stair-stepping/jitter. x is centred; y uses vAnchor (0.5 = centre).
   filterChains.push(
-    `[${inputTag}]scale=w='1080*(${escaped})':h='1920*(${escaped})':eval=frame,crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,setsar=1[${outputTag}]`
+    `[${inputTag}]scale=w='2160*(${escaped})':h='3840*(${escaped})':eval=frame:flags=bicubic,` +
+      `crop=2160:3840:(in_w-2160)/2:(in_h-3840)*${vAnchor.toFixed(3)},` +
+      `scale=1080:1920:flags=lanczos,setsar=1[${outputTag}]`
   );
 };
 
@@ -890,6 +942,34 @@ const ensureTranscription = async (project, sourceGroup) => {
     const previewText = clipTranscription?.cues?.slice(0, 2).map((cue) => cue.text).join(" ") || clip.subtitle;
     return { ...clip, subtitle: previewText || clip.subtitle };
   });
+
+  // Auto-analyse: generate the text hook from the opening question (Personne 1),
+  // once, via the local Claude CLI. Never overwrites a hook the user has edited.
+  try {
+    const introClip = clips.find((c) => c.stage === "intro") || clips[0];
+    const introText = (introClip?.cues || []).map((c) => c.text).join(" ").trim();
+    const currentHook = (project.settings?.hookText || "").trim();
+    const isDefaultHook = !currentHook || currentHook === "Tu connais cette sensation ?";
+    if (introText && isDefaultHook && !project.settings?.hookAutoGenerated) {
+      const variationSeed = Math.random().toString(36).slice(2, 8);
+      const system =
+        "Tu es monteur de vidéos courtes. On te donne le début (transcript) d'un clip où une personne pose une question ou lance un sujet. " +
+        "Génère UN hook court et accrocheur à afficher en gros à l'écran : reformule la question/accroche de départ. " +
+        "Règles strictes : une seule phrase, 8 mots max (sans compter l'emoji), en français, sans guillemets, sans ponctuation superflue. " +
+        "Termine OBLIGATOIREMENT le hook par EXACTEMENT UN emoji choisi pour coller au sujet. " +
+        "Si le sujet est sexuel, séduction, NSFW, 18+, le corps, ou une allusion grivoise du type « la taille de… », utilise un emoji suggestif parmi : 🍆 🍑 💦 😏 🔥 👀 (par défaut 🍆 pour une allusion claire à la taille / au sexe). " +
+        "Sinon, choisis UN seul emoji qui correspond vraiment au sujet (argent 💰, sport 💪, mindset 🧠, etc.). " +
+        "Réponds UNIQUEMENT avec le hook suivi de son unique emoji." +
+        `\n\n[variation: ${variationSeed}] Utilise cette graine uniquement pour varier légèrement le choix des mots et de l'emoji entre deux générations, jamais pour changer le sens.`;
+      const hook = (await runClaude(introText.slice(0, 1200), system)).trim().replace(/^["'«»\s]+|["'«»\s]+$/g, "");
+      if (hook && hook.length <= 90) {
+        project.settings = { ...(project.settings || {}), hookText: hook, hookAutoGenerated: true };
+        project.clips = project.clips.map((c) => (c.stage === "intro" ? { ...c, hookText: hook } : c));
+      }
+    }
+  } catch (err) {
+    console.error("[hook-gen]", err.message);
+  }
 
   project.transcription = {
     status: "completed",
@@ -1312,7 +1392,7 @@ const createHookBubbleOverlay = async (project, clip) => {
   const configPath = await writeJsonFile(project.id, `${clip.id}-hook-style`, {
     outputPath,
     text: sanitizeHookText(clip.hookText || project.settings?.hookText || "Tu connais cette sensation"),
-    fontSize: hookStyle.fontSize || 46,
+    fontSize: hookStyle.fontSize || 53,
     fontPath: font.fontPath,
     bubbleColor: hookStyle.bubbleColor || "#ffffff",
     textColor: hookStyle.textColor || "#000000",
@@ -1326,8 +1406,26 @@ const createHookBubbleOverlay = async (project, clip) => {
   return outputPath;
 };
 
+// For a dual-speaker (split-screen) clip, decide WHEN the whole clip hard-cuts
+// to the next one. We cut the instant the MAIN speaker stops talking — the end
+// of the last transcribed word plus a short breath — instead of running to the
+// full source length. Without this the second-speaker band keeps moving after
+// Person 1 is done and the clip only ends when the (often longer) added video
+// runs out. Falls back to the full duration when there are no word timings.
+const DUAL_SPEAKER_TAIL_SECONDS = 0.3;
+const dualSpeakerCutDuration = (clipTranscription, fullDuration) => {
+  const words = clipTranscription?.words || [];
+  let lastWordEnd = 0;
+  for (const word of words) {
+    lastWordEnd = Math.max(lastWordEnd, safeNumber(word.end, 0));
+  }
+  if (lastWordEnd <= 0) return fullDuration;
+  const candidate = lastWordEnd + DUAL_SPEAKER_TAIL_SECONDS;
+  return fullDuration > 0 ? Math.min(candidate, fullDuration) : candidate;
+};
+
 const renderProject = async (db, project, sourceGroup) => {
-  const { getSfxPath } = await import("./sfx.mjs");
+  const { getSfxPath, listAutoSfxKeys, RISER_KEY } = await import("./sfx.mjs");
   if (!ffmpegPath) throw new Error("FFmpeg local indisponible.");
   if (!sourceGroup?.person1?.filePath || !sourceGroup?.person2?.filePath) {
     throw new Error("Ce projet n'a pas ses deux vidéos source.");
@@ -1346,14 +1444,49 @@ const renderProject = async (db, project, sourceGroup) => {
   const inputArgs = ["-y", "-hide_banner", "-nostats", "-loglevel", "warning"];
   const filterChains = [];
   const concatPieces = [];
+  // Audio of each camera-flash transition (its own whoosh), to fold into the mix.
+  const flashAudioTags = [];
   let inputIndex = 0;
   let totalDuration = 0;
+
+  // Voice loudness normalisation (EBU R128, single-pass dynamic). Applied to
+  // every original clip BEFORE the +videoVolumeDb boost so a quietly-recorded
+  // clip (e.g. personne 2) ends up at the same perceived level as a loud one
+  // instead of staying low. Target overridable via KLIMAX_LOUDNORM_I.
+  const loudnormFilter = `loudnorm=I=${clamp(safeNumber(process.env.KLIMAX_LOUDNORM_I, -16), -30, -8)}:TP=-1.5:LRA=11`;
+
+  // Per-clip cut duration + transcription, in play order. Drives the whole-video
+  // SFX plan (computed ONCE so the 2-3 effects span the entire video, not per clip)
+  // and the cross-clip transition offsets below.
+  const clipMeta = clipsToRender.map((clip) => {
+    const transcription = project.transcription?.clips?.find((entry) => entry.clipId === clip.id);
+    const full = safeNumber(transcription?.duration, 0);
+    const added = clip.dualSpeakerEnabled ? db.assets.find((a) => a.id === clip.dualSpeakerSource) : null;
+    const isDual = Boolean(clip.dualSpeakerEnabled && added?.filePath);
+    const duration = isDual ? dualSpeakerCutDuration(transcription, full) : full;
+    return { clip, transcription, duration };
+  });
+  const videoSfxPlan = project.settings?.autoSfxEnabled !== false
+    ? buildVideoSfxPlan(clipMeta, listAutoSfxKeys())
+    : [];
 
   for (let clipIndex = 0; clipIndex < clipsToRender.length; clipIndex += 1) {
     const clip = clipsToRender[clipIndex];
     const sourceAsset = sourceAssetForClip(sourceGroup, clip);
     const clipTranscription = project.transcription?.clips?.find((entry) => entry.clipId === clip.id);
-    const clipDuration = safeNumber(clipTranscription?.duration, 0);
+    const fullClipDuration = safeNumber(clipTranscription?.duration, 0);
+    // The added speaker source (if dual-speaker is on). Resolved once and reused
+    // for both the cut-duration decision and the split-screen filter below.
+    const addedAsset = clip.dualSpeakerEnabled
+      ? db.assets.find((a) => a.id === clip.dualSpeakerSource)
+      : null;
+    const isDualSpeaker = Boolean(clip.dualSpeakerEnabled && addedAsset?.filePath);
+    // Dual-speaker clips cut when the main speaker stops talking; everyone else
+    // runs the full source length. This single value drives the band/audio trim,
+    // the auto-zoom timeline, totalDuration and the cross-clip transition offsets.
+    const clipDuration = isDualSpeaker
+      ? dualSpeakerCutDuration(clipTranscription, fullClipDuration)
+      : fullClipDuration;
     const clipLayout = normalizeClipLayout(clip);
     const zoomEvents = buildAutoZoomEvents(clip, clipDuration, project.settings || {});
     totalDuration += clipDuration;
@@ -1363,12 +1496,85 @@ const renderProject = async (db, project, sourceGroup) => {
     inputIndex += 1;
 
     let currentVideo = `vbase${clipIndex}`;
-    const baseScale = clamp(safeNumber(clipLayout.videoTransform.scale, 100), 40, 180) / 100;
-    const baseOffsetX = safeNumber(clipLayout.videoTransform.x, 0);
-    const baseOffsetY = safeNumber(clipLayout.videoTransform.y, 0);
-    filterChains.push(
-      `[${sourceInput}:v]scale=1080*${baseScale}:1920*${baseScale}:force_original_aspect_ratio=increase,crop=1080:1920:min(max((in_w-1080)/2+${baseOffsetX}\\,0)\\,in_w-1080):min(max((in_h-1920)/2+${baseOffsetY}\\,0)\\,in_h-1920),setsar=1${videoFilterChain(project.settings?.videoFilterKey)},format=rgba[${currentVideo}]`
-    );
+    // Dual-Speaker Split-Screen: when enabled and the added source resolves to a
+    // registered asset, the base 1080x1920 frame is built by stacking two bands
+    // (the main clip + the added speaker video) instead of the standard
+    // scale/crop. Everything downstream (zoom, overlays, subtitles, audio)
+    // stays identical because we land the result in the same `vbase` label.
+    if (isDualSpeaker) {
+      const ratio = clamp(safeNumber(clip.dualSpeakerSplitRatio, 0.5), 0.2, 0.8);
+      const TOP = Math.round(1920 * ratio);
+      const BOTTOM = 1920 - TOP;
+
+      // Loop the second-speaker clip so it fills the main clip's duration without
+      // freezing when it's shorter; the bandTrim below cuts it to clipDuration so
+      // it never runs longer than the main speaker. It only ever "accompanies".
+      inputArgs.push("-stream_loop", "-1", "-i", addedAsset.filePath);
+      const addedIdx = inputIndex;
+      inputIndex += 1;
+
+      const mainCropY = clamp(safeNumber(clip.dualSpeakerMainCropY, 0), -480, 480);
+      const addedCropY = clamp(safeNumber(clip.dualSpeakerAddedCropY, 0), -480, 480);
+      // Horizontal framing + extra zoom per band (auto-ready: same numeric ranges
+      // a face detector will fill later). Zoom > 1 gives the crop room to shift.
+      const mainCropX = clamp(safeNumber(clip.dualSpeakerMainCropX, 0), -480, 480);
+      const addedCropX = clamp(safeNumber(clip.dualSpeakerAddedCropX, 0), -480, 480);
+      const mainZoom = clamp(safeNumber(clip.dualSpeakerMainZoom, 100), 100, 220) / 100;
+      const addedZoom = clamp(safeNumber(clip.dualSpeakerAddedZoom, 100), 100, 220) / 100;
+
+      // Decide which source feeds which band. The ADDED source goes wherever
+      // `dualSpeakerPosition` points; the MAIN clip fills the other band.
+      const addedOnTop = clip.dualSpeakerPosition === "top";
+      const topSrcIdx = addedOnTop ? addedIdx : sourceInput;
+      const topCropY = addedOnTop ? addedCropY : mainCropY;
+      const topCropX = addedOnTop ? addedCropX : mainCropX;
+      const topZoom = addedOnTop ? addedZoom : mainZoom;
+      const bottomSrcIdx = addedOnTop ? sourceInput : addedIdx;
+      const bottomCropY = addedOnTop ? mainCropY : addedCropY;
+      const bottomCropX = addedOnTop ? mainCropX : addedCropX;
+      const bottomZoom = addedOnTop ? mainZoom : addedZoom;
+
+      const bandTop = `bandTop${clipIndex}`;
+      const bandBottom = `bandBottom${clipIndex}`;
+      // Cut both bands at clipDuration (= the end of the main speaker's speech,
+      // see dualSpeakerCutDuration) so they end TOGETHER and the whole clip
+      // hard-cuts to the next one the instant Person 1 stops talking. Without
+      // this, vstack runs to the longer source: the second-speaker band keeps
+      // moving while Person 1 has already finished. (No-op when clipDuration is
+      // unknown — falls back to the raw vstack behaviour.)
+      const bandTrim = clipDuration > 0
+        ? `,trim=0:${clipDuration.toFixed(3)},setpts=PTS-STARTPTS`
+        : "";
+      // Pan as a FRACTION of the overscan (0.5 = centered), identical to the
+      // preview's bandPanFraction. (in_w-1080)*f and (in_h-band)*f always land in
+      // [0, overscan], so the crop can never fall off the scaled source → no black
+      // bars; and because the same fraction is held as the scale (zoom) grows, the
+      // zoom stays centered on the chosen point instead of drifting.
+      const panFrac = (crop) => clamp(0.5 + crop / 960, 0, 1);
+      const fxTop = panFrac(topCropX).toFixed(4);
+      const fyTop = panFrac(topCropY).toFixed(4);
+      const fxBottom = panFrac(bottomCropX).toFixed(4);
+      const fyBottom = panFrac(bottomCropY).toFixed(4);
+      filterChains.push(
+        `[${topSrcIdx}:v]scale=${Math.round(1080 * topZoom)}:${Math.round(TOP * topZoom)}:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:${TOP}:(in_w-1080)*${fxTop}:(in_h-${TOP})*${fyTop},setsar=1${bandTrim}[${bandTop}]`
+      );
+      filterChains.push(
+        `[${bottomSrcIdx}:v]scale=${Math.round(1080 * bottomZoom)}:${Math.round(BOTTOM * bottomZoom)}:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:${BOTTOM}:(in_w-1080)*${fxBottom}:(in_h-${BOTTOM})*${fyBottom},setsar=1${bandTrim}[${bandBottom}]`
+      );
+      filterChains.push(
+        `[${bandTop}][${bandBottom}]vstack=inputs=2[clipStacked${clipIndex}]`
+      );
+      filterChains.push(
+        `[clipStacked${clipIndex}]setsar=1${videoFilterChain(project.settings?.videoFilterKey)},format=rgba[${currentVideo}]`
+      );
+    } else {
+      const baseScale = clamp(safeNumber(clipLayout.videoTransform.scale, 100), 40, 180) / 100;
+      const baseOffsetX = safeNumber(clipLayout.videoTransform.x, 0);
+      const baseOffsetY = safeNumber(clipLayout.videoTransform.y, 0);
+      filterChains.push(
+        `[${sourceInput}:v]scale=1080*${baseScale}:1920*${baseScale}:force_original_aspect_ratio=increase,crop=1080:1920:min(max((in_w-1080)/2+${baseOffsetX}\\,0)\\,in_w-1080):min(max((in_h-1920)/2+${baseOffsetY}\\,0)\\,in_h-1920),setsar=1${videoFilterChain(project.settings?.videoFilterKey)},format=rgba[${currentVideo}]`
+      );
+    }
     const zoomedVideo = `vzoom${clipIndex}`;
     applyVideoZoomEvents(filterChains, currentVideo, zoomedVideo, zoomEvents);
     currentVideo = zoomedVideo;
@@ -1442,17 +1648,44 @@ const renderProject = async (db, project, sourceGroup) => {
     const subtitledVideo = `vsub${clipIndex}`;
     filterChains.push(`[${currentVideo}]subtitles='${assFilePath}':fontsdir='${fontRoot}'[${subtitledVideo}]`);
     const videoVolumeDb = safeNumber(project.settings?.videoVolumeDb, 2);
-    filterChains.push(`[${sourceInput}:a]volume=${videoVolumeDb}dB,aresample=async=1[acl${clipIndex}]`);
+    // For a dual-speaker clip the video is cut short at clipDuration; trim the
+    // audio to match so the main speaker's voice doesn't bleed over the next
+    // clip in the concat (video and audio segments must stay the same length).
+    const clipAudioTrim = isDualSpeaker && clipDuration > 0
+      ? `,atrim=0:${clipDuration.toFixed(3)},asetpts=PTS-STARTPTS`
+      : "";
+    // loudnorm (consistent level) → aformat pins the rate back to 48 kHz (its
+    // dynamic mode emits 192 kHz) → +videoVolumeDb boost on top → async resample.
+    filterChains.push(`[${sourceInput}:a]${loudnormFilter},aformat=sample_rates=48000,volume=${videoVolumeDb}dB,aresample=async=1${clipAudioTrim}[acl${clipIndex}]`);
 
-    // Manual SFX + automatic viral SFX. Every effect is mixed at -8 dB so it
-    // stays present without crushing the original voice (+2 dB by default).
+    // Sound effects: the 2-3 strongest keyword beats of the WHOLE video carry one
+    // effect each (effects at -13 dB, "fahh" at -19 dB — see buildVideoSfxPlan),
+    // plus the metallic riser landing exactly on the first clip's cut at -15 dB.
+    // Added automatically and only when "Sound effects" is enabled. Transitions
+    // (zoom / cut) stay purely visual — no sound is attached to them.
     const sfxEvents = [];
-    if (clip.sfxEffect) sfxEvents.push({ key: clip.sfxEffect, time: 0, word: "manual" });
     if (project.settings?.autoSfxEnabled !== false) {
-      sfxEvents.push(...collectAutoSfxEvents(clipTranscription, clipDuration, clipIndex, clipsToRender.length));
-    }
-    for (const event of zoomEvents) {
-      if (event.sfxKey) sfxEvents.push({ key: event.sfxKey, time: event.start, word: event.label });
+      sfxEvents.push(...videoSfxPlan.filter((event) => event.clipIndex === clipIndex));
+      // Riser: a riser has to resolve on a cut, so we anchor its tail to the end
+      // of the first clip (the hand-off to Personne 2) and start it earlier by
+      // its own length.
+      if (clipIndex === 0 && clipsToRender.length > 1 && clipDuration > 1.4) {
+        const riserPath = getSfxPath(RISER_KEY);
+        if (riserPath) {
+          const riserDur = await probeMediaDurationSec(riserPath);
+          let riserStart = Math.max(0, clipDuration - (riserDur > 0 ? riserDur : 1.15));
+          let riserTempo;
+          // If the intro is shorter than the riser, it would start at 0 and get cut
+          // at the transition — you'd only hear the quiet build, never the metallic
+          // resolve. Speed it up (atempo) so the whole build+climax fits the intro
+          // and the climax lands exactly on the cut.
+          if (riserDur > 0 && riserDur > clipDuration) {
+            riserTempo = clamp(riserDur / clipDuration, 1, 2);
+            riserStart = Math.max(0, clipDuration - riserDur / riserTempo);
+          }
+          sfxEvents.push({ key: RISER_KEY, time: riserStart, volumeDb: -15, word: "riser", atempo: riserTempo });
+        }
+      }
     }
 
     const sfxMixTags = [];
@@ -1466,9 +1699,11 @@ const renderProject = async (db, project, sourceGroup) => {
       const sfxInput = inputIndex;
       inputIndex += 1;
       const delayMs = Math.max(0, Math.round(safeNumber(event.time, 0) * 1000));
+      const sfxVolumeDb = safeNumber(event.volumeDb, SFX_EFFECT_VOLUME_DB);
+      const tempoFilter = event.atempo && event.atempo > 0 ? `atempo=${event.atempo.toFixed(4)},` : "";
       const tag = `asfx${clipIndex}_${eventIndex}`;
       filterChains.push(
-        `[${sfxInput}:a]volume=-8dB,aresample=async=1,adelay=${delayMs}:all=1,atrim=0:${Math.max(0.1, clipDuration).toFixed(3)},asetpts=PTS-STARTPTS[${tag}]`
+        `[${sfxInput}:a]${tempoFilter}volume=${sfxVolumeDb}dB,aresample=async=1,adelay=${delayMs}:all=1,atrim=0:${Math.max(0.1, clipDuration).toFixed(3)},asetpts=PTS-STARTPTS[${tag}]`
       );
       sfxMixTags.push(`[${tag}]`);
     }
@@ -1487,40 +1722,85 @@ const renderProject = async (db, project, sourceGroup) => {
     filterChains.push("[vsub0]null[vcat]");
     filterChains.push("[a0]anull[acat]");
   } else {
-    const transitionKey = project.settings?.sfxTransition;
-    const transitionSfx = transitionKey ? getSfxPath(transitionKey) : null;
-    if (transitionSfx) {
-      // xfade between consecutive video clips. Audio stays as a simple concat.
-      const xfadeMs = transitionKey === "transition_film_roll" ? 500
-        : transitionKey === "transition_whoosh" ? 400
-        : transitionKey === "transition_flash" ? 200
-        : 300;
-      // We approximate durations via the transcribed durations, or 4s fallback per clip.
-      const clipDurations = clipsToRender.map((c) => {
-        const tc = project.transcription?.clips?.find((entry) => entry.clipId === c.id);
-        return safeNumber(tc?.duration, 4);
-      });
-      const offsets = [];
-      let acc = 0;
-      for (let i = 0; i < clipDurations.length; i += 1) {
-        offsets.push(Math.max(0, acc + clipDurations[i] - xfadeMs / 1000));
-        acc += clipDurations[i];
-      }
-      let prevTag = "vsub0";
-      for (let i = 1; i < clipsToRender.length; i += 1) {
-        const isLast = i === clipsToRender.length - 1;
-        const nextTag = isLast ? "vcat" : `vx${i}`;
-        filterChains.push(
-          `[${prevTag}][vsub${i}]xfade=transition=fade:duration=${(xfadeMs / 1000).toFixed(3)}:offset=${offsets[i - 1].toFixed(3)}[${nextTag}]`
-        );
-        prevTag = nextTag;
-      }
-      // For 2 clips, the loop runs once and vcat is the final. For 3+, the last iteration also produces vcat.
-      // Audio: simple concat of the audio parts (every other element of concatPieces).
-      const audioPieces = concatPieces.filter((_, idx) => idx % 2 === 1);
-      filterChains.push(`${audioPieces.join("")}concat=n=${clipsToRender.length}:v=0:a=1[acat]`);
+    // Audio is always a plain concat (no audio cross-fade), whatever the visual
+    // transition is. Video gets the transition treatment below.
+    const audioPieces = concatPieces.filter((_, idx) => idx % 2 === 1);
+    filterChains.push(`${audioPieces.join("")}concat=n=${clipsToRender.length}:v=0:a=1[acat]`);
+
+    // Effective per-clip durations (dual-speaker clips already cut at the main
+    // speaker's speech end), used to place the transitions on the real cuts.
+    const clipDurations = clipMeta.map((m) => (m.duration > 0 ? m.duration : 4));
+    const transitionsEnabled = project.settings?.clipTransitionsEnabled === true;
+
+    if (!transitionsEnabled) {
+      const videoPieces = concatPieces.filter((_, idx) => idx % 2 === 0);
+      filterChains.push(`${videoPieces.join("")}concat=n=${clipsToRender.length}:v=1:a=0[vcat]`);
     } else {
-      filterChains.push(`${concatPieces.join("")}concat=n=${clipsToRender.length}:v=1:a=1[vcat][acat]`);
+      // Two transitions: (a) the base opacity cross-fade, or (b) the camera flash —
+      // a rotated, full-screen clip "lighten"-blended over the cut with its brightest
+      // frame (~0.92 s in) landing exactly on the cut. The type is chosen per cut by
+      // `clipTransitionType`: "opacity", "camera_flash", or "random" (50/50, default).
+      // We build the video chain (opacity cuts overlap via xfade, flash cuts hard-cut
+      // and are recorded), then blend the flashes on top to land on [vcat].
+      const XFADE_SEC = 0.3;
+      const flashAvailable = fsSync.existsSync(cameraFlashTransitionPath);
+      const transitionType = project.settings?.clipTransitionType || "random";
+      const flashJobs = [];
+      let prevTag = "vsub0";
+      let lastTag = "vsub0";
+      let timelineEnd = clipDurations[0]; // running end of the built chain (video timeline)
+      for (let i = 1; i < clipsToRender.length; i += 1) {
+        const useFlash = flashAvailable && (
+          transitionType === "camera_flash" ||
+          (transitionType !== "opacity" && Math.random() < 0.5)
+        );
+        const outTag = `vt${i}`;
+        if (useFlash) {
+          // Hard cut now; the flash is blended on top afterwards, peaking on the cut.
+          filterChains.push(`[${prevTag}][vsub${i}]concat=n=2:v=1:a=0[${outTag}]`);
+          flashJobs.push({ cutTime: timelineEnd });
+          timelineEnd += clipDurations[i];
+        } else {
+          // Opacity cross-fade: the two clips overlap by XFADE_SEC.
+          const offset = Math.max(0, timelineEnd - XFADE_SEC);
+          filterChains.push(
+            `[${prevTag}][vsub${i}]xfade=transition=fade:duration=${XFADE_SEC.toFixed(3)}:offset=${offset.toFixed(3)}[${outTag}]`
+          );
+          timelineEnd = timelineEnd + clipDurations[i] - XFADE_SEC;
+        }
+        prevTag = outTag;
+        lastTag = outTag;
+      }
+
+      if (flashJobs.length) {
+        // Normalise the base to a common fps/format so blend lines up frame-for-frame.
+        filterChains.push(`[${lastTag}]fps=30,format=gbrp[flbase]`);
+        let baseTag = "flbase";
+        for (let j = 0; j < flashJobs.length; j += 1) {
+          const flashStart = Math.max(0, flashJobs[j].cutTime - CAMERA_FLASH_PEAK_SEC);
+          inputArgs.push("-i", cameraFlashTransitionPath);
+          const flIdx = inputIndex;
+          inputIndex += 1;
+          const stopPad = Math.max(1, totalDuration);
+          // Rotate 90°, fill the 1080x1920 frame, then pad black before/after so the
+          // bright flash lands at `flashStart` and the rest of the track is black
+          // (lighten with black = base unchanged).
+          filterChains.push(
+            `[${flIdx}:v]transpose=1,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=gbrp,tpad=start_duration=${flashStart.toFixed(3)}:start_mode=add:color=black:stop_duration=${stopPad.toFixed(3)}:stop_mode=add:color=black[flin${j}]`
+          );
+          const blendOut = j === flashJobs.length - 1 ? "vblend" : `vbl${j}`;
+          filterChains.push(`[${baseTag}][flin${j}]blend=all_mode=lighten:shortest=1[${blendOut}]`);
+          baseTag = blendOut;
+          // Keep the flash's own whoosh, delayed to the flash start, at -5 dB.
+          filterChains.push(
+            `[${flIdx}:a]volume=-5dB,adelay=${Math.round(flashStart * 1000)}:all=1,aresample=async=1[fla${j}]`
+          );
+          flashAudioTags.push(`[fla${j}]`);
+        }
+        filterChains.push(`[${baseTag}]format=yuv420p[vcat]`);
+      } else {
+        filterChains.push(`[${lastTag}]format=yuv420p[vcat]`);
+      }
     }
   }
 
@@ -1528,6 +1808,17 @@ const renderProject = async (db, project, sourceGroup) => {
   const musicAsset = project.settings?.musicEnabled
     ? db.assets.find((asset) => asset.id === musicAssetId && asset.category === "music")
     : null;
+
+  // Fold the camera-flash whooshes onto the voice first (summed, so the voice
+  // keeps its level; a limiter guards the brief peaks), then mix the music as
+  // before. With no flashes this is a no-op and [acat] passes straight through.
+  let voiceTag = "acat";
+  if (flashAudioTags.length) {
+    filterChains.push(
+      `[acat]${flashAudioTags.join("")}amix=inputs=${1 + flashAudioTags.length}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.97[acatfl]`
+    );
+    voiceTag = "acatfl";
+  }
 
   if (musicAsset?.filePath) {
     inputArgs.push("-stream_loop", "-1", "-i", musicAsset.filePath);
@@ -1537,9 +1828,9 @@ const renderProject = async (db, project, sourceGroup) => {
     filterChains.push(
       `[${musicInput}:a]volume=${musicVolumeDb}dB,atrim=0:${Math.max(0.1, totalDuration).toFixed(3)},asetpts=N/SR/TB,aresample=async=1[bgm]`
     );
-    filterChains.push("[acat][bgm]amix=inputs=2:duration=first:dropout_transition=0[aout]");
+    filterChains.push(`[${voiceTag}][bgm]amix=inputs=2:duration=first:dropout_transition=0[aout]`);
   } else {
-    filterChains.push("[acat]anull[aout]");
+    filterChains.push(`[${voiceTag}]anull[aout]`);
   }
 
   const args = [
@@ -1623,13 +1914,26 @@ app.post(
 
 app.post("/api/assets/:category", upload.single("file"), async (req, res) => {
   const category = req.params.category;
-  if (!["music", "broll", "image"].includes(category)) return res.status(400).json({ error: "Catégorie invalide." });
+  if (!["music", "broll", "image", "speaker"].includes(category)) return res.status(400).json({ error: "Catégorie invalide." });
   if (!req.file) return res.status(400).json({ error: "Fichier manquant." });
   const db = await readDb();
   const asset = assetFromFile({ file: req.file, category, note: req.body?.note || req.file.originalname });
   db.assets.unshift(asset);
   await writeDb(db);
   res.json({ asset, assets: db.assets });
+});
+
+// Rename a single asset (a video part — personne 1 / personne 2 — or a 2e-speaker
+// clip). Only the `title` changes; grouping (groupId/videoPart) stays intact.
+app.patch("/api/assets/:id", async (req, res) => {
+  const db = await readDb();
+  const target = db.assets.find((asset) => asset.id === req.params.id);
+  if (!target) return res.status(404).json({ error: "Asset introuvable." });
+  const nextTitle = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+  if (!nextTitle) return res.status(400).json({ error: "Titre manquant." });
+  target.title = nextTitle;
+  await writeDb(db);
+  res.json({ ok: true, asset: target, assets: db.assets, videoGroups: getVideoGroups(db.assets) });
 });
 
 app.delete("/api/assets/:id", async (req, res) => {
@@ -1846,6 +2150,34 @@ app.get("/api/sfx/:key/file", async (req, res) => {
   const abs = getSfxPath(req.params.key);
   if (!abs) return res.status(404).json({ error: "SFX introuvable" });
   res.sendFile(abs);
+});
+
+// Upload your own SFX sound into the bank. Lands in the user SFX folder so it
+// shows up in listSfx() and can be picked as the zoom / cut transition sound.
+app.post("/api/sfx/upload", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Fichier manquant." });
+  const ext = path.extname(req.file.originalname).toLowerCase();
+  if (![".wav", ".mp3", ".m4a", ".aac", ".ogg", ".flac"].includes(ext)) {
+    await fs.unlink(req.file.path).catch(() => {});
+    return res.status(400).json({ error: "Format audio non supporté." });
+  }
+  const { getUserSfxDir, listSfx } = await import("./sfx.mjs");
+  const dir = getUserSfxDir();
+  await ensureDir(dir);
+  const baseName = normalizeFileName(req.file.originalname.replace(/\.[^/.]+$/, ""));
+  const target = path.join(dir, `${baseName}${ext}`);
+  await fs.rename(req.file.path, target).catch(async () => {
+    await fs.copyFile(req.file.path, target);
+    await fs.unlink(req.file.path).catch(() => {});
+  });
+  res.json({ sfx: listSfx() });
+});
+
+app.delete("/api/sfx/:key", async (req, res) => {
+  const { deleteUserSfx, listSfx } = await import("./sfx.mjs");
+  const ok = deleteUserSfx(req.params.key);
+  if (!ok) return res.status(400).json({ error: "SFX importé introuvable." });
+  res.json({ sfx: listSfx() });
 });
 
 app.post("/api/projects/:id/sfx", async (req, res) => {

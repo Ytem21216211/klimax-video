@@ -1,9 +1,9 @@
 import { useState, useCallback, useEffect } from 'react';
-import { Message, ChatSession, ToolResult } from '@/lib/devAssistant/types';
+import { Message, ChatSession, ToolResult, ToolCall, TOOL_DEFINITIONS } from '@/lib/devAssistant/types';
 import { DEV_ASSISTANT_SYSTEM_PROMPT, buildContextPrompt } from '@/lib/devAssistant/systemPrompt';
 import { executeRealToolCalls, formatToolResultsForContext, isGitHubConfigured } from '@/lib/devAssistant/realToolExecutor';
 import { getGitHubConfig, getRepoTree, buildFileTreeString } from '@/lib/devAssistant/githubClient';
-import { supabase } from '@/integrations/supabase/client';
+import { LOCAL_KLIMAX_API } from '@/lib/localKlimaxApi';
 
 const STORAGE_KEY = 'dev-assistant-session';
 
@@ -14,19 +14,35 @@ interface UseDevAssistantOptions {
   model?: string;
 }
 
-// API call through edge function (secure)
+// Routed through the local Claude bridge (OpenAI-compatible) — no cloud edge
+// function, no API key. Tool schemas are sent so GitHub tool-calling still works.
 const callEdgeFunction = async (messages: { role: string; content: string }[], useTools = true) => {
-  const { data, error } = await supabase.functions.invoke('dev-assistant-chat', {
-    body: { messages, useTools, model: 'nvidia/nemotron-3-nano-30b-a3b:free' }
+  const body: Record<string, unknown> = { model: 'claude', messages };
+  if (useTools) {
+    body.tools = TOOL_DEFINITIONS;
+    body.tool_choice = 'auto';
+  }
+
+  const res = await fetch(`${LOCAL_KLIMAX_API}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
-  
-  if (error) throw new Error(error.message);
-  if (data.error) throw new Error(data.error);
-  
-  return {
-    content: data.content,
-    toolCalls: data.toolCalls || []
-  };
+
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || String(data.error));
+
+  const message = data.choices?.[0]?.message || {};
+  const toolCalls: ToolCall[] = [];
+  for (const tc of message.tool_calls || []) {
+    try {
+      toolCalls.push({ id: tc.id, name: tc.function.name, arguments: JSON.parse(tc.function.arguments || '{}') });
+    } catch (e) {
+      console.error('Failed to parse tool call arguments:', e);
+    }
+  }
+
+  return { content: message.content ?? null, toolCalls };
 };
 
 export const useDevAssistant = (options: UseDevAssistantOptions) => {

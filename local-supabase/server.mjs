@@ -147,7 +147,10 @@ function userResponse(u) {
   };
 }
 async function issueSession(user) {
-  const access = signJwt({ sub: user.id, role: "authenticated", email: user.email }, 3600);
+  // Include a random jti so two sessions issued for the same user within the
+  // same second (e.g. signup immediately followed by signin) don't produce an
+  // identical JWT, which would collide on the sessions primary key.
+  const access = signJwt({ sub: user.id, role: "authenticated", email: user.email, jti: randomToken(12) }, 3600);
   const refresh = randomToken(32);
   const expiresAt = new Date(Date.now() + 3600 * 1000);
   await pool.query(

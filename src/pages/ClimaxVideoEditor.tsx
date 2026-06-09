@@ -41,7 +41,6 @@ import {
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import PresetsPanel from "@/components/editor/PresetsPanel";
-import SfxPanel from "@/components/editor/SfxPanel";
 import {
   createKlimaxProjectClip,
   loadKlimaxBankAssets,
@@ -81,8 +80,16 @@ const VIDEO_FILTER_PRESETS = [
   { key: "vhs_lite", label: "VHS Lite", note: "Texture repost", css: "contrast(1.08) saturate(0.95)" },
 ] as const;
 
+// Transparent PNG (rgba) cropped from klimax-pop-up.mov — the export's .mov is
+// ProRes 4444 with alpha, but the preview's WebM was transcoded as yuv420p (no
+// alpha) and rendered as a black box, so the preview uses this PNG instead.
 const KLIMAX_LOGO_PREVIEW_URL = `${LOCAL_KLIMAX_API}/files/system/klimax-logo-preview.png`;
 const KLIMAX_LOGO_PLACEMENT_TIME_SECONDS = 2;
+// The export overlays the FULL logo frame scaled to `logoSize` px wide and
+// centred on logoPosition. The cropped preview PNG spans 734/1080 of that frame
+// (and the card is perfectly centred), so scaling the preview by this ratio
+// makes the on-screen logo match the exported size 1:1.
+const LOGO_PREVIEW_FRAME_RATIO = 734 / 1080;
 
 const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
   impact: {
@@ -498,8 +505,11 @@ const DEFAULT_HOOK_STYLE: LocalHookStyleSettings = {
   bubbleColor: "#ffffff",
   textColor: "#000000",
   fontFamily: "Arial Black",
-  fontSize: 46,
+  fontSize: 53,
 };
+
+// Shared default text size (px, in the 1080-wide canvas) for hook + subtitles.
+const DEFAULT_TEXT_SIZE = 53;
 
 const FONT_OPTIONS = [
   { value: "Arial Bold", label: "Arial Bold" },
@@ -543,6 +553,80 @@ const snapToValue = (value: number, target: number, threshold = 18) =>
   Math.abs(value - target) <= threshold ? target : value;
 const canvasFontSize = (size: number) => `${(size / BASE_CANVAS_WIDTH) * 100}cqw`;
 const canvasUnit = (value: number) => `${(value / BASE_CANVAS_WIDTH) * 100}cqw`;
+// The export does NOT render subtitles at the raw px the user picks: the backend
+// (resolveSubtitleRenderStyle in local-backend/server.mjs) writes the ASS Fontsize
+// as `round(fontSize * 1.08)` clamped to [38, 96] on the 1080-wide canvas. This
+// returns that exported Fontsize; the preview then scales it by PREVIEW_LIBASS_RATIO
+// (below) to match libass's actual on-screen pixel size.
+const EXPORT_SUBTITLE_FONT_SCALE = 1.08;
+const exportSubtitleFontSize = (size: number) =>
+  clampValue(Math.round((size || DEFAULT_TEXT_SIZE) * EXPORT_SUBTITLE_FONT_SCALE), 38, 96);
+
+// A band's lateral/vertical pan, expressed as a FRACTION of the available
+// overscan in [0,1]. The ±480 px crop range maps to 0…1 (0.5 = centered). The
+// export uses the exact same fraction (see renderProject), so preview == export.
+const bandPanFraction = (crop: number) => clampValue(0.5 + crop / 960, 0, 1);
+
+// Framing for one split-screen band — matches the export 1:1 and needs NO source
+// dimensions (so it can't break while the video metadata is still loading):
+//  - object-fit:cover scales the source to cover the band, exactly like ffmpeg's
+//    force_original_aspect_ratio=increase;
+//  - object-position places the pan as a fraction of the overscan — the browser
+//    auto-clamps it to [0%,100%], so a black bar can never appear;
+//  - transform:scale(zoom) with the SAME transform-origin grows the zoom from the
+//    pan point, keeping it centered (band center when crop = 0).
+const exportBandFrameStyle = (
+  zoom: number,
+  cropX: number,
+  cropY: number
+): React.CSSProperties => {
+  const fx = bandPanFraction(cropX) * 100;
+  const fy = bandPanFraction(cropY) * 100;
+  return {
+    position: "absolute",
+    inset: 0,
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+    objectPosition: `${fx}% ${fy}%`,
+    transform: `scale(${zoom})`,
+    transformOrigin: `${fx}% ${fy}%`,
+  };
+};
+// libass (the export renderer) draws a given Fontsize ~11% SMALLER than a browser
+// draws the same px. The shared 1.08 factor cancels out and never fixed this, so
+// the preview was ~12% too big at every size. Scale the preview down by this
+// measured ratio so it matches the exported video 1:1 (see .context/subtitle-test).
+const PREVIEW_LIBASS_RATIO = 0.885;
+
+// The export renders subtitles with a real font file resolved by the backend
+// (fontDescriptor in local-backend/server.mjs). The preview MUST use the exact
+// same font face + weight, otherwise an invalid CSS family (e.g. "Arial Bold")
+// silently falls back to another font and the on-screen text no longer matches
+// the export at any size. This mirrors that mapping to a valid CSS stack + weight.
+const resolvePreviewFont = (fontFamily?: string): { family: string; weight: number } => {
+  const f = String(fontFamily || "");
+  const t = (re: RegExp) => re.test(f);
+  if (t(/arial black/i)) return { family: '"Arial Black", Arial, sans-serif', weight: 900 };
+  if (t(/impact/i)) return { family: 'Impact, "Arial Narrow", sans-serif', weight: 400 };
+  if (t(/courier/i)) return { family: '"Courier New", monospace', weight: 700 };
+  if (t(/helvetica/i)) return { family: 'Helvetica, Arial, sans-serif', weight: 700 };
+  if (t(/arial/i)) return { family: 'Arial, Helvetica, sans-serif', weight: 700 }; // "Arial Bold" -> Arial 700
+  if (t(/sf pro|system/i)) return { family: '-apple-system, "SF Pro Display", sans-serif', weight: 700 };
+  if (t(/archivo/i)) return { family: '"Archivo Black", Arial, sans-serif', weight: 400 };
+  if (t(/montserrat/i)) return { family: 'Montserrat, Arial, sans-serif', weight: 800 };
+  if (t(/bebas/i)) return { family: '"Bebas Neue", Arial, sans-serif', weight: 400 };
+  if (t(/anton/i)) return { family: 'Anton, Arial, sans-serif', weight: 400 };
+  if (t(/din condensed/i)) return { family: '"DIN Condensed", Arial, sans-serif', weight: 700 };
+  if (t(/din/i)) return { family: '"DIN Alternate", Arial, sans-serif', weight: 700 };
+  if (t(/futura/i)) return { family: 'Futura, Arial, sans-serif', weight: 700 };
+  if (t(/avenir/i)) return { family: '"Avenir Next", Arial, sans-serif', weight: 800 };
+  if (t(/gill/i)) return { family: '"Gill Sans", Arial, sans-serif', weight: 700 };
+  if (t(/trebuchet/i)) return { family: '"Trebuchet MS", Arial, sans-serif', weight: 700 };
+  if (t(/marker/i)) return { family: '"Marker Felt", Arial, sans-serif', weight: 700 };
+  if (t(/noteworthy/i)) return { family: 'Noteworthy, Arial, sans-serif', weight: 700 };
+  return { family: 'Helvetica, Arial, sans-serif', weight: 700 }; // backend default = Helvetica
+};
 const buildSubtitleTextPreviewStyle = (
   style: LocalSubtitleStyleSettings,
   fontSize: string,
@@ -562,11 +646,12 @@ const buildSubtitleTextPreviewStyle = (
     style.shadowEnabled === false ? 0 : clampValue(Math.max(style.shadowOpacity ?? 0.9, 0.2), 0, 1);
   const transformPrefix = options.centerY ? "translateY(-50%) " : "";
 
+  const previewFont = resolvePreviewFont(style.fontFamily);
   return {
     fontSize,
     color: style.textColor || "#ffffff",
-    fontFamily: style.fontFamily || "Arial Black, Arial, sans-serif",
-    fontWeight: Math.max(900, style.fontWeight || 900),
+    fontFamily: previewFont.family,
+    fontWeight: previewFont.weight,
     WebkitTextStroke: "0 transparent",
     textShadow: buildOuterSubtitleShadow(
       previewStrokeWidth,
@@ -581,29 +666,18 @@ const buildSubtitleTextPreviewStyle = (
   };
 };
 
-const KlimaxLogoPlacementPreview = () => {
-  const [failed, setFailed] = React.useState(false);
-
-  return (
-    <div className="pointer-events-none grid w-full place-items-center">
-      {!failed ? (
-        <img
-          src={`${KLIMAX_LOGO_PREVIEW_URL}?t=${KLIMAX_LOGO_PLACEMENT_TIME_SECONDS}`}
-          alt="Logo KLIMAX figé"
-          className="block w-full select-none object-contain"
-          style={{
-            filter: "drop-shadow(0 12px 30px rgba(0,0,0,0.65)) drop-shadow(0 0 18px rgba(255,255,255,0.42))",
-          }}
-          onError={() => setFailed(true)}
-        />
-      ) : (
-        <div className="grid aspect-square w-full place-items-center rounded-[18%] bg-black/70 text-white shadow-[0_0_30px_rgba(255,255,255,0.35)]">
-          <span className="font-black leading-none" style={{ fontSize: "68cqw" }}>K</span>
-        </div>
-      )}
-    </div>
-  );
-};
+const KlimaxLogoPlacementPreview = () => (
+  // Fills its wrapper (which controls size/position via logoSize/logoPosition),
+  // keeps the transparent background, and stays click-through so the wrapper
+  // handles dragging.
+  <img
+    src={`${KLIMAX_LOGO_PREVIEW_URL}?t=${KLIMAX_LOGO_PLACEMENT_TIME_SECONDS}`}
+    alt="Logo KLIMAX"
+    draggable={false}
+    className="pointer-events-none block w-full select-none object-contain"
+    style={{ filter: "drop-shadow(0 6px 16px rgba(0,0,0,0.5))" }}
+  />
+);
 const previewKeywordStopWords = new Set(["mais", "avec", "pour", "dans", "plus", "tout", "tous", "elle", "cette", "vraiment"]);
 const normalizePreviewKeyword = (value: string) =>
   value
@@ -710,6 +784,10 @@ const ClimaxVideoEditor = () => {
   const [zoomOutStartPercent, setZoomOutStartPercent] = useState(180);
   const [zoomOutDurationSeconds, setZoomOutDurationSeconds] = useState(1.2);
   const [klimaxLogoEnabled, setKlimaxLogoEnabled] = useState(true);
+  // Cross-clip transitions (off by default): when on, each cut uses the type below.
+  const [clipTransitionsEnabled, setClipTransitionsEnabled] = useState(false);
+  // Which transition: "random" (50/50), "opacity" (fade), or "camera_flash".
+  const [clipTransitionType, setClipTransitionType] = useState<"random" | "opacity" | "camera_flash">("random");
   const [brollEnabled, setBrollEnabled] = useState(true);
   const [isAutoPickingBrolls, setIsAutoPickingBrolls] = useState(false);
   const [autoBrollMessage, setAutoBrollMessage] = useState<string | null>(null);
@@ -718,8 +796,8 @@ const ClimaxVideoEditor = () => {
   const [musicVolumeDb, setMusicVolumeDb] = useState(-17);
   const [videoVolumeDb, setVideoVolumeDb] = useState(2);
   const [videoFilterKey, setVideoFilterKey] = useState("none");
-  const [subtitleSize, setSubtitleSize] = useState(34);
-  const [subtitleStyle, setSubtitleStyle] = useState<LocalSubtitleStyleSettings>({ ...DEFAULT_SUBTITLE_STYLE });
+  const [subtitleSize, setSubtitleSize] = useState(DEFAULT_TEXT_SIZE);
+  const [subtitleStyle, setSubtitleStyle] = useState<LocalSubtitleStyleSettings>({ ...DEFAULT_SUBTITLE_STYLE, fontSize: DEFAULT_TEXT_SIZE });
   const [hookStyle, setHookStyle] = useState<LocalHookStyleSettings>({ ...DEFAULT_HOOK_STYLE });
 
   const autoPickBrolls = useCallback(async () => {
@@ -766,10 +844,12 @@ const ClimaxVideoEditor = () => {
       zoomOutStartPercent,
       zoomOutDurationSeconds,
       klimaxLogoEnabled,
+      clipTransitionsEnabled,
+      clipTransitionType,
       logoTriggerWord: "klimax",
     });
     return () => { delete (window as any).__klimaxCurrentSnapshot; };
-  }, [hookText, subtitleSize, subtitleStyle, hookStyle, selectedMusicId, musicEnabled, musicVolumeDb, videoVolumeDb, videoFilterKey, brollEnabled, autoSfxEnabled, autoZoomEnabled, autoZoomMode, autoZoomBoostPercent, autoZoomDurationSeconds, introZoomOutEnabled, replyZoomOutEnabled, zoomOutStartPercent, zoomOutDurationSeconds, klimaxLogoEnabled]);
+  }, [hookText, subtitleSize, subtitleStyle, hookStyle, selectedMusicId, musicEnabled, musicVolumeDb, videoVolumeDb, videoFilterKey, brollEnabled, autoSfxEnabled, autoZoomEnabled, autoZoomMode, autoZoomBoostPercent, autoZoomDurationSeconds, introZoomOutEnabled, replyZoomOutEnabled, zoomOutStartPercent, zoomOutDurationSeconds, klimaxLogoEnabled, clipTransitionsEnabled, clipTransitionType]);
 
   // Apply a preset from the Presets panel: update local state, then save the project.
   React.useEffect(() => {
@@ -803,6 +883,8 @@ const ClimaxVideoEditor = () => {
       if (typeof detail.zoomOutStartPercent === "number") setZoomOutStartPercent(detail.zoomOutStartPercent);
       if (typeof detail.zoomOutDurationSeconds === "number") setZoomOutDurationSeconds(detail.zoomOutDurationSeconds);
       if (typeof detail.klimaxLogoEnabled === "boolean") setKlimaxLogoEnabled(detail.klimaxLogoEnabled);
+      if (typeof detail.clipTransitionsEnabled === "boolean") setClipTransitionsEnabled(detail.clipTransitionsEnabled);
+      if (detail.clipTransitionType === "opacity" || detail.clipTransitionType === "camera_flash" || detail.clipTransitionType === "random") setClipTransitionType(detail.clipTransitionType);
       toast({ title: "Preset appliqué", description: "Les réglages sont en place. Sauvegarde le projet pour les conserver." });
     };
     window.addEventListener("klimax:apply-preset", handler as EventListener);
@@ -866,10 +948,10 @@ const ClimaxVideoEditor = () => {
     const nextSubtitleStyle = {
       ...DEFAULT_SUBTITLE_STYLE,
       ...(project.settings?.subtitleStyle || {}),
-      fontSize: Number(project.settings?.subtitleStyle?.fontSize || project.settings?.subtitleSize || 34),
+      fontSize: Number(project.settings?.subtitleStyle?.fontSize || project.settings?.subtitleSize || DEFAULT_TEXT_SIZE),
     };
     setSubtitleStyle(nextSubtitleStyle);
-    setSubtitleSize(Number(nextSubtitleStyle.fontSize || 34));
+    setSubtitleSize(Number(nextSubtitleStyle.fontSize || DEFAULT_TEXT_SIZE));
     setHookStyle({ ...DEFAULT_HOOK_STYLE, ...(project.settings?.hookStyle || {}) });
     setHookText(project.settings?.hookText || project.clips?.[0]?.hookText || "Tu connais cette sensation ?");
     setSelectedMusicId(
@@ -891,6 +973,12 @@ const ClimaxVideoEditor = () => {
     setZoomOutStartPercent(Number(project.settings?.zoomOutStartPercent ?? 180));
     setZoomOutDurationSeconds(Number(project.settings?.zoomOutDurationSeconds ?? 1.2));
     setKlimaxLogoEnabled(project.settings?.klimaxLogoEnabled !== false);
+    setClipTransitionsEnabled(project.settings?.clipTransitionsEnabled === true);
+    setClipTransitionType(
+      ["opacity", "camera_flash", "random"].includes(project.settings?.clipTransitionType as string)
+        ? (project.settings!.clipTransitionType as "random" | "opacity" | "camera_flash")
+        : "random"
+    );
     setBrollEnabled(project.settings?.brollEnabled !== false);
     setProjectSource(
       project.sourceGroup?.person1 && project.sourceGroup?.person2
@@ -956,6 +1044,19 @@ const ClimaxVideoEditor = () => {
     () => (selectedClipCanUseBroll && selectedClip?.imageId ? bankAssets.find((asset) => asset.id === selectedClip.imageId) || null : null),
     [bankAssets, selectedClip?.imageId, selectedClipCanUseBroll]
   );
+  const dualSpeakerVideoAssets = useMemo(
+    // Only the dedicated second-speaker clips (Shelly / Julien). The podcast
+    // source clips (category "video") never show up here.
+    () => bankAssets.filter((asset) => asset.category === "speaker"),
+    [bankAssets]
+  );
+  const dualSpeakerAddedAsset = useMemo(
+    () =>
+      selectedClip?.dualSpeakerSource
+        ? bankAssets.find((asset) => asset.id === selectedClip.dualSpeakerSource) || null
+        : null,
+    [bankAssets, selectedClip?.dualSpeakerSource]
+  );
   const selectedVideoFilter = useMemo(
     () => VIDEO_FILTER_PRESETS.find((filter) => filter.key === videoFilterKey) || VIDEO_FILTER_PRESETS[0],
     [videoFilterKey]
@@ -991,7 +1092,10 @@ const ClimaxVideoEditor = () => {
   const mergedHookStyle = useMemo(() => ({ ...DEFAULT_HOOK_STYLE, ...hookStyle }), [hookStyle]);
   const subtitlePreviewStyle = useMemo(
     () => {
-      const previewFontSize = clampValue(Math.round((mergedSubtitleStyle.fontSize || subtitleSize) * 1.08), 38, 96);
+      // Match the export 1:1: take the exported ASS Fontsize (round(size*1.08),
+      // clamped) and scale it by PREVIEW_LIBASS_RATIO so the browser draws the
+      // subtitle at the same pixel size libass produces in the final video.
+      const previewFontSize = exportSubtitleFontSize(mergedSubtitleStyle.fontSize || subtitleSize) * PREVIEW_LIBASS_RATIO;
       return buildSubtitleTextPreviewStyle(mergedSubtitleStyle, canvasFontSize(previewFontSize));
     },
     [mergedSubtitleStyle, subtitleSize]
@@ -1104,6 +1208,8 @@ const ClimaxVideoEditor = () => {
     bankByCategory.music.length,
     clips,
     klimaxLogoEnabled,
+    clipTransitionsEnabled,
+    clipTransitionType,
     localProject?.sourceGroup?.person1,
     localProject?.sourceGroup?.person2,
     localProject?.transcription?.clips,
@@ -1132,11 +1238,14 @@ const ClimaxVideoEditor = () => {
   };
 
   const applySubtitleTextPreset = (preset: LocalSubtitleStyleSettings) => {
+    // A STYLE preset changes the look (colors, font, stroke, shadow) but must NOT
+    // reset the SIZE the user picked. Size stays the single value `subtitleSize`.
     setSubtitleStyle((current) => ({
       ...preset,
+      fontSize: current.fontSize ?? subtitleSize,
       animationPreset: current.animationPreset || preset.animationPreset,
     }));
-    setSubtitleSize(preset.fontSize || 34);
+    // subtitleSize is intentionally left unchanged.
   };
 
   const addClip = (stage: KlimaxClipStage) => {
@@ -1235,11 +1344,13 @@ const ClimaxVideoEditor = () => {
           },
         });
       } else if (drag.kind === "video") {
+        // The video is positioned with `left: 50% - x`, so a raw delta would move
+        // it opposite to the cursor. Invert the delta so it follows the mouse 1:1.
         updateSelectedClip({
           videoTransform: {
             scale: selectedClip?.videoTransform?.scale ?? 100,
-            x: clampValue(nextX, -540, 540),
-            y: clampValue(nextY, -840, 840),
+            x: clampValue(Math.round(drag.originX - deltaX), -540, 540),
+            y: clampValue(Math.round(drag.originY - deltaY), -840, 840),
           },
         });
       }
@@ -1286,6 +1397,8 @@ const ClimaxVideoEditor = () => {
       zoomOutStartPercent,
       zoomOutDurationSeconds,
       klimaxLogoEnabled,
+      clipTransitionsEnabled,
+      clipTransitionType,
       brollEnabled,
       logoTriggerWord: "klimax",
       subtitleStyle: { ...mergedSubtitleStyle, fontSize: subtitleSize },
@@ -1374,6 +1487,8 @@ const ClimaxVideoEditor = () => {
       zoomOutStartPercent,
       zoomOutDurationSeconds,
       klimaxLogoEnabled,
+      clipTransitionsEnabled,
+      clipTransitionType,
       brollEnabled,
       logoTriggerWord: "klimax",
       subtitleStyle: { ...mergedSubtitleStyle, fontSize: subtitleSize },
@@ -1449,6 +1564,14 @@ const ClimaxVideoEditor = () => {
             66% { transform: scale(.94,1.06); }
             100% { transform: scale(1); opacity: 1; }
           }
+          @keyframes klimaxLogoGrow {
+            0% { transform: scale(0); opacity: 0; }
+            55% { transform: scale(1.12); opacity: 1; }
+            70% { transform: scale(0.96); }
+            82% { transform: scale(1.03); }
+            100% { transform: scale(1); opacity: 1; }
+            /* hold at full size, then the loop restarts to replay the pop-in */
+          }
         `}
       </style>
       <div className="fixed inset-0 pointer-events-none bg-[linear-gradient(to_right,#ffffff08_1px,transparent_1px),linear-gradient(to_bottom,#ffffff06_1px,transparent_1px)] bg-[size:72px_72px]" />
@@ -1468,37 +1591,13 @@ const ClimaxVideoEditor = () => {
             <img src="/klimax-logo.jpeg" alt="Klimax logo" className="h-full w-full object-cover" />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-3">
-              <h1 className="text-xl font-black uppercase tracking-tight">Klimax vidéo</h1>
-              <span className="hidden sm:inline-flex items-center rounded-full border border-white/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-white/55">
-                V1 locale
-              </span>
-            </div>
-            <p className="text-xs text-white/45 truncate">Projet {projectId?.replace("project-", "").slice(0, 8)} · pipeline court-form sans voix off</p>
+            <h1 className="text-xl font-black uppercase tracking-tight truncate">
+              {projectSource?.title || "Nouveau projet"}
+            </h1>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="hidden md:flex rounded-full border border-white/10 bg-white/[0.03] p-1">
-            <button
-              onClick={() => setMode("manual")}
-              className={cn(
-                "rounded-full px-4 py-2 text-xs font-black uppercase tracking-wider transition",
-                mode === "manual" ? "bg-white text-black" : "text-white/50 hover:text-white"
-              )}
-            >
-              Manuel
-            </button>
-            <button
-              onClick={() => setMode("auto")}
-              className={cn(
-                "rounded-full px-4 py-2 text-xs font-black uppercase tracking-wider transition",
-                mode === "auto" ? "bg-white text-black" : "text-white/50 hover:text-white"
-              )}
-            >
-              Automatique
-            </button>
-          </div>
           <Button onClick={renderCurrentProject} disabled={isRendering || !canStartRender} className="rounded-full bg-white text-black hover:bg-white/90 font-black disabled:opacity-40">
             <Play className="mr-2 h-4 w-4 fill-current" />
             {isRendering ? "Export..." : "Créer la vidéo"}
@@ -1506,98 +1605,118 @@ const ClimaxVideoEditor = () => {
         </div>
       </header>
 
-      <main className="relative z-10 grid h-[calc(100vh-80px)] grid-cols-1 xl:grid-cols-[300px_minmax(420px,1fr)_390px] overflow-hidden">
-        <aside className="hidden xl:flex border-r border-white/10 bg-black/50 flex-col overflow-hidden">
-          <div className="px-5 py-4 border-b border-white/10">
-            <p className="text-xs font-black uppercase tracking-[0.25em] text-white/35">Source vidéo</p>
-            <p className="mt-2 font-black truncate">{projectSource?.title || "Aucune vidéo liée"}</p>
-            <p className="mt-1 text-xs text-white/45 line-clamp-2">
-              {projectSource ? "Deux vidéos liées: personne 1 et personne 2 dans le même projet." : "Choisis un duo vidéo dans Nouveau projet pour lier la source."}
-            </p>
-          </div>
-          <div className="p-5 border-b border-white/10 space-y-3">
-            <Button onClick={() => addClip("intro")} className="w-full rounded-2xl bg-white text-black hover:bg-white/90 font-black">
-              <Plus className="mr-2 h-4 w-4" />
-              Segment personne 1
-            </Button>
-            <Button onClick={() => addClip("reply")} variant="outline" className="w-full rounded-2xl border-white/10 bg-white/[0.03] text-white hover:bg-white/10 font-black">
-              <Plus className="mr-2 h-4 w-4" />
-              Segment personne 2
-            </Button>
-          </div>
-          <div className="px-5 py-4 flex items-center justify-between">
-            <div>
-              <p className="text-xs font-black uppercase tracking-[0.25em] text-white/35">Segments projet</p>
-              <p className="text-sm text-white/60">{clips.length > 0 ? `${clips.length} segment(s)` : "Aucun segment ajouté"}</p>
-            </div>
-            <BadgeCheck className="h-5 w-5 text-white/50" />
-          </div>
-          <div className="flex-1 overflow-y-auto px-4 pb-6 space-y-2">
-            {clips.length === 0 && (
-              <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] p-4 text-sm text-white/45">
-                La liste se remplit avec les deux personnes de la vidéo source.
-              </div>
-            )}
-            {clips.map((clip, index) => (
-              <button
-                key={clip.id}
-                onClick={() => setSelectedClipId(clip.id)}
-                className={cn(
-                  "w-full text-left rounded-2xl border p-4 transition group",
-                  selectedClip?.id === clip.id ? "border-white bg-white text-black" : "border-white/10 bg-white/[0.03] hover:bg-white/[0.08]"
-                )}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="font-black uppercase tracking-tight truncate">{clip.title}</p>
-                    <p className={cn("text-xs mt-1", selectedClip?.id === clip.id ? "text-black/60" : "text-white/45")}>
-                      {clip.stage === "intro" ? "Video liee personne 1" : "Video liee personne 2"}
-                    </p>
-                    <p className={cn("text-[10px] mt-2 line-clamp-2", selectedClip?.id === clip.id ? "text-black/55" : "text-white/30")}>
-                      {clip.subtitle}
-                    </p>
-                  </div>
-                  <Film className={cn("h-4 w-4 shrink-0", selectedClip?.id === clip.id ? "text-black" : "text-white/35")} />
-                </div>
-              </button>
-            ))}
-          </div>
-        </aside>
+      <main className="relative z-10 grid h-[calc(100vh-80px)] grid-cols-1 xl:grid-cols-[minmax(440px,600px)_minmax(0,1fr)] overflow-hidden">
 
-        <section className="overflow-y-auto p-4 lg:p-8">
-          <div className="mx-auto max-w-6xl grid gap-6 lg:grid-cols-[minmax(320px,430px)_1fr] items-start">
-            <div className="space-y-5">
+        {/* ============ COLONNE GAUCHE (fixe) : aperçu épinglé + exports ============ */}
+        <aside className="order-first xl:order-none xl:col-start-1 xl:row-start-1 overflow-y-auto border-b xl:border-b-0 xl:border-r border-white/10 bg-black/50 p-4 lg:p-6">
+            <div className="sticky top-0 z-20 space-y-4 pb-4">
               <div className="rounded-[32px] border border-white/10 bg-white/[0.04] p-4 shadow-2xl">
                 <div
                   ref={previewCanvasRef}
-                  className="aspect-[9/16] rounded-[28px] bg-neutral-950 overflow-hidden relative border border-white/10 touch-none"
+                  className="mx-auto aspect-[9/16] w-full max-w-[calc((100vh_-_170px)*9/16)] rounded-[28px] bg-neutral-950 overflow-hidden relative border border-white/10 touch-none"
                   style={{ containerType: "size" }}
                 >
                   <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_12%,#ffffff26,transparent_28%),linear-gradient(160deg,#1f1f1f,#050505_52%,#202020)]" />
-                  {selectedSourceAsset?.fileUrl && (
-                    <video
-                      key={selectedSourceAsset.id}
-                      src={selectedSourceAsset.fileUrl}
-                      className="absolute object-fill opacity-80 cursor-move"
-                      onLoadedMetadata={(event) => {
-                        const { videoWidth, videoHeight } = event.currentTarget;
-                        if (!videoWidth || !videoHeight) return;
-                        setSourceVideoSizes((current) => ({
-                          ...current,
-                          [selectedSourceAsset.id]: { width: videoWidth, height: videoHeight },
-                        }));
-                      }}
-                      onPointerDown={(event) => startClipDrag("video", event)}
-                      muted
-                      playsInline
-                      style={{
-                        ...previewVideoFrameStyle,
-                        maxWidth: "none",
-                        maxHeight: "none",
-                        filter: selectedVideoFilter.css,
-                        touchAction: "none",
-                      }}
-                    />
+                  {selectedClip?.dualSpeakerEnabled ? (
+                    (() => {
+                      // Match the export: ratio clamped to [0.2, 0.8], TOP =
+                      // round(1920*ratio), BOTTOM = the remainder.
+                      const splitRatio = clampValue(selectedClip?.dualSpeakerSplitRatio ?? 0.5, 0.2, 0.8);
+                      const addedAtTop = (selectedClip?.dualSpeakerPosition ?? "top") === "top";
+                      const mainCropY = selectedClip?.dualSpeakerMainCropY ?? 0;
+                      const addedCropY = selectedClip?.dualSpeakerAddedCropY ?? 0;
+                      const mainCropX = selectedClip?.dualSpeakerMainCropX ?? 0;
+                      const addedCropX = selectedClip?.dualSpeakerAddedCropX ?? 0;
+                      const mainZoom = selectedClip?.dualSpeakerMainZoom ?? 100;
+                      const addedZoom = selectedClip?.dualSpeakerAddedZoom ?? 100;
+                      const TOP_BAND = Math.round(BASE_CANVAS_HEIGHT * splitRatio);
+                      const BOTTOM_BAND = BASE_CANVAS_HEIGHT - TOP_BAND;
+                      const topPct = (TOP_BAND / BASE_CANVAS_HEIGHT) * 100;
+                      const bottomPct = (BOTTOM_BAND / BASE_CANVAS_HEIGHT) * 100;
+                      const mainUrl = selectedSourceAsset?.fileUrl;
+                      const addedUrl = dualSpeakerAddedAsset?.fileUrl;
+                      const topUrl = addedAtTop ? addedUrl : mainUrl;
+                      const topCropY = addedAtTop ? addedCropY : mainCropY;
+                      const topCropX = addedAtTop ? addedCropX : mainCropX;
+                      const topZoom = addedAtTop ? addedZoom : mainZoom;
+                      const bottomUrl = addedAtTop ? mainUrl : addedUrl;
+                      const bottomCropY = addedAtTop ? mainCropY : addedCropY;
+                      const bottomCropX = addedAtTop ? mainCropX : addedCropX;
+                      const bottomZoom = addedAtTop ? mainZoom : addedZoom;
+                      const renderBand = (
+                        url: string | undefined,
+                        cropY: number,
+                        cropX: number,
+                        zoom: number,
+                        bandKey: string
+                      ) =>
+                        url ? (
+                          // exportBandFrameStyle frames this band exactly like the
+                          // export (cover + fraction pan + centered zoom) without
+                          // needing the source dimensions. The band's overflow-hidden
+                          // clips the overscan; the pan can never reveal a black bar.
+                          <video
+                            key={`${bandKey}-${url}`}
+                            src={url}
+                            muted
+                            playsInline
+                            style={{
+                              ...exportBandFrameStyle(
+                                clampValue(zoom, 100, 220) / 100,
+                                clampValue(cropX, -480, 480),
+                                clampValue(cropY, -480, 480)
+                              ),
+                              filter: selectedVideoFilter.css,
+                            }}
+                          />
+                        ) : (
+                          <div className="absolute inset-0 grid place-items-center text-[10px] font-black uppercase tracking-[0.2em] text-white/40">
+                            Source manquante
+                          </div>
+                        );
+                      return (
+                        <>
+                          <div
+                            className="absolute left-0 top-0 w-full overflow-hidden"
+                            style={{ height: `${topPct}%` }}
+                          >
+                            {renderBand(topUrl, topCropY, topCropX, topZoom, "dual-top")}
+                          </div>
+                          <div
+                            className="absolute left-0 w-full overflow-hidden"
+                            style={{ top: `${topPct}%`, height: `${bottomPct}%` }}
+                          >
+                            {renderBand(bottomUrl, bottomCropY, bottomCropX, bottomZoom, "dual-bottom")}
+                          </div>
+                        </>
+                      );
+                    })()
+                  ) : (
+                    selectedSourceAsset?.fileUrl && (
+                      <video
+                        key={selectedSourceAsset.id}
+                        src={selectedSourceAsset.fileUrl}
+                        className="absolute object-fill opacity-80 cursor-move"
+                        onLoadedMetadata={(event) => {
+                          const { videoWidth, videoHeight } = event.currentTarget;
+                          if (!videoWidth || !videoHeight) return;
+                          setSourceVideoSizes((current) => ({
+                            ...current,
+                            [selectedSourceAsset.id]: { width: videoWidth, height: videoHeight },
+                          }));
+                        }}
+                        onPointerDown={(event) => startClipDrag("video", event)}
+                        muted
+                        playsInline
+                        style={{
+                          ...previewVideoFrameStyle,
+                          maxWidth: "none",
+                          maxHeight: "none",
+                          filter: selectedVideoFilter.css,
+                          touchAction: "none",
+                        }}
+                      />
+                    )
                   )}
                   <div className="absolute inset-0 opacity-40 bg-[linear-gradient(120deg,transparent_0%,#fff_48%,transparent_54%)] translate-x-[-35%]" />
                   <div className="absolute top-4 left-4 right-4 flex items-center justify-between text-[10px] font-black uppercase tracking-[0.2em] text-white/55">
@@ -1615,30 +1734,29 @@ const ClimaxVideoEditor = () => {
                     </>
                   )}
 
-                  <div className="absolute inset-x-5 top-[16%] h-[42%] rounded-[28px] border border-white/10 bg-black/30 backdrop-blur-[2px] overflow-hidden">
-                    <div className="absolute inset-0 grid place-items-center">
-                      <CirclePlay className="h-16 w-16 text-white/70" />
-                    </div>
-                    {selectedClipCanUseBroll && selectedImageAsset?.fileUrl && (
-                      <img
-                        src={selectedImageAsset.fileUrl}
-                        alt={selectedImageAsset.title}
-                        className="absolute left-1/2 top-1/2 h-[78%] w-[78%] object-contain cursor-move"
-                        onPointerDown={(event) => startClipDrag("image", event)}
-                        style={{
-                          touchAction: "none",
-                          transform: `translate(-50%, -50%) translate(${selectedClip?.imageTransform?.x ?? 0}px, ${
-                            selectedClip?.imageTransform?.y ?? 0
-                          }px) scale(${(selectedClip?.imageTransform?.scale ?? 100) / 100})`,
-                        }}
-                      />
-                    )}
-                    {selectedClipCanUseBroll && brollEnabled && (
-                      <div className="absolute bottom-4 left-4 right-4 rounded-2xl bg-white text-black px-4 py-3 text-xs font-black uppercase tracking-wide">
-                        B-roll reserve · image ou vidéo sous le texte
+                  {/* B-roll: only on Personne 2, below the centered text. The Klimax
+                      logo is a separate overlay below, placed by logoPosition/logoSize. */}
+                  {selectedClipCanUseBroll && brollEnabled && (
+                    <div className="absolute inset-x-5 top-[54%] h-[38%] rounded-[28px] border border-white/10 bg-black/30 backdrop-blur-[2px] overflow-hidden">
+                      <div className="absolute inset-0 grid place-items-center">
+                        <CirclePlay className="h-16 w-16 text-white/70" />
                       </div>
-                    )}
-                  </div>
+                      {selectedImageAsset?.fileUrl && (
+                        <img
+                          src={selectedImageAsset.fileUrl}
+                          alt={selectedImageAsset.title}
+                          className="absolute left-1/2 top-1/2 h-[78%] w-[78%] object-contain cursor-move"
+                          onPointerDown={(event) => startClipDrag("image", event)}
+                          style={{
+                            touchAction: "none",
+                            transform: `translate(-50%, -50%) translate(${selectedClip?.imageTransform?.x ?? 0}px, ${
+                              selectedClip?.imageTransform?.y ?? 0
+                            }px) scale(${(selectedClip?.imageTransform?.scale ?? 100) / 100})`,
+                          }}
+                        />
+                      )}
+                    </div>
+                  )}
 
                   {!selectedClip || selectedClip.stage === "intro" ? (
                     <>
@@ -1666,8 +1784,9 @@ const ClimaxVideoEditor = () => {
                             className="relative z-10 whitespace-pre-line font-black leading-snug tracking-tight break-words"
                             style={{
                               color: mergedHookStyle.textColor || "#000000",
-                              fontFamily: mergedHookStyle.fontFamily || "Arial Black, Arial, sans-serif",
-                              fontSize: canvasFontSize(mergedHookStyle.fontSize || 46),
+                              fontFamily: resolvePreviewFont(mergedHookStyle.fontFamily).family,
+                              fontWeight: resolvePreviewFont(mergedHookStyle.fontFamily).weight,
+                              fontSize: canvasFontSize(mergedHookStyle.fontSize || DEFAULT_TEXT_SIZE),
                               maxWidth: canvasUnit(Math.max(120, selectedClipPositions.hookSize.width - 128)),
                             }}
                           >
@@ -1710,24 +1829,22 @@ const ClimaxVideoEditor = () => {
                           {subtitlePreviewText}
                         </p>
                       </div>
+                      {/* Logo Klimax : positionné/dimensionné par logoPosition + logoSize
+                          (les curseurs X / Y / Taille agissent en direct), fond transparent,
+                          déplaçable. */}
                       {klimaxLogoEnabled && (
                         <div
                           className="absolute cursor-move"
                           style={{
                             left: `${(selectedClipPositions.logoPosition.x / BASE_CANVAS_WIDTH) * 100}%`,
                             top: `${(selectedClipPositions.logoPosition.y / BASE_CANVAS_HEIGHT) * 100}%`,
-                            width: `${(selectedClipPositions.logoSize / BASE_CANVAS_WIDTH) * 100}%`,
+                            width: canvasUnit(selectedClipPositions.logoSize * LOGO_PREVIEW_FRAME_RATIO),
                             transform: "translate(-50%, -50%)",
                             touchAction: "none",
-                            outline: activeDragKind === "logo" ? "2px solid rgba(255,255,255,0.85)" : "1px solid rgba(255,255,255,0.28)",
-                            outlineOffset: "4px",
                           }}
                           onPointerDown={(event) => startClipDrag("logo", event)}
                         >
                           <KlimaxLogoPlacementPreview />
-                          <span className="pointer-events-none absolute left-1/2 top-full mt-3 -translate-x-1/2 whitespace-nowrap rounded-full border border-white/15 bg-black/75 px-3 py-1 text-[9px] font-black uppercase tracking-[0.18em] text-white/70">
-                            Logo figé à 2s · {selectedClipPositions.logoSize}px
-                          </span>
                         </div>
                       )}
                     </>
@@ -1774,8 +1891,11 @@ const ClimaxVideoEditor = () => {
                   Personne 2
                 </Button>
               </div>
+            </div>
+            {/* fin du bloc épinglé (aperçu + switch) — les exports défilent dessous */}
 
-              {(exportHistory.length > 0 || renderError) && (
+            {(exportHistory.length > 0 || renderError) && (
+              <div className="mt-4">
                 <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-xs font-black uppercase tracking-[0.25em] text-white/35">Exports locaux</p>
@@ -1872,391 +1992,214 @@ const ClimaxVideoEditor = () => {
                     </div>
                   ) : null}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
+        </aside>
 
+        {/* ============ COLONNE DROITE (scroll) : tous les paramètres ============ */}
+        <div className="order-last xl:order-none xl:col-start-2 xl:row-start-1 overflow-y-auto p-4 lg:p-8">
+          <div className="mx-auto w-full max-w-6xl space-y-6">
             <div className="space-y-6">
               <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
                 <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
                   <div>
-                    <p className="text-xs font-black uppercase tracking-[0.3em] text-white/35">Mode actuel</p>
-                    <h2 className="text-3xl font-black tracking-tight">{mode === "manual" ? "Montage manuel" : "Automatisation IA"}</h2>
-                  </div>
-                  <div className="md:hidden flex rounded-full border border-white/10 bg-white/[0.03] p-1">
-                    <button onClick={() => setMode("manual")} className={cn("rounded-full px-3 py-2 text-xs font-black", mode === "manual" ? "bg-white text-black" : "text-white/50")}>Manuel</button>
-                    <button onClick={() => setMode("auto")} className={cn("rounded-full px-3 py-2 text-xs font-black", mode === "auto" ? "bg-white text-black" : "text-white/50")}>Auto</button>
+                    <p className="text-xs font-black uppercase tracking-[0.3em] text-white/35">Montage</p>
+                    <h2 className="text-3xl font-black tracking-tight">Montage manuel</h2>
                   </div>
                 </div>
 
-                <Tabs defaultValue="manual" value={mode} onValueChange={(value) => setMode(value as "manual" | "auto")}>
-                  <TabsList className="grid grid-cols-2 bg-white/[0.04] border border-white/10 rounded-2xl p-1 h-14">
-                    <TabsTrigger value="manual" className="rounded-xl font-black uppercase tracking-wider text-xs">Manuel</TabsTrigger>
-                    <TabsTrigger value="auto" className="rounded-xl font-black uppercase tracking-wider text-xs">Automatique</TabsTrigger>
-                  </TabsList>
-
+                <Tabs defaultValue="manual" value="manual">
                   <TabsContent value="manual" className="mt-6 space-y-5">
                     <div className="grid gap-4">
-                      <div className="space-y-2">
-                        <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Hook texte personne 1</Label>
-                        <Textarea
-                          value={hookText}
-                          onChange={(e) => {
-                            setHookText(e.target.value);
-                            updateSelectedClip({ hookText: e.target.value });
-                          }}
-                          rows={5}
-                          className="min-h-[130px] rounded-2xl bg-black border-white/10 text-white font-bold leading-snug"
-                        />
-                      </div>
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <div className="rounded-2xl border border-white/10 bg-black p-4 md:col-span-2">
-                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Police hook text</Label>
-                          <Select
-                            value={mergedHookStyle.fontFamily || "Arial Black"}
-                            onValueChange={(value) => setHookStyle((current) => ({ ...current, fontFamily: value }))}
-                          >
-                            <SelectTrigger className="mt-3 rounded-2xl border-white/10 bg-white/[0.03]">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {FONT_OPTIONS.map((font) => (
-                                <SelectItem key={font.value} value={font.value}>
-                                  {font.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-black p-4">
-                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Couleur bulle hook</Label>
-                          <div className="mt-3 flex items-center gap-3">
-                            <input
-                              type="color"
-                              value={mergedHookStyle.bubbleColor || "#ffffff"}
-                              onChange={(e) => setHookStyle((current) => ({ ...current, bubbleColor: e.target.value }))}
-                              className="h-11 w-16 rounded-xl border border-white/10 bg-transparent"
-                            />
-                            <span className="text-sm text-white/55">{mergedHookStyle.bubbleColor || "#ffffff"}</span>
+                      {/* ===================== SECTION : HOOK ===================== */}
+                      <div className="space-y-4 rounded-2xl border border-white/10 bg-black/40 p-4">
+                        <div className="flex items-center gap-3">
+                          <div className="grid h-10 w-10 place-items-center rounded-full bg-white text-black">
+                            <Sparkles className="h-4 w-4" />
                           </div>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-black p-4">
-                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Couleur texte hook</Label>
-                          <div className="mt-3 flex items-center gap-3">
-                            <input
-                              type="color"
-                              value={mergedHookStyle.textColor || "#000000"}
-                              onChange={(e) => setHookStyle((current) => ({ ...current, textColor: e.target.value }))}
-                              className="h-11 w-16 rounded-xl border border-white/10 bg-transparent"
-                            />
-                            <span className="text-sm text-white/55">{mergedHookStyle.textColor || "#000000"}</span>
-                          </div>
-                        </div>
-                      </div>
-                      {selectedClip && (
-                        <div className="rounded-2xl border border-white/10 bg-black p-4 space-y-4">
                           <div>
-                            <p className="text-sm font-black uppercase tracking-wide">Placement direct</p>
-                            <p className="text-xs text-white/45">Glisse les éléments sur la preview ou ajuste leurs coordonnées ici.</p>
+                            <h3 className="font-black uppercase tracking-tight">Hook</h3>
+                            <p className="text-xs text-white/45">Texte d'accroche, police, couleurs et position de la bulle.</p>
                           </div>
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Hook texte personne 1</Label>
+                          <Textarea
+                            value={hookText}
+                            onChange={(e) => {
+                              setHookText(e.target.value);
+                              updateSelectedClip({ hookText: e.target.value });
+                            }}
+                            rows={5}
+                            className="min-h-[130px] rounded-2xl bg-black border-white/10 text-white font-bold leading-snug"
+                          />
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="rounded-2xl border border-white/10 bg-black p-4 md:col-span-2">
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Police hook text</Label>
+                            <Select
+                              value={mergedHookStyle.fontFamily || "Arial Black"}
+                              onValueChange={(value) => setHookStyle((current) => ({ ...current, fontFamily: value }))}
+                            >
+                              <SelectTrigger className="mt-3 rounded-2xl border-white/10 bg-white/[0.03]">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {FONT_OPTIONS.map((font) => (
+                                  <SelectItem key={font.value} value={font.value}>
+                                    {font.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="rounded-2xl border border-white/10 bg-black p-4">
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Couleur bulle hook</Label>
+                            <div className="mt-3 flex items-center gap-3">
+                              <input
+                                type="color"
+                                value={mergedHookStyle.bubbleColor || "#ffffff"}
+                                onChange={(e) => setHookStyle((current) => ({ ...current, bubbleColor: e.target.value }))}
+                                className="h-11 w-16 rounded-xl border border-white/10 bg-transparent"
+                              />
+                              <span className="text-sm text-white/55">{mergedHookStyle.bubbleColor || "#ffffff"}</span>
+                            </div>
+                          </div>
+                          <div className="rounded-2xl border border-white/10 bg-black p-4">
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Couleur texte hook</Label>
+                            <div className="mt-3 flex items-center gap-3">
+                              <input
+                                type="color"
+                                value={mergedHookStyle.textColor || "#000000"}
+                                onChange={(e) => setHookStyle((current) => ({ ...current, textColor: e.target.value }))}
+                                className="h-11 w-16 rounded-xl border border-white/10 bg-transparent"
+                              />
+                              <span className="text-sm text-white/55">{mergedHookStyle.textColor || "#000000"}</span>
+                            </div>
+                          </div>
+                        </div>
+                        {selectedClip && selectedClip.stage === "intro" && (
+                          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Hook bulle</p>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  updateSelectedClip({ hookPosition: { x: 540, y: selectedClipPositions.hookPosition.y } })
+                                }
+                                className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                              >
+                                Centrer élément
+                              </Button>
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
+                              <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
+                              <span className="text-sm font-black">{selectedClipPositions.hookPosition.x}px</span>
+                            </div>
+                            <Slider
+                              value={[selectedClipPositions.hookPosition.x]}
+                              min={0}
+                              max={1080}
+                              step={1}
+                              onValueChange={([value]) =>
                                 updateSelectedClip({
-                                  videoTransform: { scale: 100, x: 0, y: 0 },
+                                  hookPosition: {
+                                    x: value,
+                                    y: selectedClipPositions.hookPosition.y,
+                                  },
                                 })
                               }
-                              className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
-                            >
-                              Reset cadrage
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
+                            />
+                            <div className="flex items-center justify-between gap-3">
+                              <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
+                              <span className="text-sm font-black">{selectedClipPositions.hookPosition.y}px</span>
+                            </div>
+                            <Slider
+                              value={[selectedClipPositions.hookPosition.y]}
+                              min={0}
+                              max={1920}
+                              step={1}
+                              onValueChange={([value]) =>
                                 updateSelectedClip({
-                                  subtitlePosition: { x: 540, y: selectedClipPositions.subtitlePosition.y },
+                                  hookPosition: {
+                                    x: selectedClipPositions.hookPosition.x,
+                                    y: value,
+                                  },
                                 })
                               }
-                              className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
-                            >
-                              Centrer sous-titres
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
-                                selectedClip.stage === "intro"
-                                  ? updateSelectedClip({ hookPosition: { x: 540, y: selectedClipPositions.hookPosition.y } })
-                                  : updateSelectedClip({ logoPosition: { x: 540, y: selectedClipPositions.logoPosition.y } })
-                              }
-                              className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
-                            >
-                              Centrer élément
-                            </Button>
-                          </div>
-                          <div className="grid gap-4 md:grid-cols-2">
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3 md:col-span-2">
-                              <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Vidéo source</p>
-                              <div className="flex items-center justify-between gap-3">
-                                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Zoom</Label>
-                                <span className="text-sm font-black">{selectedClipPositions.videoTransform.scale}%</span>
-                              </div>
-                              <Slider
-                                value={[selectedClipPositions.videoTransform.scale]}
-                                min={70}
-                                max={150}
-                                step={1}
-                                onValueChange={([value]) =>
-                                  updateSelectedClip({
-                                    videoTransform: {
-                                      scale: value,
-                                      x: selectedClipPositions.videoTransform.x,
-                                      y: selectedClipPositions.videoTransform.y,
-                                    },
-                                  })
-                                }
-                              />
-                              <div className="grid gap-4 md:grid-cols-2">
-                                <div className="space-y-3">
-                                  <div className="flex items-center justify-between gap-3">
-                                    <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement X</Label>
-                                    <span className="text-sm font-black">{selectedClipPositions.videoTransform.x}px</span>
-                                  </div>
-                                  <Slider
-                                    value={[selectedClipPositions.videoTransform.x]}
-                                    min={-540}
-                                    max={540}
-                                    step={1}
-                                    onValueChange={([value]) =>
-                                      updateSelectedClip({
-                                        videoTransform: {
-                                          scale: selectedClipPositions.videoTransform.scale,
-                                          x: value,
-                                          y: selectedClipPositions.videoTransform.y,
-                                        },
-                                      })
-                                    }
-                                  />
-                                </div>
-                                <div className="space-y-3">
-                                  <div className="flex items-center justify-between gap-3">
-                                    <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement Y</Label>
-                                    <span className="text-sm font-black">{selectedClipPositions.videoTransform.y}px</span>
-                                  </div>
-                                  <Slider
-                                    value={[selectedClipPositions.videoTransform.y]}
-                                    min={-840}
-                                    max={840}
-                                    step={1}
-                                    onValueChange={([value]) =>
-                                      updateSelectedClip({
-                                        videoTransform: {
-                                          scale: selectedClipPositions.videoTransform.scale,
-                                          x: selectedClipPositions.videoTransform.x,
-                                          y: value,
-                                        },
-                                      })
-                                    }
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
-                              <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Sous-titres</p>
-                              <div className="flex items-center justify-between gap-3">
-                                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
-                                <span className="text-sm font-black">{selectedClipPositions.subtitlePosition.x}px</span>
-                              </div>
-                              <Slider
-                                value={[selectedClipPositions.subtitlePosition.x]}
-                                min={0}
-                                max={1080}
-                                step={1}
-                                onValueChange={([value]) =>
-                                    updateSelectedClip({
-                                      subtitlePosition: {
-                                        x: value,
-                                        y: selectedClipPositions.subtitlePosition.y,
-                                      },
-                                  })
-                                }
-                              />
-                              <div className="flex items-center justify-between gap-3">
-                                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
-                                <span className="text-sm font-black">{selectedClipPositions.subtitlePosition.y}px</span>
-                              </div>
-                              <Slider
-                                value={[selectedClipPositions.subtitlePosition.y]}
-                                min={0}
-                                max={1920}
-                                step={1}
-                                onValueChange={([value]) =>
-                                  updateSelectedClip({
-                                    subtitlePosition: {
-                                      x: selectedClipPositions.subtitlePosition.x,
-                                      y: value,
-                                    },
-                                  })
-                                }
-                              />
-                            </div>
-                            {selectedClip.stage === "intro" ? (
-                              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
-                                <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Hook bulle</p>
+                            />
+                            <div className="grid gap-4 md:grid-cols-2">
+                              <div className="space-y-3">
                                 <div className="flex items-center justify-between gap-3">
-                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
-                                  <span className="text-sm font-black">{selectedClipPositions.hookPosition.x}px</span>
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Largeur</Label>
+                                  <span className="text-sm font-black">{selectedClipPositions.hookSize.width}px</span>
                                 </div>
                                 <Slider
-                                  value={[selectedClipPositions.hookPosition.x]}
-                                  min={0}
-                                  max={1080}
-                                  step={1}
-                                  onValueChange={([value]) =>
-                                    updateSelectedClip({
-                                      hookPosition: {
-                                        x: value,
-                                        y: selectedClipPositions.hookPosition.y,
-                                      },
-                                    })
-                                  }
-                                />
-                                <div className="flex items-center justify-between gap-3">
-                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
-                                  <span className="text-sm font-black">{selectedClipPositions.hookPosition.y}px</span>
-                                </div>
-                                <Slider
-                                  value={[selectedClipPositions.hookPosition.y]}
-                                  min={0}
-                                  max={1920}
-                                  step={1}
-                                  onValueChange={([value]) =>
-                                    updateSelectedClip({
-                                      hookPosition: {
-                                        x: selectedClipPositions.hookPosition.x,
-                                        y: value,
-                                      },
-                                    })
-                                  }
-                                />
-                                <div className="grid gap-4 md:grid-cols-2">
-                                  <div className="space-y-3">
-                                    <div className="flex items-center justify-between gap-3">
-                                      <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Largeur</Label>
-                                      <span className="text-sm font-black">{selectedClipPositions.hookSize.width}px</span>
-                                    </div>
-                                    <Slider
-                                      value={[selectedClipPositions.hookSize.width]}
-                                      min={360}
-                                      max={1080}
-                                      step={10}
-                                      onValueChange={([value]) =>
-                                        updateSelectedClip({
-                                          hookSize: {
-                                            width: value,
-                                            height: selectedClipPositions.hookSize.height,
-                                          },
-                                        })
-                                      }
-                                    />
-                                  </div>
-                                  <div className="space-y-3">
-                                    <div className="flex items-center justify-between gap-3">
-                                      <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Hauteur</Label>
-                                      <span className="text-sm font-black">{selectedClipPositions.hookSize.height}px</span>
-                                    </div>
-                                    <Slider
-                                      value={[selectedClipPositions.hookSize.height]}
-                                      min={90}
-                                      max={360}
-                                      step={10}
-                                      onValueChange={([value]) =>
-                                        updateSelectedClip({
-                                          hookSize: {
-                                            width: selectedClipPositions.hookSize.width,
-                                            height: value,
-                                          },
-                                        })
-                                      }
-                                    />
-                                  </div>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
-                                <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Logo Klimax</p>
-                                <div className="flex items-center justify-between gap-3">
-                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
-                                  <span className="text-sm font-black">{selectedClipPositions.logoPosition.x}px</span>
-                                </div>
-                                <Slider
-                                  value={[selectedClipPositions.logoPosition.x]}
-                                  min={0}
-                                  max={1080}
-                                  step={1}
-                                  onValueChange={([value]) =>
-                                    updateSelectedClip({
-                                      logoPosition: {
-                                        x: value,
-                                        y: selectedClipPositions.logoPosition.y,
-                                      },
-                                    })
-                                  }
-                                />
-                                <div className="flex items-center justify-between gap-3">
-                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
-                                  <span className="text-sm font-black">{selectedClipPositions.logoPosition.y}px</span>
-                                </div>
-                                <Slider
-                                  value={[selectedClipPositions.logoPosition.y]}
-                                  min={0}
-                                  max={1920}
-                                  step={1}
-                                  onValueChange={([value]) =>
-                                    updateSelectedClip({
-                                      logoPosition: {
-                                        x: selectedClipPositions.logoPosition.x,
-                                        y: value,
-                                      },
-                                    })
-                                  }
-                                />
-                                <div className="flex items-center justify-between gap-3">
-                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Taille</Label>
-                                  <span className="text-sm font-black">{selectedClipPositions.logoSize}px</span>
-                                </div>
-                                <Slider
-                                  value={[selectedClipPositions.logoSize]}
-                                  min={80}
+                                  value={[selectedClipPositions.hookSize.width]}
+                                  min={360}
                                   max={1080}
                                   step={10}
-                                  onValueChange={([value]) => updateSelectedClip({ logoSize: value })}
+                                  onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      hookSize: {
+                                        width: value,
+                                        height: selectedClipPositions.hookSize.height,
+                                      },
+                                    })
+                                  }
                                 />
-                                <div className="flex flex-wrap gap-2">
-                                  {[320, 520, 720, 900].map((size) => (
-                                    <Button
-                                      key={size}
-                                      type="button"
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() => updateSelectedClip({ logoSize: size })}
-                                      className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
-                                    >
-                                      {size}px
-                                    </Button>
-                                  ))}
-                                </div>
                               </div>
-                            )}
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between gap-3">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Hauteur</Label>
+                                  <span className="text-sm font-black">{selectedClipPositions.hookSize.height}px</span>
+                                </div>
+                                <Slider
+                                  value={[selectedClipPositions.hookSize.height]}
+                                  min={90}
+                                  max={360}
+                                  step={10}
+                                  onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      hookSize: {
+                                        width: selectedClipPositions.hookSize.width,
+                                        height: value,
+                                      },
+                                    })
+                                  }
+                                />
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
+                              <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Taille texte</Label>
+                              <span className="text-sm font-black">{hookStyle.fontSize ?? DEFAULT_HOOK_STYLE.fontSize}px</span>
+                            </div>
+                            <Slider
+                              value={[hookStyle.fontSize ?? DEFAULT_HOOK_STYLE.fontSize]}
+                              min={12}
+                              max={220}
+                              step={1}
+                              onValueChange={([value]) =>
+                                setHookStyle((current) => ({ ...current, fontSize: value }))
+                              }
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* ===================== SECTION : SOUS-TITRES ===================== */}
+                      <div className="space-y-4 rounded-2xl border border-white/10 bg-black/40 p-4">
+                        <div className="flex items-center gap-3">
+                          <div className="grid h-10 w-10 place-items-center rounded-full bg-white text-black">
+                            <Captions className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <h3 className="font-black uppercase tracking-tight">Sous-titres</h3>
+                            <p className="text-xs text-white/45">Style, animations, couleurs, taille et position des sous-titres.</p>
                           </div>
                         </div>
-                      )}
-
                       <div className="rounded-2xl border border-white/10 bg-black p-4 space-y-4">
                         <div className="flex items-center justify-between gap-4">
                           <div className="flex items-center gap-3">
@@ -2287,58 +2230,78 @@ const ClimaxVideoEditor = () => {
                           {transcriptionError && <p className="mt-2 text-xs text-red-300">{transcriptionError}</p>}
                         </div>
                       </div>
-                      <div className="rounded-2xl border border-white/10 bg-black p-4">
-                        <div className="flex items-center justify-between mb-3">
-                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Taille sous-titres</Label>
-                          <span className="text-sm font-black">{subtitleSize}px</span>
-                        </div>
-                        <Slider
-                          value={[subtitleSize]}
-                          min={14}
-                          max={128}
-                          step={1}
-                          onValueChange={([value]) => {
-                            setSubtitleSize(value);
-                            setSubtitleStyle((current) => ({ ...current, fontSize: value }));
-                          }}
-                        />
-                      </div>
-                      <div className="rounded-2xl border border-white/10 bg-black p-4 space-y-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Style sous-titres</Label>
-                          <div className="flex flex-wrap gap-2">
-                            {[
-                              { key: "impact", label: "Impact" },
-                              { key: "clean", label: "Clean" },
-                              { key: "highlight", label: "Highlight" },
-                              { key: "capcut", label: "CapCut" },
-                              { key: "punch", label: "Punch" },
-                              { key: "neon", label: "Neon" },
-                              { key: "yellowPop", label: "Yellow" },
-                              { key: "pinkPunch", label: "Pink" },
-                              { key: "cyanGlow", label: "Glow" },
-                              { key: "whiteBox", label: "Box" },
-                              { key: "creatorClean", label: "Creator" },
-                            ].map((preset) => (
-                              <button
-                                key={preset.key}
-                                type="button"
-                                onClick={() => {
-                                  const next = SUBTITLE_PRESETS[preset.key];
-                                  applySubtitleTextPreset(next);
-                                }}
-                                className={cn(
-                                  "rounded-full border px-3 py-1 text-xs font-black transition",
-                                  mergedSubtitleStyle.stylePreset === preset.key
-                                    ? "border-white bg-white text-black"
-                                    : "border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
-                                )}
-                              >
-                                {preset.label}
-                              </button>
-                            ))}
+                      {selectedClip && (
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Position sous-titres</p>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                updateSelectedClip({
+                                  subtitlePosition: { x: 540, y: selectedClipPositions.subtitlePosition.y },
+                                })
+                              }
+                              className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                            >
+                              Centrer sous-titres
+                            </Button>
                           </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
+                            <span className="text-sm font-black">{selectedClipPositions.subtitlePosition.x}px</span>
+                          </div>
+                          <Slider
+                            value={[selectedClipPositions.subtitlePosition.x]}
+                            min={0}
+                            max={1080}
+                            step={1}
+                            onValueChange={([value]) =>
+                                updateSelectedClip({
+                                  subtitlePosition: {
+                                    x: value,
+                                    y: selectedClipPositions.subtitlePosition.y,
+                                  },
+                              })
+                            }
+                          />
+                          <div className="flex items-center justify-between gap-3">
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
+                            <span className="text-sm font-black">{selectedClipPositions.subtitlePosition.y}px</span>
+                          </div>
+                          <Slider
+                            value={[selectedClipPositions.subtitlePosition.y]}
+                            min={0}
+                            max={1920}
+                            step={1}
+                            onValueChange={([value]) =>
+                              updateSelectedClip({
+                                subtitlePosition: {
+                                  x: selectedClipPositions.subtitlePosition.x,
+                                  y: value,
+                                },
+                              })
+                            }
+                          />
+                          <div className="flex items-center justify-between gap-3">
+                            <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Taille</Label>
+                            <span className="text-sm font-black">{subtitleSize}px</span>
+                          </div>
+                          <Slider
+                            value={[subtitleSize]}
+                            min={12}
+                            max={200}
+                            step={1}
+                            onValueChange={([value]) => {
+                              setSubtitleSize(value);
+                              setSubtitleStyle((current) => ({ ...current, fontSize: value }));
+                            }}
+                          />
                         </div>
+                      )}
+                      <div className="rounded-2xl border border-white/10 bg-black p-4 space-y-4">
+                        <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Style sous-titres</Label>
                         <div className="grid gap-3 md:grid-cols-4">
                           {VISUAL_SUBTITLE_PRESETS.map((preset) => {
                             const preview = SUBTITLE_PRESETS[preset.key];
@@ -2396,10 +2359,16 @@ const ClimaxVideoEditor = () => {
                                   key={animationPreset.key}
                                   type="button"
                                   onClick={() =>
-                                    setSubtitleStyle((current) => ({
-                                      ...current,
-                                      animationPreset: animationPreset.key,
-                                    }))
+                                    setSubtitleStyle((current) => {
+                                      // Clicking the already-selected animation toggles it off,
+                                      // falling back to the animation built into the style preset.
+                                      const presetAnim = SUBTITLE_PRESETS[current.stylePreset || "impact"]?.animationPreset;
+                                      const isActive = (current.animationPreset || presetAnim || "pop") === animationPreset.key;
+                                      return {
+                                        ...current,
+                                        animationPreset: isActive ? presetAnim : animationPreset.key,
+                                      };
+                                    })
                                   }
                                   className={cn(
                                     "relative h-24 overflow-hidden rounded-2xl border bg-white/[0.04] p-3 transition hover:bg-white/[0.08]",
@@ -2459,7 +2428,11 @@ const ClimaxVideoEditor = () => {
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="2">2 mots max</SelectItem>
+                                <SelectItem value="1">1 mot</SelectItem>
+                                <SelectItem value="2">2 mots</SelectItem>
+                                <SelectItem value="3">3 mots</SelectItem>
+                                <SelectItem value="4">4 mots</SelectItem>
+                                <SelectItem value="5">5 mots</SelectItem>
                               </SelectContent>
                             </Select>
                           </div>
@@ -2586,6 +2559,344 @@ const ClimaxVideoEditor = () => {
                           </div>
                         </div>
                       </div>
+                      </div>
+                      {/* end SECTION : SOUS-TITRES */}
+
+                      {/* ===================== SECTION : VIDÉO ===================== */}
+                      {selectedClip && (
+                        <div className="space-y-4 rounded-2xl border border-white/10 bg-black/40 p-4">
+                          <div className="flex items-center gap-3">
+                            <div className="grid h-10 w-10 place-items-center rounded-full bg-white text-black">
+                              <Film className="h-4 w-4" />
+                            </div>
+                            <div>
+                              <h3 className="font-black uppercase tracking-tight">Vidéo</h3>
+                              <p className="text-xs text-white/45">Zoom et cadrage de la vidéo source.</p>
+                            </div>
+                          </div>
+                          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Deuxième speaker (split-screen)</p>
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
+                              <Label className="text-sm font-bold text-white/80">Ajouter un 2e speaker</Label>
+                              <Switch
+                                checked={selectedClip?.dualSpeakerEnabled ?? false}
+                                onCheckedChange={(v) => updateSelectedClip({ dualSpeakerEnabled: v })}
+                              />
+                            </div>
+                            {selectedClip?.dualSpeakerEnabled && (
+                              <div className="space-y-4">
+                                <div className="space-y-2">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Source</Label>
+                                  <Select
+                                    value={selectedClip?.dualSpeakerSource ?? undefined}
+                                    onValueChange={(id) => updateSelectedClip({ dualSpeakerSource: id })}
+                                  >
+                                    <SelectTrigger className="rounded-2xl border-white/10 bg-white/[0.03]">
+                                      <SelectValue placeholder="Choisir une vidéo" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {dualSpeakerVideoAssets.length === 0 ? (
+                                        <SelectItem value="__none__" disabled>
+                                          Aucune vidéo dans la banque
+                                        </SelectItem>
+                                      ) : (
+                                        dualSpeakerVideoAssets.map((asset) => (
+                                          <SelectItem key={asset.id} value={asset.id}>
+                                            {asset.title}
+                                          </SelectItem>
+                                        ))
+                                      )}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div className="space-y-2">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Position du 2e speaker</Label>
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => updateSelectedClip({ dualSpeakerPosition: "top" })}
+                                      className={`rounded-full border-white/10 ${
+                                        (selectedClip?.dualSpeakerPosition ?? "top") === "top"
+                                          ? "bg-white text-black hover:bg-white/90"
+                                          : "bg-white/[0.03] text-white hover:bg-white/10"
+                                      }`}
+                                    >
+                                      Haut
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => updateSelectedClip({ dualSpeakerPosition: "bottom" })}
+                                      className={`rounded-full border-white/10 ${
+                                        selectedClip?.dualSpeakerPosition === "bottom"
+                                          ? "bg-white text-black hover:bg-white/90"
+                                          : "bg-white/[0.03] text-white hover:bg-white/10"
+                                      }`}
+                                    >
+                                      Bas
+                                    </Button>
+                                  </div>
+                                </div>
+                                <div className="space-y-2">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Répartition</Label>
+                                    <span className="text-sm font-black">{Math.round((selectedClip?.dualSpeakerSplitRatio ?? 0.5) * 100)}%</span>
+                                  </div>
+                                  <Slider
+                                    value={[selectedClip?.dualSpeakerSplitRatio ?? 0.5]}
+                                    min={0.2}
+                                    max={0.8}
+                                    step={0.01}
+                                    onValueChange={([value]) => updateSelectedClip({ dualSpeakerSplitRatio: value })}
+                                  />
+                                  <p className="text-[11px] text-white/40">Glisse pour agrandir la bande du bas / du haut.</p>
+                                </div>
+                                {/* Bande originale */}
+                                <p className="pt-2 text-xs font-black uppercase tracking-[0.2em] text-white/45">Bande originale</p>
+                                <div className="space-y-2">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Zoom</Label>
+                                    <span className="text-sm font-black">{selectedClip?.dualSpeakerMainZoom ?? 100}%</span>
+                                  </div>
+                                  <Slider
+                                    value={[selectedClip?.dualSpeakerMainZoom ?? 100]}
+                                    min={100}
+                                    max={220}
+                                    step={1}
+                                    onValueChange={([value]) => updateSelectedClip({ dualSpeakerMainZoom: value })}
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Cadrage horizontal</Label>
+                                    <span className="text-sm font-black">{selectedClip?.dualSpeakerMainCropX ?? 0}px</span>
+                                  </div>
+                                  <Slider
+                                    value={[selectedClip?.dualSpeakerMainCropX ?? 0]}
+                                    min={-480}
+                                    max={480}
+                                    step={2}
+                                    onValueChange={([value]) => updateSelectedClip({ dualSpeakerMainCropX: value })}
+                                  />
+                                  <p className="text-[11px] text-white/40">positif = sujet vers la gauche</p>
+                                </div>
+
+                                {/* 2e speaker */}
+                                <p className="pt-2 text-xs font-black uppercase tracking-[0.2em] text-white/45">2e speaker</p>
+                                <div className="space-y-2">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Zoom</Label>
+                                    <span className="text-sm font-black">{selectedClip?.dualSpeakerAddedZoom ?? 100}%</span>
+                                  </div>
+                                  <Slider
+                                    value={[selectedClip?.dualSpeakerAddedZoom ?? 100]}
+                                    min={100}
+                                    max={220}
+                                    step={1}
+                                    onValueChange={([value]) => updateSelectedClip({ dualSpeakerAddedZoom: value })}
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Cadrage horizontal</Label>
+                                    <span className="text-sm font-black">{selectedClip?.dualSpeakerAddedCropX ?? 0}px</span>
+                                  </div>
+                                  <Slider
+                                    value={[selectedClip?.dualSpeakerAddedCropX ?? 0]}
+                                    min={-480}
+                                    max={480}
+                                    step={2}
+                                    onValueChange={([value]) => updateSelectedClip({ dualSpeakerAddedCropX: value })}
+                                  />
+                                  <p className="text-[11px] text-white/40">positif = sujet vers la gauche</p>
+                                </div>
+                                <p className="text-[11px] text-white/40">
+                                  Ces réglages gardent chaque visage centré dans sa bande (bientôt automatique via la détection de visage).
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Vidéo source</p>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  updateSelectedClip({
+                                    videoTransform: { scale: 100, x: 0, y: 0 },
+                                  })
+                                }
+                                className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                              >
+                                Reset cadrage
+                              </Button>
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
+                              <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Zoom</Label>
+                              <span className="text-sm font-black">{selectedClipPositions.videoTransform.scale}%</span>
+                            </div>
+                            <Slider
+                              value={[selectedClipPositions.videoTransform.scale]}
+                              min={70}
+                              max={150}
+                              step={1}
+                              onValueChange={([value]) =>
+                                updateSelectedClip({
+                                  videoTransform: {
+                                    scale: value,
+                                    x: selectedClipPositions.videoTransform.x,
+                                    y: selectedClipPositions.videoTransform.y,
+                                  },
+                                })
+                              }
+                            />
+                            <div className="grid gap-4 md:grid-cols-2">
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between gap-3">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement X</Label>
+                                  <span className="text-sm font-black">{selectedClipPositions.videoTransform.x}px</span>
+                                </div>
+                                <Slider
+                                  value={[selectedClipPositions.videoTransform.x]}
+                                  min={-540}
+                                  max={540}
+                                  step={1}
+                                  onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      videoTransform: {
+                                        scale: selectedClipPositions.videoTransform.scale,
+                                        x: value,
+                                        y: selectedClipPositions.videoTransform.y,
+                                      },
+                                    })
+                                  }
+                                />
+                              </div>
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between gap-3">
+                                  <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Déplacement Y</Label>
+                                  <span className="text-sm font-black">{selectedClipPositions.videoTransform.y}px</span>
+                                </div>
+                                <Slider
+                                  value={[selectedClipPositions.videoTransform.y]}
+                                  min={-840}
+                                  max={840}
+                                  step={1}
+                                  onValueChange={([value]) =>
+                                    updateSelectedClip({
+                                      videoTransform: {
+                                        scale: selectedClipPositions.videoTransform.scale,
+                                        x: selectedClipPositions.videoTransform.x,
+                                        y: value,
+                                      },
+                                    })
+                                  }
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ===================== SECTION : LOGO / B-ROLL ===================== */}
+                      {selectedClip && selectedClip.stage !== "intro" && (
+                        <div className="space-y-4 rounded-2xl border border-white/10 bg-black/40 p-4">
+                          <div className="flex items-center gap-3">
+                            <div className="grid h-10 w-10 place-items-center rounded-full bg-white text-black">
+                              <Image className="h-4 w-4" />
+                            </div>
+                            <div>
+                              <h3 className="font-black uppercase tracking-tight">Logo / B-roll</h3>
+                              <p className="text-xs text-white/45">Position et taille du logo Klimax.</p>
+                            </div>
+                          </div>
+                          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-xs font-black uppercase tracking-[0.2em] text-white/35">Logo Klimax</p>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  updateSelectedClip({ logoPosition: { x: 540, y: selectedClipPositions.logoPosition.y } })
+                                }
+                                className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                              >
+                                Centrer élément
+                              </Button>
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
+                              <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">X</Label>
+                              <span className="text-sm font-black">{selectedClipPositions.logoPosition.x}px</span>
+                            </div>
+                            <Slider
+                              value={[selectedClipPositions.logoPosition.x]}
+                              min={0}
+                              max={1080}
+                              step={1}
+                              onValueChange={([value]) =>
+                                updateSelectedClip({
+                                  logoPosition: {
+                                    x: value,
+                                    y: selectedClipPositions.logoPosition.y,
+                                  },
+                                })
+                              }
+                            />
+                            <div className="flex items-center justify-between gap-3">
+                              <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Y</Label>
+                              <span className="text-sm font-black">{selectedClipPositions.logoPosition.y}px</span>
+                            </div>
+                            <Slider
+                              value={[selectedClipPositions.logoPosition.y]}
+                              min={0}
+                              max={1920}
+                              step={1}
+                              onValueChange={([value]) =>
+                                updateSelectedClip({
+                                  logoPosition: {
+                                    x: selectedClipPositions.logoPosition.x,
+                                    y: value,
+                                  },
+                                })
+                              }
+                            />
+                            <div className="flex items-center justify-between gap-3">
+                              <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Taille</Label>
+                              <span className="text-sm font-black">{selectedClipPositions.logoSize}px</span>
+                            </div>
+                            <Slider
+                              value={[selectedClipPositions.logoSize]}
+                              min={80}
+                              max={1080}
+                              step={10}
+                              onValueChange={([value]) => updateSelectedClip({ logoSize: value })}
+                            />
+                            <div className="flex flex-wrap gap-2">
+                              {[320, 520, 720, 900].map((size) => (
+                                <Button
+                                  key={size}
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => updateSelectedClip({ logoSize: size })}
+                                  className="rounded-full border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                                >
+                                  {size}px
+                                </Button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       <div className="rounded-2xl border border-white/10 bg-black p-4">
                         <div className="flex items-center justify-between gap-4">
                           <div>
@@ -2640,28 +2951,20 @@ const ClimaxVideoEditor = () => {
                 </div>
               </div>
             </div>
-          </div>
-        </section>
 
-        {rightPanelOpen ? (
-          <aside className="border-l border-white/10 bg-black/70 overflow-y-auto p-5 space-y-5 relative">
-            <button
-              type="button"
-              onClick={() => setRightPanelOpen(false)}
-              title="Réduire le panneau"
-              className="absolute top-4 right-4 z-10 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/80 text-white/55 hover:bg-white/10 hover:text-white transition"
-            >
-              <ChevronRight className="h-4 w-4 rotate-180" />
-            </button>
+            {/* ===== Panneaux déplacés depuis l'ancienne colonne de droite ===== */}
+            <div className="columns-1 gap-5 xl:columns-2 [&>*]:mb-5 [&>*]:break-inside-avoid">
             <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
-              <div className="flex items-center gap-3 mb-5 pr-10">
+              <div className="flex items-center gap-3">
                 <SlidersHorizontal className="h-5 w-5 text-white/60" />
                 <h3 className="font-black uppercase tracking-tight">Réglages rapides</h3>
               </div>
             </div>
             <div className="space-y-4">
               {[
-                { label: "SFX automatiques", value: autoSfxEnabled, setter: setAutoSfxEnabled, icon: Zap },
+                { label: "Sound effects", value: autoSfxEnabled, setter: setAutoSfxEnabled, icon: Zap },
+                { label: "Zoom automatique", value: autoZoomEnabled, setter: setAutoZoomEnabled, icon: Scissors },
+                { label: "Transitions entre clips", value: clipTransitionsEnabled, setter: setClipTransitionsEnabled, icon: Scissors },
                 { label: "B-rolls sous le texte", value: brollEnabled, setter: setBrollEnabled, icon: Image },
                 { label: "Musique active", value: musicEnabled, setter: setMusicEnabled, icon: Music },
                 { label: "Logo KLIMAX sur mot clé", value: klimaxLogoEnabled, setter: setKlimaxLogoEnabled, icon: Sparkles },
@@ -2678,6 +2981,33 @@ const ClimaxVideoEditor = () => {
                 );
               })}
             </div>
+
+            {clipTransitionsEnabled && (
+              <div className="rounded-2xl border border-white/10 bg-black p-4">
+                <p className="mb-3 text-xs font-black uppercase tracking-[0.2em] text-white/45">Type de transition</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { key: "random", label: "Aléatoire" },
+                    { key: "opacity", label: "Fondu" },
+                    { key: "camera_flash", label: "Flash caméra" },
+                  ] as const).map((opt) => (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => setClipTransitionType(opt.key)}
+                      className={cn(
+                        "rounded-xl border px-3 py-3 text-xs font-black transition",
+                        clipTransitionType === opt.key
+                          ? "border-white bg-white text-black"
+                          : "border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                      )}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
               <div className="flex items-center gap-3 mb-3">
@@ -2708,24 +3038,17 @@ const ClimaxVideoEditor = () => {
               onApplied={() => setPresetsRefresh((n) => n + 1)}
             />
 
-          {projectId && (
-            <SfxPanel
-              projectId={projectId}
-              clips={(localProject?.transcription?.clips || []).map((c) => ({ id: c.clipId, stage: c.stage, sfxEffect: c.sfxEffect }))}
-              transitionKey={localProject?.settings?.sfxTransition}
-              autoSfxEnabled={autoSfxEnabled}
-              onChange={async () => {
-                // Re-fetch the project to reflect the updated sfxEffect on each clip.
-                if (!projectId) return;
-                try {
-                  const { project } = await localKlimaxApi.getProject(projectId);
-                  setLocalProject(project);
-                } catch {
-                  // best-effort
-                }
-              }}
-            />
-          )}
+          <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5">
+            <div className="flex items-center gap-3">
+              <Zap className="h-5 w-5 text-white/60" />
+              <h3 className="font-black uppercase tracking-tight">Sound effects</h3>
+            </div>
+            <p className="mt-2 text-xs text-white/55 leading-relaxed">
+              Active « Sound effects » dans les réglages rapides : un son est ajouté tout seul
+              ~toutes les 4 s (-9 dB) au hasard parmi tes sons, et le riser termine le 1er clip (-15 dB).
+              Ajoute / gère tes sons dans la <span className="font-bold text-white/80">Banque → onglet SFX</span>.
+            </p>
+          </div>
 
             <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5 space-y-5">
               <div className="flex items-center justify-between gap-4">
@@ -2761,34 +3084,39 @@ const ClimaxVideoEditor = () => {
                 ))}
               </div>
 
-              <div className="space-y-4 rounded-2xl border border-white/10 bg-black p-4">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <Label className="text-[10px] font-black uppercase tracking-[0.18em] text-white/45">Puissance auto</Label>
-                    <span className="text-xs font-black text-white">{autoZoomBoostPercent}%</span>
-                  </div>
-                  <Slider
-                    value={[autoZoomBoostPercent]}
-                    min={5}
-                    max={60}
-                    step={1}
-                    onValueChange={([value]) => setAutoZoomBoostPercent(value)}
-                    disabled={!autoZoomEnabled}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <Label className="text-[10px] font-black uppercase tracking-[0.18em] text-white/45">Durée auto</Label>
-                    <span className="text-xs font-black text-white">{autoZoomDurationSeconds.toFixed(1)}s</span>
-                  </div>
-                  <Slider
-                    value={[autoZoomDurationSeconds]}
-                    min={0.6}
-                    max={4}
-                    step={0.1}
-                    onValueChange={([value]) => setAutoZoomDurationSeconds(Number(value.toFixed(1)))}
-                    disabled={!autoZoomEnabled}
-                  />
+              <div className="space-y-2 rounded-2xl border border-white/10 bg-black p-4">
+                <Label className="text-[10px] font-black uppercase tracking-[0.18em] text-white/45">Intensité du zoom</Label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { key: "leger", label: "Léger", boost: 12, duration: 1.5 },
+                    { key: "moyen", label: "Moyen", boost: 22, duration: 2 },
+                    { key: "fort", label: "Fort", boost: 40, duration: 2.5 },
+                  ].map((preset) => {
+                    const active = autoZoomBoostPercent <= 16
+                      ? preset.key === "leger"
+                      : autoZoomBoostPercent >= 32
+                        ? preset.key === "fort"
+                        : preset.key === "moyen";
+                    return (
+                      <button
+                        key={preset.key}
+                        type="button"
+                        disabled={!autoZoomEnabled}
+                        onClick={() => {
+                          setAutoZoomBoostPercent(preset.boost);
+                          setAutoZoomDurationSeconds(preset.duration);
+                        }}
+                        className={cn(
+                          "rounded-xl border px-3 py-3 text-xs font-black transition disabled:opacity-40",
+                          active
+                            ? "border-white bg-white text-black"
+                            : "border-white/10 bg-white/[0.03] text-white/65 hover:bg-white/10"
+                        )}
+                      >
+                        {preset.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -3100,25 +3428,10 @@ const ClimaxVideoEditor = () => {
                 ))}
               </div>
             </div>
-          </aside>
-        ) : (
-          <aside className="border-l border-white/10 bg-black/70 w-12 flex flex-col items-center py-5">
-            <button
-              type="button"
-              onClick={() => setRightPanelOpen(true)}
-              title="Ouvrir le panneau"
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white transition"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
-            <p
-              className="mt-4 text-[10px] font-black uppercase tracking-[0.3em] text-white/30 select-none"
-              style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
-            >
-              Réglages
-            </p>
-          </aside>
-        )}
+            </div>
+            {/* fin des panneaux */}
+          </div>
+        </div>
       </main>
     </div>
   );

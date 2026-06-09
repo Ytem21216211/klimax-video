@@ -10,6 +10,7 @@
 // the call sites.
 
 import { settings as appSettings } from "./settings.mjs";
+import { runClaude } from "./claudeBridge.mjs";
 
 const SYSTEM_INSTRUCTION = `Tu es un monteur vidéo expert. On te donne :
 1. Une liste de b-rolls avec, pour chacun, un identifiant et une description (ce que la vidéo montre réellement, en français ou dans la langue du transcript).
@@ -52,33 +53,12 @@ function extractJson(text) {
   }
 }
 
-async function callGemini({ apiKey, model, clips, brolls }) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model || "gemini-1.5-flash")}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const body = {
-    systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
-    contents: [{
-      role: "user",
-      parts: [{ text: buildUserPayload({ clips, brolls }) }],
-    }],
-    generationConfig: {
-      temperature: 0.2,
-      responseMimeType: "application/json",
-    },
-  };
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Gemini ${res.status}: ${text.slice(0, 300)}`);
-  }
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+async function callClaude({ clips, brolls }) {
+  const prompt = `${buildUserPayload({ clips, brolls })}\n\nRends le tableau JSON demandé.`;
+  const text = await runClaude(prompt, SYSTEM_INSTRUCTION);
   const parsed = extractJson(text);
   if (!Array.isArray(parsed)) {
-    throw new Error("Réponse Gemini invalide (JSON non parsé).");
+    throw new Error("Réponse Claude invalide (JSON non parsé).");
   }
   return parsed;
 }
@@ -89,17 +69,10 @@ export async function pickBrollsForClips({ clips, brolls }) {
     // Nothing to pick from: return null for every clip.
     return clips.map((c) => ({ clipId: c.id, brollId: null, reason: "no_brolls_available" }));
   }
-  const section = await appSettings.getRawSection("brollIntelligence");
-  if (!section.apiKey) {
-    return clips.map((c) => ({ clipId: c.id, brollId: null, reason: "no_api_key" }));
-  }
-  const provider = section.provider || "gemini";
-  if (provider !== "gemini") {
-    return clips.map((c) => ({ clipId: c.id, brollId: null, reason: `provider_not_implemented:${provider}` }));
-  }
+  // B-roll selection now runs on the local Claude CLI — no API key required.
   const allowedBrollIds = new Set(brolls.map((b) => b.id));
   const allowedClipIds = new Set(clips.map((c) => c.id));
-  const raw = await callGemini({ apiKey: section.apiKey, model: section.model, clips, brolls });
+  const raw = await callClaude({ clips, brolls });
   // Sanitize: drop unknown IDs, only return our known clips.
   const out = clips.map((c) => ({ clipId: c.id, brollId: null, reason: "no_match" }));
   for (const item of raw) {
@@ -115,14 +88,11 @@ export async function pickBrollsForClips({ clips, brolls }) {
 }
 
 export async function testBrollIntelligenceConnection() {
-  const section = await appSettings.getRawSection("brollIntelligence");
-  if (!section.apiKey) return { ok: false, error: "Aucune clé API configurée." };
-  const model = section.model || "gemini-1.5-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}?key=${encodeURIComponent(section.apiKey)}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    const text = await res.text();
-    return { ok: false, error: `Gemini ${res.status}: ${text.slice(0, 200)}` };
+  try {
+    const text = await runClaude('Réponds uniquement "ok".', "Tu es un service de test de connexion.");
+    if (!text) return { ok: false, error: "Claude n'a renvoyé aucune réponse." };
+    return { ok: true, model: process.env.KLIMAX_CLAUDE_MODEL || "claude (sonnet)" };
+  } catch (e) {
+    return { ok: false, error: `Claude: ${String(e.message || e).slice(0, 200)}` };
   }
-  return { ok: true, model };
 }

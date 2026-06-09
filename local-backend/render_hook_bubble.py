@@ -3,7 +3,7 @@ import json
 import os
 import sys
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 
 CANVAS_WIDTH = 1080
@@ -31,9 +31,15 @@ def load_emoji_font(font_size: int):
     if not os.path.exists(EMOJI_FONT_PATH):
         return None
 
-    candidates = [font_size]
+    # Anchor the emoji on the Latin cap-height (~0.72 * em), not the nominal
+    # font_size (which is the full em-box). The browser renders an inline emoji
+    # at roughly the cap/x band of the line; seeding from font_size lands on a
+    # ~52px Apple Color Emoji strike that towers over the 38px caps and inflates
+    # the bubble height. 0.72 * 53 -> nearest valid 40px strike, matching preview.
+    target = max(8, int(round(font_size * 0.72)))
+    candidates = [target]
     for delta in range(1, 49):
-        candidates.extend([font_size - delta, font_size + delta])
+        candidates.extend([target - delta, target + delta])
     candidates.extend([160, 96, 64, 40])
 
     tried: set[int] = set()
@@ -125,20 +131,6 @@ def rich_text_size(draw: ImageDraw.ImageDraw, text: str, text_font, emoji_font):
     return width, max(0, bottom - top), top if has_content else 0
 
 
-def rich_multiline_bbox(draw: ImageDraw.ImageDraw, lines: list[str], text_font, emoji_font, spacing: int):
-    max_width = 0
-    total_height = 0
-    first_top = 0
-    for index, line in enumerate(lines or [""]):
-        width, height, top = rich_text_size(draw, line, text_font, emoji_font)
-        max_width = max(max_width, width)
-        if index == 0:
-            first_top = top
-        total_height += height
-        if index < len(lines) - 1:
-            total_height += spacing
-    return 0, first_top, max_width, total_height + first_top
-
 
 def draw_rich_line(
     draw: ImageDraw.ImageDraw,
@@ -170,13 +162,18 @@ def draw_rich_multiline(
     text_font,
     emoji_font,
     fill,
-    spacing: int,
+    line_advance: float,
 ):
-    y = top_y
+    # Each line occupies a fixed `line_advance` slot (CSS line-height), and its
+    # glyph box is vertically centred inside that slot — like a browser line box.
+    # This keeps the total block height glyph-independent (n * line_advance) so a
+    # tall emoji or descender never grows the rendered text vs the preview.
+    slot_top = top_y
     for line in lines:
-        _width, height, _top = rich_text_size(draw, line, text_font, emoji_font)
-        draw_rich_line(draw, line, center_x, y, text_font, emoji_font, fill)
-        y += height + spacing
+        _width, height, top = rich_text_size(draw, line, text_font, emoji_font)
+        draw_y = slot_top + (line_advance - height) / 2 - top
+        draw_rich_line(draw, line, center_x, draw_y, text_font, emoji_font, fill)
+        slot_top += line_advance
 
 
 def hex_to_rgba(value: str, fallback: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
@@ -237,17 +234,36 @@ def main() -> int:
         if current:
             lines.append(current)
 
-    line_spacing = max(10, int(font_size * 0.22))
-    bbox = rich_multiline_bbox(draw, lines, font, emoji_font, line_spacing)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
+    # Fixed CSS line-box advance (Tailwind `leading-snug` = 1.375) so the text
+    # block height is exactly n_lines * 1.375 * font_size, glyph-independent and
+    # identical to the browser preview (no PIL em-box / emoji inflation).
+    line_advance = font_size * 1.375
+    n_lines = max(1, len(lines))
+    text_height = int(round(n_lines * line_advance))
     bubble_width = target_bubble_width
     bubble_height = max(target_bubble_height, text_height + padding_y * 2)
     bubble_left = max(0, min(CANVAS_WIDTH - bubble_width, center_x - bubble_width // 2))
     bubble_right = bubble_left + bubble_width
     bubble_top = max(0, min(CANVAS_HEIGHT - bubble_height, center_y - bubble_height // 2))
     bubble_bottom = bubble_top + bubble_height
-    radius = min(96, bubble_height // 2)
+    # Full pill, matching the preview's rounded-[999px] (radius = half-height).
+    radius = bubble_height // 2
+
+    # Soft drop shadow under the bubble — reproduces the preview's
+    # shadow-[0_16px_50px_rgba(0,0,0,0.45)] scaled to the 1080-wide canvas. The
+    # pill shape is drawn on its own layer, offset down, Gaussian-blurred and
+    # composited UNDER the bubble (the opaque bubble is painted on top after).
+    shadow_offset_y = int(config.get("shadowOffsetY", 30))
+    shadow_blur = float(config.get("shadowBlur", 40))
+    shadow_alpha = max(0, min(255, int(config.get("shadowAlpha", 120))))
+    if shadow_alpha > 0:
+        shadow = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+        ImageDraw.Draw(shadow).rounded_rectangle(
+            (bubble_left, bubble_top + shadow_offset_y, bubble_right, bubble_bottom + shadow_offset_y),
+            radius=radius,
+            fill=(0, 0, 0, shadow_alpha),
+        )
+        image.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(shadow_blur)))
 
     draw.rounded_rectangle(
         (bubble_left, bubble_top, bubble_right, bubble_bottom),
@@ -256,8 +272,8 @@ def main() -> int:
     )
 
     text_x = bubble_left + bubble_width / 2
-    text_y = bubble_top + (bubble_height - text_height) / 2 - bbox[1]
-    draw_rich_multiline(draw, lines, text_x, text_y, font, emoji_font, text_color, line_spacing)
+    text_y = bubble_top + (bubble_height - text_height) / 2
+    draw_rich_multiline(draw, lines, text_x, text_y, font, emoji_font, text_color, line_advance)
 
     image.save(output_path)
     return 0

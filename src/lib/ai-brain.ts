@@ -1,14 +1,14 @@
 /**
- * BRIDGE FOR OPENAI
- * Replaced Grok/ElevenLabs with GPT-4o and OpenAI TTS.
+ * BRIDGE FOR THE AI BRAIN
+ * Routes the app's chat/agent calls through the local `claude` CLI via the
+ * Klimax backend (OpenAI-compatible /v1/chat/completions). No OpenAI key or
+ * billing — it uses the Claude installed on this machine.
  */
 
-const OPENAI_API_KEY = "sk-...."; // Should be in env.VITE_OPENAI_API_KEY
+import { LOCAL_KLIMAX_API } from "@/lib/localKlimaxApi";
 
 export async function callOpenAI(messages: any[], systemPrompt: string, apiKey?: string, tools?: any[], tool_choice?: any) {
     try {
-        const aiKey = apiKey || import.meta.env.VITE_OPENAI_API_KEY || OPENAI_API_KEY;
-
         const apiMessages = [
             { role: "system", content: systemPrompt },
             ...messages.map(m => ({
@@ -20,7 +20,7 @@ export async function callOpenAI(messages: any[], systemPrompt: string, apiKey?:
         ];
 
         const body: any = {
-            model: "gpt-4o",
+            model: "claude",
             messages: apiMessages,
             temperature: 0.7
         };
@@ -30,11 +30,10 @@ export async function callOpenAI(messages: any[], systemPrompt: string, apiKey?:
             if (tool_choice) body.tool_choice = tool_choice;
         }
 
-        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        const response = await fetch(`${LOCAL_KLIMAX_API}/v1/chat/completions`, {
             method: "POST",
             headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${aiKey}`
+                "Content-Type": "application/json"
             },
             body: JSON.stringify(body)
         });
@@ -42,7 +41,7 @@ export async function callOpenAI(messages: any[], systemPrompt: string, apiKey?:
         const data = await response.json();
 
         if (data.error) {
-            throw new Error(`OpenAI API Error: ${data.error.message || JSON.stringify(data.error)}`);
+            throw new Error(`Claude bridge error: ${data.error.message || JSON.stringify(data.error)}`);
         }
 
         const choice = data.choices[0];

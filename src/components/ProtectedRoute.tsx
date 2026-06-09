@@ -15,16 +15,28 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
 
   useEffect(() => {
-    const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      setIsAuthenticated(!!session);
-      
-      if (!session) {
-        navigate("/auth");
-      }
+    let settled = false;
+    const decide = (authed: boolean) => {
+      if (settled) return;
+      settled = true;
+      setIsAuthenticated(authed);
+      if (!authed) navigate("/auth");
     };
 
-    checkAuth();
+    // Never let the auth check hang on a black loading screen: if getSession()
+    // doesn't resolve quickly (e.g. an expired token whose refresh stalls), fall
+    // back to the login page instead of spinning forever.
+    const timer = setTimeout(() => decide(false), 4000);
+    supabase.auth
+      .getSession()
+      .then(({ data: { session } }) => {
+        clearTimeout(timer);
+        decide(!!session);
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        decide(false);
+      });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_, session) => {
       setIsAuthenticated(!!session);
@@ -33,7 +45,10 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      clearTimeout(timer);
+      subscription.unsubscribe();
+    };
   }, [navigate]);
 
 

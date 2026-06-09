@@ -37,6 +37,7 @@ const Cognium = lazy(() => import("./pages/Cognium"));
 const SlateLanding = lazy(() => import("./pages/SlateLanding"));
 const AfterAI = lazy(() => import("./pages/AfterAI"));
 const Parametres = lazy(() => import("./pages/Parametres"));
+const AutomaticMode = lazy(() => import("./pages/AutomaticMode"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -102,6 +103,7 @@ const App = () => (
                 <Route path="/cognium" element={<ProtectedRoute><Cognium /></ProtectedRoute>} />
                 <Route path="/afterai" element={<ProtectedRoute><AfterAI /></ProtectedRoute>} />
                 <Route path="/parametres" element={<ProtectedRoute><Parametres /></ProtectedRoute>} />
+                <Route path="/automatic-mode" element={<ProtectedRoute><AutomaticMode /></ProtectedRoute>} />
 
                 {/* Catch-all */}
                 <Route path="*" element={<NotFound />} />

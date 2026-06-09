@@ -36,3 +36,9 @@ supabase/.temp/
 
 .vercel
 .env*.local
+
+# Conductor workspace scratch (logs, diagnostics)
+.context/
+
+# Keep bundled transition clips (overrides *.mp4 above)
+!local-backend/transition-assets/*.mp4
