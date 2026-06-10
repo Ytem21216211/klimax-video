@@ -405,6 +405,13 @@ export type LocalAutoJob = {
   total: number;
   done: number;
   items: LocalAutoItem[];
+  drive?: {
+    status: "uploading" | "done" | "failed" | "skipped";
+    uploaded: number;
+    total: number;
+    link: string | null;
+    error: string | null;
+  };
 };
 
 export type LocalAutoPreset = {

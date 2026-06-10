@@ -20,7 +20,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
 const pythonBin = path.join(projectRoot, "local-backend", ".venv", "bin", "python");
 const transcribeScriptPath = path.join(projectRoot, "local-backend", "transcribe.py");
-const whisperModelName = process.env.KLIMAX_WHISPER_MODEL || "tiny";
+const whisperModelName = process.env.KLIMAX_WHISPER_MODEL || "small";
 
 function runProcess(command, args, opts = {}) {
   return new Promise((resolve, reject) => {

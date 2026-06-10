@@ -207,6 +207,10 @@ const AssetBank = () => {
       setAssetFile(null);
       if (assetInputRef.current) assetInputRef.current.value = "";
       toast({ title: "Asset ajouté", description: assetFile.name });
+      // Only clear the form on SUCCESS — a failed upload must keep the note the
+      // user just typed (it's the b-roll's AI description).
+      setTitle("");
+      setNote("");
     } catch (error: any) {
       // Do NOT fall back to a localStorage-only asset: without a backend file it
       // can't be rendered, so it would show in the Banque/preview but silently
@@ -219,8 +223,6 @@ const AssetBank = () => {
     } finally {
       setIsSaving(false);
     }
-    setTitle("");
-    setNote("");
   };
 
   const [uploadingSfx, setUploadingSfx] = useState(false);
@@ -307,7 +309,6 @@ const AssetBank = () => {
 
   return (
     <div className="min-h-screen bg-black text-white selection:bg-white selection:text-black">
-      <div className="fixed inset-0 pointer-events-none bg-[linear-gradient(to_right,#ffffff08_1px,transparent_1px),linear-gradient(to_bottom,#ffffff06_1px,transparent_1px)] bg-[size:72px_72px]" />
 
       <header className="relative z-10 flex items-center justify-between gap-4 border-b border-white/10 bg-black/80 px-6 py-5 backdrop-blur-xl">
         <div className="flex items-center gap-4 min-w-0">

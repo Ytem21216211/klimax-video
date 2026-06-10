@@ -48,10 +48,10 @@ const HOOK_BUBBLES = [
   { bubbleColor: "#000000", textColor: "#ffffff" },
   { bubbleColor: "#ffe14a", textColor: "#000000" },
 ];
+// Small/medium only — strong zooms push off-centre faces out of frame.
 const ZOOM_INTENSITIES = [
   { autoZoomBoostPercent: 12, autoZoomDurationSeconds: 1.5 }, // léger
   { autoZoomBoostPercent: 22, autoZoomDurationSeconds: 2.0 }, // moyen
-  { autoZoomBoostPercent: 40, autoZoomDurationSeconds: 2.5 }, // fort
 ];
 const CLIP_TRANSITIONS = ["random", "opacity", "camera_flash"];
 const BROLL_STYLES = ["square", "fullscreen", "alternate"];
@@ -156,6 +156,7 @@ function signatureOf(settings, clips) {
       st: c.stage, ds: !!c.dualSpeakerEnabled, dp: c.dualSpeakerPosition, drr: c.dualSpeakerSplitRatio,
       dsrc: c.dualSpeakerSource, dmz: c.dualSpeakerMainZoom, daz: c.dualSpeakerAddedZoom,
       dmx: c.dualSpeakerMainCropX, dax: c.dualSpeakerAddedCropX, br: c.brollId, im: c.imageId,
+      vs: c.videoTransform?.scale, hy: c.hookPosition?.y, sy: c.subtitlePosition?.y,
     })),
   };
   return stable(sig);
@@ -229,16 +230,26 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
     intro.subtitlePosition = computeSubtitlePosition({ hookY: hp.y, hookHeight: hp.height, rng });
   }
 
-  // ---- SUBTITLES (+ filter) ----
+  // ---- SUBTITLES (+ filter) — size varies 65–90 px whatever the preset ----
   if (varied.subtitles) {
     const presetKey = pickAvoid(PRESET_KEYS, rng, prev.stylePreset);
-    settings.subtitleStyle = { ...SUBTITLE_PRESETS[presetKey] };
-    settings.subtitleSize = SUBTITLE_PRESETS[presetKey].fontSize;
+    const subtitleSize = q(65 + rng() * 25, 1);
+    settings.subtitleStyle = { ...SUBTITLE_PRESETS[presetKey], fontSize: subtitleSize };
+    settings.subtitleSize = subtitleSize;
     settings.videoFilterKey = pickAvoid(FILTER_KEYS, rng, prev.filter);
-    comboParts.push(`sous-titres ${presetKey}`, `filtre ${settings.videoFilterKey}`);
+    comboParts.push(`sous-titres ${presetKey} ${subtitleSize}px`, `filtre ${settings.videoFilterKey}`);
   }
 
-  // ---- HOOK (text + look) ----
+  // ---- CLIP SCALE — every solo clip's footage varies 100–120 % (centre crop) ----
+  for (const clip of clips) {
+    if (clip?.dualSpeakerEnabled) continue; // split bands have their own zooms
+    clip.videoTransform = { ...(clip.videoTransform || { x: 0, y: 0 }), scale: q(100 + rng() * 20, 2) };
+  }
+
+  // ---- HOOK (text only) ----
+  // Box + font are FIXED to the reference look (white rounded rectangle, clean sans
+  // — enforced by the renderer), so only the hook TEXT varies. That's what matters
+  // for OCR-dedup / shadowban anyway.
   if (varied.hook) {
     const hooks = banks.hooks || [];
     if (hooks.length) {
@@ -246,14 +257,7 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
       settings.hookText = text;
       if (intro) intro.hookText = text;
     }
-    const bubble = pick(HOOK_BUBBLES, rng);
-    settings.hookStyle = {
-      ...(settings.hookStyle || {}),
-      fontFamily: pick(HOOK_FONTS, rng),
-      bubbleColor: bubble.bubbleColor,
-      textColor: bubble.textColor,
-      fontSize: q(48 + rng() * 24, 2), // 48–72
-    };
+    settings.hookStyle = { ...(settings.hookStyle || {}), bubbleColor: "#ffffff", textColor: "#000000" };
     comboParts.push("hook varié");
   }
 
@@ -301,12 +305,12 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
     const it = pick(ZOOM_INTENSITIES, rng);
     settings.autoZoomBoostPercent = it.autoZoomBoostPercent;
     settings.autoZoomDurationSeconds = it.autoZoomDurationSeconds;
-    settings.introZoomOutEnabled = rng() < 0.4;
-    settings.replyZoomOutEnabled = rng() < 0.5;
-    settings.zoomOutStartPercent = q(140 + rng() * 60, 5);   // 140–200
-    settings.zoomOutDurationSeconds = q(0.8 + rng() * 0.8, 0.1); // 0.8–1.6
     comboParts.push(`zoom ${settings.autoZoomMode}`);
   }
+  // Start-of-clip zoom-outs look robotic in auto — disabled until reworked.
+  // (The IN-clip random zooms above stay: they're the anti-shadowban lever.)
+  settings.introZoomOutEnabled = false;
+  settings.replyZoomOutEnabled = false;
 
   return {
     settings, clips,

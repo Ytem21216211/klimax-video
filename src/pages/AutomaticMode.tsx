@@ -45,6 +45,18 @@ const VARY_DIMENSIONS: VaryDimension[] = [
   { key: "zooms", label: "Zooms", icon: <ZoomIn className="h-4 w-4" />, lockedHint: "Conserve les zooms d'origine.", variedHint: "Varie mode (cut/smooth), intensité et zoom-out." },
 ];
 
+// Google Drive tricolor logo (inline SVG so we can animate it).
+const DriveLogo = ({ className }: { className?: string }) => (
+  <svg viewBox="0 0 87.3 78" className={className} aria-hidden>
+    <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da" />
+    <path d="M43.65 25 29.9 1.2c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0-1.2 4.5h27.5z" fill="#00ac47" />
+    <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75L86.1 57.5c.8-1.4 1.2-2.95 1.2-4.5H59.798l5.852 11.5z" fill="#ea4335" />
+    <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2H34.4c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d" />
+    <path d="M59.8 53H27.5L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc" />
+    <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3L43.65 25 59.8 53h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00" />
+  </svg>
+);
+
 const SectionShell = ({ step, title, subtitle, icon, action, children }: {
   step: number; title: string; subtitle: string; icon: React.ReactNode; action?: React.ReactNode; children: React.ReactNode;
 }) => (
@@ -126,11 +138,19 @@ const AutomaticMode = () => {
       toast({ variant: "destructive", title: "Preset", description: e?.message || "Sauvegarde impossible." });
     }
   };
-  const updatePresetSchedule = async (p: LocalAutoPreset, schedule: { enabled: boolean; time: string }) => {
+  const updatePresetSchedule = async (presetId: string, patch: Partial<{ enabled: boolean; time: string }>) => {
+    // Read the LATEST preset from state (not a render-time copy) so a quick
+    // toggle + time edit can't round-trip stale values over each other.
+    const current = presets.find((x) => x.id === presetId);
+    if (!current) return;
+    const schedule = { enabled: current.schedule?.enabled === true, time: current.schedule?.time || "09:00", ...patch };
+    setPresets((cur) => cur.map((x) => (x.id === presetId ? { ...x, schedule } : x))); // optimistic
     try {
-      const { presets: next } = await localKlimaxApi.saveAutoPreset({ ...p, schedule });
+      const { presets: next } = await localKlimaxApi.saveAutoPreset({ ...current, schedule });
       setPresets(next);
-    } catch { /* keep current */ }
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Planification", description: e?.message || "Sauvegarde impossible." });
+    }
   };
   const deletePreset = async (id: string) => {
     try {
@@ -138,13 +158,18 @@ const AutomaticMode = () => {
       setPresets(next);
     } catch { /* keep current */ }
   };
+  const [runningPresetId, setRunningPresetId] = useState<string | null>(null);
   const runPreset = async (p: LocalAutoPreset) => {
+    if (runningPresetId) return; // no double-submit: one click = one batch
+    setRunningPresetId(p.id);
     try {
       const res = await localKlimaxApi.runAutoPreset(p.id);
       setJob({ id: res.jobId, createdAt: new Date().toISOString(), finishedAt: null, total: res.total, done: 0, items: res.items });
       toast({ title: "Preset lancé", description: `${p.name} — ${res.total} variante(s) en file.` });
     } catch (e: any) {
       toast({ variant: "destructive", title: "Preset", description: e?.message || "Lancement impossible." });
+    } finally {
+      setRunningPresetId(null);
     }
   };
 
@@ -163,15 +188,18 @@ const AutomaticMode = () => {
   // Poll the running job until it finishes.
   useEffect(() => {
     if (!job?.id) return;
-    if (job.finishedAt && job.done >= job.total) return;
+    // Keep polling through the Drive upload step (which starts AFTER finishedAt).
+    const driveSettled = job.drive && job.drive.status !== "uploading";
+    if (job.finishedAt && job.done >= job.total && driveSettled) return;
     const t = setInterval(async () => {
       try {
         const { job: j } = await localKlimaxApi.getAutoJob(job.id);
-        setJob(j);
+        // A late response for an OLD job must not clobber a newly-launched one.
+        setJob((cur) => (cur?.id === j.id ? j : cur));
       } catch { /* backend may be restarting */ }
     }, 4000);
     return () => clearInterval(t);
-  }, [job?.id, job?.finishedAt, job?.done, job?.total]);
+  }, [job?.id, job?.finishedAt, job?.done, job?.total, job?.drive?.status]);
 
   // Any COMPLETE video pair (video 1 + video 2) from the bank can be auto-generated —
   // the auto pipeline assembles + transcribes + renders it A→Z (no project needed).
@@ -229,8 +257,6 @@ const AutomaticMode = () => {
 
   return (
     <div className="min-h-screen bg-black text-white selection:bg-white selection:text-black">
-      <div className="fixed inset-0 pointer-events-none bg-[linear-gradient(to_right,#ffffff08_1px,transparent_1px),linear-gradient(to_bottom,#ffffff06_1px,transparent_1px)] bg-[size:72px_72px]" />
-      <div className="fixed inset-x-0 top-0 h-64 pointer-events-none bg-gradient-to-b from-white/[0.07] to-transparent" />
 
       <header className="relative z-20 flex items-center justify-between gap-4 border-b border-white/10 bg-black/80 px-6 py-5 backdrop-blur-xl">
         <div className="flex items-center gap-4 min-w-0">
@@ -441,19 +467,19 @@ const AutomaticMode = () => {
                   <div className="flex items-center gap-2">
                     <Switch
                       checked={p.schedule?.enabled === true}
-                      onCheckedChange={(enabled) => updatePresetSchedule(p, { enabled, time: p.schedule?.time || "09:00" })}
+                      onCheckedChange={(enabled) => updatePresetSchedule(p.id, { enabled })}
                     />
                     <input
                       type="time"
                       value={p.schedule?.time || "09:00"}
-                      onChange={(e) => updatePresetSchedule(p, { enabled: p.schedule?.enabled === true, time: e.target.value })}
+                      onChange={(e) => updatePresetSchedule(p.id, { time: e.target.value })}
                       className="h-9 rounded-full border border-white/10 bg-black px-3 text-xs font-bold text-white focus:outline-none"
                     />
                     <span className="text-[10px] font-black uppercase tracking-[0.14em] text-white/40">/ jour</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button type="button" size="sm" onClick={() => runPreset(p)} className="rounded-full bg-white text-black font-black uppercase tracking-[0.12em] hover:bg-white/90">
-                      Lancer
+                    <Button type="button" size="sm" onClick={() => runPreset(p)} disabled={runningPresetId !== null} className="rounded-full bg-white text-black font-black uppercase tracking-[0.12em] hover:bg-white/90 disabled:opacity-40">
+                      {runningPresetId === p.id ? <Loader2 className="h-4 w-4 animate-spin" /> : "Lancer"}
                     </Button>
                     <Button type="button" size="sm" variant="outline" onClick={() => deletePreset(p.id)} className="rounded-full border-white/10 bg-white/[0.03] text-white/60 hover:bg-white/10">
                       Suppr.
@@ -519,6 +545,38 @@ const AutomaticMode = () => {
                   </a>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Étape finale : envoi du lot sur Google Drive (un dossier par import). */}
+          {job && job.drive?.status !== "skipped" && (job.drive || (job.finishedAt && readyItems.length > 0)) && (
+            <div className="mt-4 flex flex-wrap items-center gap-4 rounded-2xl border border-white/10 bg-white/[0.03] px-5 py-4">
+              <DriveLogo
+                className={cn(
+                  "h-9 w-9 shrink-0",
+                  job.drive?.status === "uploading" && "animate-bounce",
+                  !job.drive && "animate-pulse opacity-60"
+                )}
+              />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-black uppercase tracking-tight">Google Drive</p>
+                <p className="text-xs text-white/50">
+                  {!job.drive && "Préparation de l'envoi…"}
+                  {job.drive?.status === "uploading" && `Envoi en cours — ${job.drive.uploaded}/${job.drive.total} vidéo(s)…`}
+                  {job.drive?.status === "done" && `${job.drive.uploaded}/${job.drive.total} vidéo(s) envoyées dans le dossier du lot.`}
+                  {job.drive?.status === "failed" && `Envoi échoué : ${job.drive.error || "erreur inconnue"}`}
+                </p>
+              </div>
+              {job.drive?.status === "done" && job.drive.link && (
+                <a
+                  href={job.drive.link}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-black hover:bg-white/90"
+                >
+                  <DriveLogo className="h-4 w-4" /> Ouvrir le dossier
+                </a>
+              )}
             </div>
           )}
         </SectionShell>

@@ -42,3 +42,6 @@ supabase/.temp/
 
 # Keep bundled transition clips (overrides *.mp4 above)
 !local-backend/transition-assets/*.mp4
+
+# Google Drive service-account key (NEVER commit)
+local-backend/google-service-account.json

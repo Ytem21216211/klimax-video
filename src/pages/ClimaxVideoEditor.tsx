@@ -91,6 +91,14 @@ const KLIMAX_LOGO_PLACEMENT_TIME_SECONDS = 2;
 // makes the on-screen logo match the exported size 1:1.
 const LOGO_PREVIEW_FRAME_RATIO = 734 / 1080;
 
+// Hook bubble look — fixed to match the reference image (clean sans, white rounded
+// rectangle, soft shadow), shared 1:1 with the export (render_hook_bubble.py).
+// Only the hook TEXT options (color, size, position) stay editable.
+const HOOK_FONT_CSS = "Helvetica, 'Helvetica Neue', Arial, sans-serif";
+const HOOK_BUBBLE_RADIUS = 64; // canvas px (rounded rectangle, not a full pill)
+const HOOK_BUBBLE_PAD_X = 56;  // canvas px
+const HOOK_BUBBLE_PAD_Y = 30;  // canvas px
+
 const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
   impact: {
     stylePreset: "impact",
@@ -1049,7 +1057,11 @@ const ClimaxVideoEditor = () => {
   }, [applyProjectState, projectId]);
 
   React.useEffect(() => {
-    saveKlimaxProjectClips(projectId, clips);
+    // Debounced: during a drag this effect fires on EVERY pointermove — a 300 ms
+    // trailing write keeps localStorage in sync without serializing the whole
+    // clips array dozens of times per second.
+    const t = setTimeout(() => saveKlimaxProjectClips(projectId, clips), 300);
+    return () => clearTimeout(t);
   }, [clips, projectId]);
 
   const selectedClip = useMemo(() => clips.find((clip) => clip.id === selectedClipId) || clips[0] || null, [clips, selectedClipId]);
@@ -1128,16 +1140,21 @@ const ClimaxVideoEditor = () => {
     },
     [mergedSubtitleStyle, subtitleSize]
   );
+  // The hook always belongs to the INTRO clip — don't re-sync the textarea on
+  // clip switches (it was clobbering in-progress edits when toggling P1/P2).
+  const introClip = useMemo(() => clips.find((c) => c.stage === "intro") || clips[0] || null, [clips]);
   React.useEffect(() => {
-    setHookText(selectedClip?.hookText || "Tu connais cette sensation ?");
-  }, [selectedClip?.id]);
+    setHookText(introClip?.hookText || "Tu connais cette sensation ?");
+  }, [introClip?.id]);
   const selectedAutoSubtitle =
     formatSubtitleSingleLine(selectedTranscription?.cues?.[0]?.text || selectedClip?.subtitle || (isTranscribing ? "Transcription en cours" : "Transcription en attente"));
   const subtitlePreviewText = useMemo(() => {
     if (mergedSubtitleStyle.keywordHighlightEnabled === false) return selectedAutoSubtitle;
+    // Alternate colors per KEYWORD (not per raw token index, which counts spaces).
+    let keywordCount = 0;
     return selectedAutoSubtitle.split(/(\s+)/).map((part, index) => {
       if (!part.trim() || !isPreviewKeyword(part)) return <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>;
-      const color = index % 2 === 0
+      const color = keywordCount++ % 2 === 0
         ? mergedSubtitleStyle.keywordColor || DEFAULT_SUBTITLE_STYLE.keywordColor
         : mergedSubtitleStyle.keywordSecondaryColor || DEFAULT_SUBTITLE_STYLE.keywordSecondaryColor;
       return (
@@ -1290,12 +1307,20 @@ const ClimaxVideoEditor = () => {
     setSelectedClipId(nextClip.id);
   };
 
-  const updateSelectedClip = (patch: Partial<KlimaxProjectClip>) => {
-    if (!selectedClip) return;
+  // Stable identity (id read from a ref): the global pointer-drag effect depends on
+  // this function — a fresh arrow each render tore down and re-added the window
+  // listeners on EVERY pointermove during a drag.
+  const selectedClipIdRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    selectedClipIdRef.current = selectedClip?.id || null;
+  }, [selectedClip?.id]);
+  const updateSelectedClip = React.useCallback((patch: Partial<KlimaxProjectClip>) => {
+    const id = selectedClipIdRef.current;
+    if (!id) return;
     setClips((current) =>
-      current.map((clip) => (clip.id === selectedClip.id ? { ...clip, ...patch } : clip))
+      current.map((clip) => (clip.id === id ? { ...clip, ...patch } : clip))
     );
-  };
+  }, []);
 
   const startClipDrag = (
     kind: "video" | "hook" | "subtitle" | "logo" | "image",
@@ -1443,27 +1468,35 @@ const ClimaxVideoEditor = () => {
     try {
       await localKlimaxApi.saveProject(projectId, { settings, clips });
       const { project } = await localKlimaxApi.transcribeProject(projectId, settings);
-      applyProjectState(project);
+      // Only take the SERVER-derived fields. A full applyProjectState() here would
+      // reset every toggle/position to the snapshot taken before the (minutes-long)
+      // transcription, silently reverting anything the user edited meanwhile.
+      setLocalProject(project);
     } catch (error: any) {
       setTranscriptionError(error.message || "Transcription impossible");
     } finally {
       setIsTranscribing(false);
     }
   }, [
-    applyProjectState,
     autoSfxEnabled,
     autoZoomEnabled,
     autoZoomMode,
     autoZoomBoostPercent,
     autoZoomDurationSeconds,
     brollEnabled,
+    brollShutterMode,
+    brollStyle,
+    brollZoom,
     clips,
+    clipTransitionsEnabled,
+    clipTransitionType,
     hookText,
     introZoomOutEnabled,
     isTranscribing,
     klimaxLogoEnabled,
     mergedHookStyle,
     mergedSubtitleStyle,
+    mirrorEnabled,
     replyZoomOutEnabled,
     selectedMusicId,
     musicEnabled,
@@ -1537,7 +1570,9 @@ const ClimaxVideoEditor = () => {
     try {
       await localKlimaxApi.saveProject(projectId, { settings, clips });
       const { project } = await localKlimaxApi.renderProject(projectId, settings);
-      applyProjectState(project);
+      // Server-derived fields only (exports, status) — keep local edits made
+      // during the multi-minute render instead of resetting the whole editor.
+      setLocalProject(project);
     } catch (error: any) {
       setRenderError(error.message || "Export impossible");
     } finally {
@@ -1613,8 +1648,6 @@ const ClimaxVideoEditor = () => {
           }
         `}
       </style>
-      <div className="fixed inset-0 pointer-events-none bg-[linear-gradient(to_right,#ffffff08_1px,transparent_1px),linear-gradient(to_bottom,#ffffff06_1px,transparent_1px)] bg-[size:72px_72px]" />
-      <div className="fixed inset-x-0 top-0 h-64 pointer-events-none bg-gradient-to-b from-white/[0.07] to-transparent" />
 
       <header className="relative z-20 h-20 border-b border-white/10 bg-black/80 backdrop-blur-xl flex items-center justify-between px-6 lg:px-8">
         <div className="flex items-center gap-4 min-w-0">
@@ -1819,25 +1852,31 @@ const ClimaxVideoEditor = () => {
                         }}
                       >
                         <div
-                          className="relative flex w-fit items-center justify-center rounded-[999px] text-center shadow-[0_16px_50px_rgba(0,0,0,0.45)] cursor-move select-none"
+                          // Hook bubble like the reference: white rounded rectangle that
+                          // HUGS the text and stretches with it (w-fit), wraps once it hits
+                          // the max width, always with the soft drop shadow.
+                          className="relative flex w-fit items-center justify-center text-center shadow-[0_16px_50px_rgba(0,0,0,0.45)] cursor-move select-none"
                           style={{
                             backgroundColor: mergedHookStyle.bubbleColor || "#ffffff",
-                            width: canvasUnit(selectedClipPositions.hookSize.width),
+                            maxWidth: canvasUnit(selectedClipPositions.hookSize.width),
                             minHeight: canvasUnit(selectedClipPositions.hookSize.height),
+                            borderRadius: canvasUnit(HOOK_BUBBLE_RADIUS),
                             boxSizing: "border-box",
-                            padding: `${canvasUnit(32)} ${canvasUnit(64)}`,
+                            padding: `${canvasUnit(HOOK_BUBBLE_PAD_Y)} ${canvasUnit(HOOK_BUBBLE_PAD_X)}`,
                             touchAction: "none",
                           }}
                           onPointerDown={(event) => startClipDrag("hook", event)}
                         >
                           <p
-                            className="relative z-10 whitespace-pre-line font-black leading-snug tracking-tight break-words"
+                            className="relative z-10 whitespace-pre-line leading-snug break-words"
                             style={{
                               color: mergedHookStyle.textColor || "#000000",
-                              fontFamily: resolvePreviewFont(mergedHookStyle.fontFamily).family,
-                              fontWeight: resolvePreviewFont(mergedHookStyle.fontFamily).weight,
+                              // Fixed clean sans for the hook (matches the reference image),
+                              // independent of the subtitle font picker.
+                              fontFamily: HOOK_FONT_CSS,
+                              fontWeight: 600,
                               fontSize: canvasFontSize(mergedHookStyle.fontSize || DEFAULT_TEXT_SIZE),
-                              maxWidth: canvasUnit(Math.max(120, selectedClipPositions.hookSize.width - 128)),
+                              maxWidth: canvasUnit(Math.max(120, selectedClipPositions.hookSize.width - HOOK_BUBBLE_PAD_X * 2)),
                             }}
                           >
                             {selectedClip?.hookText || hookText}
@@ -2077,8 +2116,14 @@ const ClimaxVideoEditor = () => {
                           <Textarea
                             value={hookText}
                             onChange={(e) => {
-                              setHookText(e.target.value);
-                              updateSelectedClip({ hookText: e.target.value });
+                              const next = e.target.value;
+                              setHookText(next);
+                              // The hook ALWAYS belongs to the intro clip — writing to the
+                              // selected clip put it on Personne 2 when that clip was open
+                              // (and the export then kept the old intro hook).
+                              setClips((current) =>
+                                current.map((c) => (c.stage === "intro" ? { ...c, hookText: next } : c))
+                              );
                             }}
                             rows={5}
                             className="min-h-[130px] rounded-2xl bg-black border-white/10 text-white font-bold leading-snug"
@@ -2087,21 +2132,7 @@ const ClimaxVideoEditor = () => {
                         <div className="grid gap-3 md:grid-cols-2">
                           <div className="rounded-2xl border border-white/10 bg-black p-4 md:col-span-2">
                             <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Police hook text</Label>
-                            <Select
-                              value={mergedHookStyle.fontFamily || "Arial Black"}
-                              onValueChange={(value) => setHookStyle((current) => ({ ...current, fontFamily: value }))}
-                            >
-                              <SelectTrigger className="mt-3 rounded-2xl border-white/10 bg-white/[0.03]">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {FONT_OPTIONS.map((font) => (
-                                  <SelectItem key={font.value} value={font.value}>
-                                    {font.label}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                            <p className="mt-2 text-xs text-white/45">Police fixe (style bulle de la réf) — bulle blanche arrondie + ombre, s'allonge avec le texte. Tu gardes la couleur et la taille.</p>
                           </div>
                           <div className="rounded-2xl border border-white/10 bg-black p-4">
                             <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Couleur bulle hook</Label>

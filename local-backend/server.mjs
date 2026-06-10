@@ -43,7 +43,7 @@ const shutterSoundPath = path.join(projectRoot, "local-backend", "transition-ass
 const brollSquareMaskPath = path.join(projectRoot, "local-backend", "transition-assets", "broll-square-mask.png");
 const brollSquareShadowPath = path.join(projectRoot, "local-backend", "transition-assets", "broll-square-shadow.png");
 const BROLL_SQUARE_PAD = 48;
-const whisperModelName = process.env.KLIMAX_WHISPER_MODEL || "tiny";
+const whisperModelName = process.env.KLIMAX_WHISPER_MODEL || "small";
 const port = Number(process.env.KLIMAX_BACKEND_PORT || 8787);
 const transcriptionPipelineVersion = "caption-elision-logo-brand-v5";
 const maxStoredExports = 20;
@@ -396,16 +396,31 @@ const readDb = async () => {
   await ensureDir(dataRoot);
   try {
     return normalizeDb(JSON.parse(await fs.readFile(dbPath, "utf8")));
-  } catch {
-    const fresh = normalizeDb({ assets: [], projects: [] });
-    await fs.writeFile(dbPath, JSON.stringify(fresh, null, 2));
-    return fresh;
+  } catch (error) {
+    // NEVER rewrite the db file here: a transient read/parse failure (e.g. reading
+    // mid-write) must not wipe every asset/project. Only seed a brand-new install.
+    if (!fsSync.existsSync(dbPath)) {
+      const fresh = normalizeDb({ assets: [], projects: [] });
+      await writeDb(fresh);
+      return fresh;
+    }
+    console.error("[db] read failed (keeping file untouched):", error.message);
+    throw new Error("Base locale momentanément illisible, réessaie.");
   }
 };
 
-const writeDb = async (db) => {
-  await ensureDir(dataRoot);
-  await fs.writeFile(dbPath, JSON.stringify(normalizeDb(db), null, 2));
+// Atomic + serialized writes: temp file + rename so a concurrent reader never sees
+// torn JSON, and a promise chain so two writers can't interleave.
+let dbWriteChain = Promise.resolve();
+const writeDb = (db) => {
+  const payload = JSON.stringify(normalizeDb(db), null, 2);
+  dbWriteChain = dbWriteChain.then(async () => {
+    await ensureDir(dataRoot);
+    const tmp = `${dbPath}.tmp-${process.pid}`;
+    await fs.writeFile(tmp, payload);
+    await fs.rename(tmp, dbPath);
+  });
+  return dbWriteChain;
 };
 
 const compactDb = async () => {
@@ -487,13 +502,23 @@ const ffprobeJson = (filePath) =>
   runJson(ffprobe.path, ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", filePath]);
 
 // Duration of a media file in seconds (0 if it can't be probed).
+// Media durations and loudness measurements are pure functions of the file —
+// cache them by path+mtime so N-variant auto batches don't re-probe/re-decode
+// the same unchanged sources N times.
+const mediaCacheKey = (filePath) => {
+  try { return `${filePath}:${fsSync.statSync(filePath).mtimeMs}`; } catch { return filePath; }
+};
+const durationCache = new Map();
 const probeMediaDurationSec = async (filePath) => {
+  const key = mediaCacheKey(filePath);
+  if (durationCache.has(key)) return durationCache.get(key);
+  let duration = 0;
   try {
     const probe = await ffprobeJson(filePath);
-    return safeNumber(probe.format?.duration, 0);
-  } catch {
-    return 0;
-  }
+    duration = safeNumber(probe.format?.duration, 0);
+  } catch { /* keep 0 */ }
+  durationCache.set(key, duration);
+  return duration;
 };
 
 // True (two-pass) EBU R128 loudness normalisation. Target overridable via
@@ -503,8 +528,13 @@ const probeMediaDurationSec = async (filePath) => {
 const LOUDNORM_TARGET_I = clamp(safeNumber(process.env.KLIMAX_LOUDNORM_I, -16), -30, -8);
 const LOUDNORM_TP = -1.5;
 const LOUDNORM_LRA = 11;
+const loudnessCache = new Map(); // path+mtime -> measurement (it's a full decode pass)
 const measureLoudness = async (filePath) => {
   if (!ffmpegPath) return null;
+  let key;
+  try { key = `${filePath}:${fsSync.statSync(filePath).mtimeMs}`; } catch { key = filePath; }
+  if (loudnessCache.has(key)) return loudnessCache.get(key);
+  let measured = null;
   try {
     const { stderr } = await runProcess(ffmpegPath, [
       "-hide_banner", "-nostats", "-i", filePath,
@@ -512,12 +542,13 @@ const measureLoudness = async (filePath) => {
       "-f", "null", "-",
     ]);
     const matches = stderr.match(/\{[\s\S]*?\}/g);
-    if (!matches) return null;
-    const m = JSON.parse(matches[matches.length - 1]);
-    return m && m.input_i != null && Number.isFinite(parseFloat(m.input_i)) ? m : null;
-  } catch {
-    return null;
-  }
+    if (matches) {
+      const m = JSON.parse(matches[matches.length - 1]);
+      measured = m && m.input_i != null && Number.isFinite(parseFloat(m.input_i)) ? m : null;
+    }
+  } catch { /* keep null */ }
+  loudnessCache.set(key, measured);
+  return measured;
 };
 const loudnormFilterFor = (measured) => {
   if (measured) {
@@ -929,6 +960,7 @@ const createSourceFingerprint = async (project, sourceGroup) => {
   const subtitleStyle = project.settings?.subtitleStyle || defaultSubtitleStyle;
   const parts = [
     transcriptionPipelineVersion,
+    whisperModelName, // a model upgrade (tiny -> small) invalidates cached transcripts
     project.sourceGroupId,
     subtitleStyle.wordsPerLine,
     project.settings?.logoTriggerWord || "klimax",
@@ -1460,7 +1492,9 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription) => {
 const createHookBubbleOverlay = async (project, clip) => {
   const hookStyle = project.settings?.hookStyle || defaultHookStyle;
   const clipLayout = normalizeClipLayout(clip);
-  const font = await resolveFontDescriptor(hookStyle.fontFamily, hookStyle.fontWeight || 800);
+  // Hook font is FIXED to a clean sans (matches the reference image), independent of
+  // the subtitle font. Only the hook text options (color, size, position) are kept.
+  const font = await resolveFontDescriptor("Helvetica", 600);
   const outputPath = path.join(tempRoot, `${project.id}-${clip.id}-hook.png`);
   const configPath = await writeJsonFile(project.id, `${clip.id}-hook-style`, {
     outputPath,
@@ -1471,8 +1505,12 @@ const createHookBubbleOverlay = async (project, clip) => {
     textColor: hookStyle.textColor || "#000000",
     centerX: clipLayout.hookPosition.x,
     centerY: clipLayout.hookPosition.y,
-    bubbleWidth: clipLayout.hookSize.width,
-    bubbleHeight: clipLayout.hookSize.height,
+    // The bubble auto-stretches with the text and wraps once it hits maxWidth.
+    maxWidth: clipLayout.hookSize.width,
+    minHeight: clipLayout.hookSize.height,
+    radius: 64,
+    paddingX: 56,
+    paddingY: 30,
   });
 
   await runProcess(pythonBin, [hookBubbleScriptPath, configPath]);
@@ -1506,6 +1544,8 @@ const BROLL_MIN_SEC = 2;
 const BROLL_LAST_SEC = 2.5; // a trailing video b-roll (no next) lasts this long
 const BROLL_IMAGE_LAST_SEC = 2; // a trailing image (no next) lasts 2 s
 const BROLL_FADEOUT_MIN_SEC = 1; // below this, no fade-out (just cut)
+const clone = (value) => JSON.parse(JSON.stringify(value));
+const brollMomentsCache = new Map(); // (cues+bank) -> LLM moments, shared across variants
 
 // Resolve a b-roll to the EXACT time its trigger word is spoken (word-level), so it
 // lands ON the word instead of the coarser cue. Picks the matching word closest to
@@ -1567,12 +1607,21 @@ const buildBrollPlan = async (db, project, clipMeta) => {
     const cues = Array.isArray(transcription?.cues) ? transcription.cues : [];
     if (!cues.length) continue;
 
+    // The LLM moment pick is deterministic in (transcript, bank): cache it so an
+    // N-variant auto batch makes ONE Claude call per clip, not N. The per-variant
+    // randomness (source slice, placement) is applied below, after the cache.
+    const momentsKey = JSON.stringify({ c: cues.map((c) => c.text), b: brollPayload.map((b) => `${b.id}:${b.note}`) });
     let moments = [];
-    try {
-      moments = await pickBrollMomentsForClip({ clip: { id: clip.id, cues }, brolls: brollPayload });
-    } catch (error) {
-      console.warn(`[broll] moment pick failed for ${clip.id}:`, error.message);
-      moments = [];
+    if (brollMomentsCache.has(momentsKey)) {
+      moments = clone(brollMomentsCache.get(momentsKey));
+    } else {
+      try {
+        moments = await pickBrollMomentsForClip({ clip: { id: clip.id, cues }, brolls: brollPayload });
+        brollMomentsCache.set(momentsKey, clone(moments));
+      } catch (error) {
+        console.warn(`[broll] moment pick failed for ${clip.id}:`, error.message);
+        moments = [];
+      }
     }
     // Resolve each b-roll to its trigger WORD time (so it lands on the word, not
     // late on the cue), keep distinct b-rolls only, and enforce >= BROLL_MIN_SEC
@@ -1736,7 +1785,11 @@ const renderProject = async (db, project, sourceGroup) => {
       // Loop the second-speaker clip so it fills the main clip's duration without
       // freezing when it's shorter; the bandTrim below cuts it to clipDuration so
       // it never runs longer than the main speaker. It only ever "accompanies".
-      inputArgs.push("-stream_loop", "-1", "-i", addedAsset.filePath);
+      // SAFETY: -t bounds the looped input even when clipDuration is unknown
+      // (missing transcription) — an unbounded -stream_loop -1 with no trim would
+      // make ffmpeg encode forever (vstack never EOFs).
+      const addedBound = clipDuration > 0 ? clipDuration + 0.5 : 60;
+      inputArgs.push("-stream_loop", "-1", "-t", addedBound.toFixed(3), "-i", addedAsset.filePath);
       const addedIdx = inputIndex;
       inputIndex += 1;
 
@@ -1942,7 +1995,8 @@ const renderProject = async (db, project, sourceGroup) => {
     // Normalise to EXACTLY 1080x1920 before concat/xfade: some upstream filters
     // (zoom, dual-speaker stack) can round a clip to 1080x1918, which makes concat
     // fail ("parameters do not match"). A no-op for already-correct clips.
-    filterChains.push(`[${currentVideo}]subtitles='${assFilePath}':fontsdir='${fontRoot}',scale=1080:1920,setsar=1[${subtitledVideo}]`);
+    // fps=30 normalises mixed-framerate sources — xfade/concat require matching fps.
+    filterChains.push(`[${currentVideo}]subtitles='${assFilePath}':fontsdir='${fontRoot}',scale=1080:1920,setsar=1,fps=30[${subtitledVideo}]`);
     const videoVolumeDb = safeNumber(project.settings?.videoVolumeDb, 2);
     // For a dual-speaker clip the video is cut short at clipDuration; trim the
     // audio to match so the main speaker's voice doesn't bleed over the next
@@ -2028,17 +2082,14 @@ const renderProject = async (db, project, sourceGroup) => {
     filterChains.push("[vsub0]null[vcat]");
     filterChains.push("[a0]anull[acat]");
   } else {
-    // Audio is always a plain concat (no audio cross-fade), whatever the visual
-    // transition is. Video gets the transition treatment below.
-    const audioPieces = concatPieces.filter((_, idx) => idx % 2 === 1);
-    filterChains.push(`${audioPieces.join("")}concat=n=${clipsToRender.length}:v=0:a=1[acat]`);
-
     // Effective per-clip durations (dual-speaker clips already cut at the main
     // speaker's speech end), used to place the transitions on the real cuts.
     const clipDurations = clipMeta.map((m) => (m.duration > 0 ? m.duration : 4));
     const transitionsEnabled = project.settings?.clipTransitionsEnabled === true;
 
     if (!transitionsEnabled) {
+      const audioPieces = concatPieces.filter((_, idx) => idx % 2 === 1);
+      filterChains.push(`${audioPieces.join("")}concat=n=${clipsToRender.length}:v=0:a=1[acat]`);
       const videoPieces = concatPieces.filter((_, idx) => idx % 2 === 0);
       filterChains.push(`${videoPieces.join("")}concat=n=${clipsToRender.length}:v=1:a=0[vcat]`);
     } else {
@@ -2051,15 +2102,22 @@ const renderProject = async (db, project, sourceGroup) => {
       const XFADE_SEC = 0.3;
       const flashAvailable = fsSync.existsSync(cameraFlashTransitionPath);
       const transitionType = project.settings?.clipTransitionType || "random";
+      // Decide each cut's transition ONCE — the audio chain below must mirror the
+      // video chain exactly, otherwise every opacity fade (which overlaps clips by
+      // XFADE_SEC) would leave the audio 0.3 s late (visible lip-sync drift).
+      const useFlashAtCut = [];
+      for (let i = 1; i < clipsToRender.length; i += 1) {
+        useFlashAtCut.push(flashAvailable && (
+          transitionType === "camera_flash" ||
+          (transitionType !== "opacity" && Math.random() < 0.5)
+        ));
+      }
       const flashJobs = [];
       let prevTag = "vsub0";
       let lastTag = "vsub0";
       let timelineEnd = clipDurations[0]; // running end of the built chain (video timeline)
       for (let i = 1; i < clipsToRender.length; i += 1) {
-        const useFlash = flashAvailable && (
-          transitionType === "camera_flash" ||
-          (transitionType !== "opacity" && Math.random() < 0.5)
-        );
+        const useFlash = useFlashAtCut[i - 1];
         const outTag = `vt${i}`;
         if (useFlash) {
           // Hard cut now; the flash is blended on top afterwards, peaking on the cut.
@@ -2076,6 +2134,19 @@ const renderProject = async (db, project, sourceGroup) => {
         }
         prevTag = outTag;
         lastTag = outTag;
+      }
+
+      // Audio mirrors the video: plain concat at flash cuts, acrossfade (same
+      // overlap) at opacity cuts — A/V stay in sync whatever the mix of cuts.
+      let prevAudio = "a0";
+      for (let i = 1; i < clipsToRender.length; i += 1) {
+        const outAudio = i === clipsToRender.length - 1 ? "acat" : `at${i}`;
+        if (useFlashAtCut[i - 1]) {
+          filterChains.push(`[${prevAudio}][a${i}]concat=n=2:v=0:a=1[${outAudio}]`);
+        } else {
+          filterChains.push(`[${prevAudio}][a${i}]acrossfade=d=${XFADE_SEC.toFixed(3)}[${outAudio}]`);
+        }
+        prevAudio = outAudio;
       }
 
       if (flashJobs.length) {
@@ -2343,6 +2414,20 @@ app.patch("/api/projects/:id", async (req, res) => {
   res.json({ project: resolveProject(db, project.id) });
 });
 
+// Long-running routes (transcribe, render) hold their `db` snapshot for minutes.
+// Writing that stale snapshot back would clobber anything saved meanwhile (asset
+// uploads, project edits, auto jobs) — so the FINAL write re-reads the db and
+// applies only this project's fields to the fresh copy.
+const mutateProjectFresh = async (projectId, mutator) => {
+  const freshDb = await readDb();
+  const freshProject = freshDb.projects.find((p) => p.id === projectId);
+  if (!freshProject) return null;
+  mutator(freshProject);
+  freshProject.updated_at = new Date().toISOString();
+  await writeDb(freshDb);
+  return { db: freshDb, project: freshProject };
+};
+
 app.post("/api/projects/:id/transcribe", async (req, res) => {
   const db = await readDb();
   const project = db.projects.find((item) => item.id === req.params.id);
@@ -2361,20 +2446,24 @@ app.post("/api/projects/:id/transcribe", async (req, res) => {
 
   try {
     await ensureTranscription(project, sourceGroup);
-    project.updated_at = new Date().toISOString();
-    await writeDb(db);
-    res.json({ project: resolveProject(db, project.id) });
+    const fresh = await mutateProjectFresh(project.id, (p) => {
+      p.settings = project.settings;
+      p.transcription = project.transcription;
+      p.clips = project.clips;
+    });
+    res.json({ project: resolveProject(fresh?.db || db, project.id) });
   } catch (error) {
-    project.transcription = {
+    const failedTranscription = {
       ...defaultTranscription(),
       status: "failed",
       generatedAt: new Date().toISOString(),
       error: error.message,
       clips: [],
     };
-    project.updated_at = new Date().toISOString();
-    await writeDb(db);
-    res.status(500).json({ error: error.message, project: resolveProject(db, project.id) });
+    const fresh = await mutateProjectFresh(project.id, (p) => {
+      p.transcription = failedTranscription;
+    });
+    res.status(500).json({ error: error.message, project: resolveProject(fresh?.db || db, project.id) });
   }
 });
 
@@ -2393,57 +2482,37 @@ app.post("/api/projects/:id/render", async (req, res) => {
 
   try {
     await ensureTranscription(project, sourceGroup);
-    project.render_progress = 55;
-    await writeDb(db);
+    await mutateProjectFresh(project.id, (p) => {
+      p.transcription = project.transcription;
+      p.clips = project.clips;
+      p.render_progress = 55;
+    });
 
-    // Auto-pick a b-roll for any clip that doesn't have a manual `imageId` and
-    // also doesn't already have an `autoBrollId` from a previous run. This is
-    // best-effort: if the AI isn't configured or fails, we still render.
-    try {
-      const needsPick = project.clips.some((c) => c.stage === "reply" && !c.imageId && !c.autoBrollId);
-      const hasBrolls = db.assets.some((a) => a.category === "broll" && (a.note || a.title));
-      if (needsPick && hasBrolls) {
-        const { pickBrollsForClips } = await import("./brollIntelligence.mjs");
-        const clipsPayload = project.clips.filter((clip) => clip.stage === "reply").map((clip) => {
-          const tc = project.transcription?.clips?.find((c) => c.clipId === clip.id);
-          return { id: clip.id, transcript: (tc?.cues || []).map((cue) => cue.text).join(" ").trim() };
-        });
-        const brollsPayload = db.assets
-          .filter((a) => a.category === "broll" && (a.note || a.title))
-          .map((b) => ({ id: b.id, note: b.note || b.title, title: b.title }));
-        const picks = await pickBrollsForClips({ clips: clipsPayload, brolls: brollsPayload });
-        for (const pick of picks) {
-          const clip = project.clips.find((c) => c.id === pick.clipId);
-          if (!clip || clip.stage !== "reply" || clip.imageId) continue;
-          if (pick.brollId) clip.autoBrollId = pick.brollId;
-        }
-        await writeDb(db);
-      }
-    } catch (autoErr) {
-      console.warn("[render] auto-b-roll skipped:", autoErr.message);
-    }
-
+    // (The legacy clip-level auto-b-roll pick was removed: renderProject's
+    // moment-level plan does the placement itself — the old call cost one extra
+    // Claude round-trip per render for a value nothing reads.)
     const exported = await renderProject(db, project, sourceGroup);
-    project.status = "completed";
-    project.render_progress = 100;
-    project.exports = [exported, ...(Array.isArray(project.exports) ? project.exports : [])]
-      .slice(0, maxStoredExports)
-      .map((entry) => normalizeExport(entry, { includeLog: true }));
-    project.export = exported;
-    project.updated_at = new Date().toISOString();
-    await writeDb(db);
-    res.json({ project: resolveProject(db, project.id), export: exported });
+    const fresh = await mutateProjectFresh(project.id, (p) => {
+      p.settings = project.settings;
+      p.status = "completed";
+      p.render_progress = 100;
+      p.exports = [exported, ...(Array.isArray(p.exports) ? p.exports : [])]
+        .slice(0, maxStoredExports)
+        .map((entry) => normalizeExport(entry, { includeLog: true }));
+      p.export = exported;
+    });
+    res.json({ project: resolveProject(fresh?.db || db, project.id), export: exported });
   } catch (error) {
     const failedExport = { status: "failed", error: error.message, createdAt: new Date().toISOString() };
-    project.status = "failed";
-    project.render_progress = 0;
-    project.exports = [failedExport, ...(Array.isArray(project.exports) ? project.exports : [])]
-      .slice(0, maxStoredExports)
-      .map((entry) => normalizeExport(entry, { includeLog: true }));
-    project.export = failedExport;
-    project.updated_at = new Date().toISOString();
-    await writeDb(db);
-    res.status(500).json({ error: error.message, project: resolveProject(db, project.id) });
+    const fresh = await mutateProjectFresh(project.id, (p) => {
+      p.status = "failed";
+      p.render_progress = 0;
+      p.exports = [failedExport, ...(Array.isArray(p.exports) ? p.exports : [])]
+        .slice(0, maxStoredExports)
+        .map((entry) => normalizeExport(entry, { includeLog: true }));
+      p.export = failedExport;
+    });
+    res.status(500).json({ error: error.message, project: resolveProject(fresh?.db || db, project.id) });
   }
 });
 
@@ -2669,9 +2738,17 @@ const loadAutoJobs = async () => {
     for (const job of raw.jobs || []) autoJobs.set(job.id, job);
   } catch { /* no jobs file yet */ }
 };
-const saveAutoJobs = async () => {
+// Atomic + serialized (two parallel render workers save concurrently).
+let autoJobsWriteChain = Promise.resolve();
+const saveAutoJobs = () => {
   const jobs = [...autoJobs.values()].slice(-30).map(({ _running, ...j }) => j); // keep last 30, drop transient flag
-  await fs.writeFile(autoJobsFile, JSON.stringify({ jobs }, null, 2)).catch(() => {});
+  const payload = JSON.stringify({ jobs }, null, 2);
+  autoJobsWriteChain = autoJobsWriteChain.then(async () => {
+    const tmp = `${autoJobsFile}.tmp-${process.pid}`;
+    await fs.writeFile(tmp, payload);
+    await fs.rename(tmp, autoJobsFile);
+  }).catch(() => {});
+  return autoJobsWriteChain;
 };
 const jobDoneCount = (job) => job.items.filter((it) => it.status === "ready" || it.status === "failed").length;
 const cleanJob = ({ _running, hooksByProject, ...j }) => j; // hide internals from the UI
@@ -2717,6 +2794,8 @@ const genVariantHooks = async (introText, replyText, n) => {
       "Tu es monteur de vidéos courtes virales. On te donne le TRANSCRIPT d'un clip et une BANQUE de hooks éprouvés (numérotés). " +
       '1) "fits" : les indices des hooks de la banque qui collent VRAIMENT au sujet du transcript, du plus au moins pertinent (exclus ceux qui ne collent pas). ' +
       `2) "variants" : ${Math.max(1, nVariants)} NOUVEAUX hooks, variantes des hooks de la banque adaptées au transcript — EXACTEMENT le même style (court, percutant, ton cru assumé, max ~9 mots, terminé par UN emoji collant au sujet). ` +
+      "RÈGLE ABSOLUE pour les variants : le CONTEXTE du sujet doit être explicite dans le hook. Si le sujet est la performance sexuelle, mentionne \"au lit\" (ou équivalent clair). " +
+      'CONTRE-EXEMPLE interdit : "3 exos pour finir en 7 minutes" (ambigu, on dirait du sport) → il faut "il finissait en 7 minutes au lit" ou "3 exos pour tenir au lit". Un hook sans son contexte est un hook raté. ' +
       'Réponds UNIQUEMENT en JSON : {"fits":[...], "variants":["..."]}.';
     try {
       const raw = await runClaude(
@@ -2784,6 +2863,20 @@ const ensureAutoProject = async (db, groupId) => {
 // params so a resumed job reproduces them exactly. Renders run with a small worker
 // pool (AUTO_RENDER_CONCURRENCY at a time) — ffmpeg is heavy but parallelises well.
 const AUTO_RENDER_CONCURRENCY = clamp(Math.round(safeNumber(process.env.KLIMAX_AUTO_CONCURRENCY, 2)), 1, 4);
+// GLOBAL ffmpeg slot pool — shared across jobs, so two concurrent batches (or a
+// resume of several) can never stack 2 pools × 2 ffmpeg and overload the machine.
+let renderSlotsInUse = 0;
+const renderSlotWaiters = [];
+const acquireRenderSlot = () =>
+  new Promise((resolve) => {
+    if (renderSlotsInUse < AUTO_RENDER_CONCURRENCY) { renderSlotsInUse += 1; resolve(); }
+    else renderSlotWaiters.push(resolve);
+  });
+const releaseRenderSlot = () => {
+  const next = renderSlotWaiters.shift();
+  if (next) next();
+  else renderSlotsInUse = Math.max(0, renderSlotsInUse - 1);
+};
 const processAutoJob = async (job) => {
   if (job._running) return;
   job._running = true;
@@ -2828,6 +2921,7 @@ const processAutoJob = async (job) => {
         const slot = cursor < work.length ? work[cursor++] : null;
         if (!slot) return;
         const { item, project, sourceGroup, variant: v, pid } = slot;
+        await acquireRenderSlot(); // global cap across ALL jobs
         item.status = "rendering"; await saveAutoJobs();
         try {
           const variantProject = {
@@ -2842,12 +2936,44 @@ const processAutoJob = async (job) => {
         } catch (e) {
           item.status = "failed"; item.error = String(e.message || e).slice(0, 300);
           console.error("[auto] variant render failed:", e.message);
+        } finally {
+          releaseRenderSlot();
         }
         job.done = jobDoneCount(job); await saveAutoJobs();
       }
     };
     await Promise.all(Array.from({ length: Math.min(AUTO_RENDER_CONCURRENCY, work.length || 1) }, worker));
     job.finishedAt = new Date().toISOString();
+
+    // Google Drive: one folder per batch, every READY variant uploaded into it.
+    // The UI polls job.drive {status, link, uploaded, total} to animate the step.
+    try {
+      const { isDriveConfigured, uploadBatchToDrive } = await import("./driveUpload.mjs");
+      const readyFiles = job.items
+        .filter((it) => it.status === "ready" && it.path && fsSync.existsSync(it.path))
+        .map((it, i) => ({ path: it.path, name: `${String(it.source || "variante").replace(/[^\w\- ]+/g, "").trim() || "variante"} - v${(it.index ?? i) + 1}.mp4` }));
+      if (!isDriveConfigured() || !readyFiles.length) {
+        if (job.drive?.status !== "done") job.drive = { status: "skipped", uploaded: 0, total: readyFiles.length, link: null, error: null };
+      } else if (job.drive?.status !== "done") {
+        const stamp = new Date();
+        const folderName = `Klimax ${stamp.getFullYear()}-${String(stamp.getMonth() + 1).padStart(2, "0")}-${String(stamp.getDate()).padStart(2, "0")} ${String(stamp.getHours()).padStart(2, "0")}h${String(stamp.getMinutes()).padStart(2, "0")} (${readyFiles.length} vidéos)`;
+        job.drive = { status: "uploading", uploaded: 0, total: readyFiles.length, link: null, error: null };
+        await saveAutoJobs();
+        const result = await uploadBatchToDrive({
+          folderName,
+          files: readyFiles,
+          onProgress: (uploaded, total) => {
+            job.drive = { ...job.drive, uploaded, total };
+            saveAutoJobs();
+          },
+        });
+        job.drive = { status: "done", uploaded: result.uploaded, total: result.total, link: result.folderLink, error: null };
+        console.log(`[drive] batch ${job.id}: ${result.uploaded}/${result.total} → ${result.folderLink}`);
+      }
+    } catch (error) {
+      job.drive = { status: "failed", uploaded: job.drive?.uploaded || 0, total: job.drive?.total || 0, link: null, error: String(error.message || error).slice(0, 200) };
+      console.error("[drive] upload du batch échoué:", error.message);
+    }
   } finally {
     job._running = false;
     await saveAutoJobs();
@@ -3057,7 +3183,8 @@ setInterval(async () => {
     const presets = await readAutoPresets();
     const now = new Date();
     const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-    const today = now.toISOString().slice(0, 10);
+    // Local date (not UTC) so the once-a-day guard flips at local midnight.
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     let changed = false;
     for (const preset of presets) {
       if (!preset.schedule?.enabled || preset.lastRunDate === today) continue;

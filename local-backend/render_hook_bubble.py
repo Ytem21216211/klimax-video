@@ -204,17 +204,18 @@ def main() -> int:
     text_color = hex_to_rgba(config.get("textColor"), (0, 0, 0, 255))
     center_x = int(config.get("centerX", CANVAS_WIDTH // 2))
     center_y = int(config.get("centerY", config.get("top", 1030)))
-    target_bubble_width = max(240, min(CANVAS_WIDTH, int(config.get("bubbleWidth", 980))))
-    target_bubble_height = max(80, min(CANVAS_HEIGHT, int(config.get("bubbleHeight", 120))))
+    max_bubble_width = max(240, min(CANVAS_WIDTH, int(config.get("maxWidth", config.get("bubbleWidth", 980)))))
+    min_bubble_height = max(80, min(CANVAS_HEIGHT, int(config.get("minHeight", config.get("bubbleHeight", 120)))))
+    radius_cfg = max(8, int(config.get("radius", 64)))
 
     image = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     font = load_font(font_path, font_size)
     emoji_font = load_emoji_font(font_size)
 
-    padding_x = 64
-    padding_y = 32
-    max_text_width = max(120, target_bubble_width - padding_x * 2)
+    padding_x = int(config.get("paddingX", 56))
+    padding_y = int(config.get("paddingY", 30))
+    max_text_width = max(120, max_bubble_width - padding_x * 2)
     paragraphs = [paragraph.strip() for paragraph in text.split("\n")]
     lines: list[str] = []
     for paragraph in paragraphs:
@@ -240,14 +241,19 @@ def main() -> int:
     line_advance = font_size * 1.375
     n_lines = max(1, len(lines))
     text_height = int(round(n_lines * line_advance))
-    bubble_width = target_bubble_width
-    bubble_height = max(target_bubble_height, text_height + padding_y * 2)
+    # Bubble hugs the text: width = widest line + padding, capped at maxWidth;
+    # height grows with the line count, floored at minHeight.
+    text_width = 0
+    for line in lines or [""]:
+        text_width = max(text_width, rich_text_size(draw, line, font, emoji_font)[0])
+    bubble_width = max(240, min(max_bubble_width, int(text_width) + padding_x * 2))
+    bubble_height = max(min_bubble_height, text_height + padding_y * 2)
     bubble_left = max(0, min(CANVAS_WIDTH - bubble_width, center_x - bubble_width // 2))
     bubble_right = bubble_left + bubble_width
     bubble_top = max(0, min(CANVAS_HEIGHT - bubble_height, center_y - bubble_height // 2))
     bubble_bottom = bubble_top + bubble_height
-    # Full pill, matching the preview's rounded-[999px] (radius = half-height).
-    radius = bubble_height // 2
+    # Configurable corner radius, never beyond the full pill (half-height).
+    radius = min(radius_cfg, bubble_height // 2)
 
     # Soft drop shadow under the bubble — reproduces the preview's
     # shadow-[0_16px_50px_rgba(0,0,0,0.45)] scaled to the 1080-wide canvas. The
