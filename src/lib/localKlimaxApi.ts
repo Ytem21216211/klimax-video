@@ -102,6 +102,10 @@ export type LocalKlimaxProject = {
     klimaxLogoEnabled?: boolean;
     clipTransitionsEnabled?: boolean;
     clipTransitionType?: "random" | "opacity" | "camera_flash";
+    mirrorEnabled?: boolean;
+    brollShutterMode?: boolean;
+    brollAnimIn?: "fade" | "none";
+    brollAnimOut?: "fade" | "none";
     logoTriggerWord?: string;
     subtitleStyle?: LocalSubtitleStyleSettings;
     hookStyle?: LocalHookStyleSettings;
@@ -178,6 +182,29 @@ export const localKlimaxApi = {
     );
   },
 
+  // Edit the b-roll's note (its description used by the placement brain).
+  async updateAssetNote(assetId: string, note: string) {
+    return parseResponse<{ ok: boolean; asset: KlimaxBankAsset; assets: KlimaxBankAsset[]; videoGroups: KlimaxVideoGroup[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/assets/${assetId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note }),
+      })
+    );
+  },
+
+  // How this b-roll is composited: "fullscreen" (fills 9:16) or "square" (centred
+  // square below the text). Manual per b-roll for now; auto can set it later.
+  async updateAssetPlacement(assetId: string, placement: "fullscreen" | "square") {
+    return parseResponse<{ ok: boolean; asset: KlimaxBankAsset; assets: KlimaxBankAsset[]; videoGroups: KlimaxVideoGroup[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/assets/${assetId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ placement }),
+      })
+    );
+  },
+
   async listProjects() {
     return parseResponse<{ projects: LocalKlimaxProject[] }>(await fetch(`${LOCAL_KLIMAX_API}/api/projects`));
   },
@@ -229,6 +256,53 @@ export const localKlimaxApi = {
   async autoPickBrolls(projectId: string) {
     return parseResponse<{ picks: { clipId: string; brollId: string | null; reason: string }[]; project: LocalKlimaxProject }>(
       await fetch(`${LOCAL_KLIMAX_API}/api/projects/${projectId}/auto-brolls`, { method: "POST" })
+    );
+  },
+
+  // Automatic Mode — batch variant generation
+  async startAutoBatch(payload: {
+    projectIds?: string[];
+    videoGroupIds?: string[];
+    variantsPerVideo: number;
+    varied: Record<string, boolean>;
+    lockSplitScreen?: boolean;
+  }) {
+    return parseResponse<{ jobId: string; total: number; items: LocalAutoItem[]; achievablePerVideo: LocalAutoAchievable[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/auto/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+    );
+  },
+  async getAutoJob(jobId: string) {
+    return parseResponse<{ job: LocalAutoJob }>(await fetch(`${LOCAL_KLIMAX_API}/api/auto/jobs/${jobId}`));
+  },
+  autoJobDownloadUrl(jobId: string) {
+    return `${LOCAL_KLIMAX_API}/api/auto/jobs/${jobId}/download`;
+  },
+
+  // Auto-mode batch presets (config + planification quotidienne)
+  async listAutoPresets() {
+    return parseResponse<{ presets: LocalAutoPreset[] }>(await fetch(`${LOCAL_KLIMAX_API}/api/auto/presets`));
+  },
+  async saveAutoPreset(preset: Partial<LocalAutoPreset> & { name: string }) {
+    return parseResponse<{ presets: LocalAutoPreset[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/auto/presets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(preset),
+      })
+    );
+  },
+  async deleteAutoPreset(id: string) {
+    return parseResponse<{ presets: LocalAutoPreset[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/auto/presets/${id}`, { method: "DELETE" })
+    );
+  },
+  async runAutoPreset(id: string) {
+    return parseResponse<{ jobId: string; total: number; items: LocalAutoItem[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/auto/presets/${id}/run`, { method: "POST" })
     );
   },
 
@@ -304,4 +378,42 @@ export type LocalKlimaxPreset = {
   created_at: string;
   updated_at: string;
   settings: Record<string, unknown>;
+};
+
+export type LocalAutoItem = {
+  id: string;
+  projectId: string;
+  source: string;
+  index?: number;
+  combo: string;
+  status: "queued" | "rendering" | "ready" | "failed";
+  url: string | null;
+  error?: string;
+};
+
+export type LocalAutoAchievable = {
+  projectId: string;
+  source?: string;
+  achievable: number;
+  requested: number;
+};
+
+export type LocalAutoJob = {
+  id: string;
+  createdAt: string;
+  finishedAt: string | null;
+  total: number;
+  done: number;
+  items: LocalAutoItem[];
+};
+
+export type LocalAutoPreset = {
+  id: string;
+  name: string;
+  videoGroupIds: string[];
+  variantsPerVideo: number;
+  varied: Record<string, boolean>;
+  lockSplitScreen?: boolean;
+  schedule?: { enabled: boolean; time: string };
+  lastRunDate?: string | null;
 };

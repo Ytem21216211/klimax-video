@@ -788,6 +788,14 @@ const ClimaxVideoEditor = () => {
   const [clipTransitionsEnabled, setClipTransitionsEnabled] = useState(false);
   // Which transition: "random" (50/50), "opacity" (fade), or "camera_flash".
   const [clipTransitionType, setClipTransitionType] = useState<"random" | "opacity" | "camera_flash">("random");
+  // B-roll shutter mode: no animation, a shutter click between each b-roll.
+  const [brollShutterMode, setBrollShutterMode] = useState(false);
+  // Mirror effect: flips the source footage of every clip horizontally (overlays stay readable).
+  const [mirrorEnabled, setMirrorEnabled] = useState(false);
+  // B-roll style: "square", "fullscreen" (9:16), or "alternate" (both).
+  const [brollStyle, setBrollStyle] = useState<"square" | "fullscreen" | "alternate">("alternate");
+  // B-roll zoom motion (Ken Burns): none, in, or out.
+  const [brollZoom, setBrollZoom] = useState<"none" | "in" | "out">("in");
   const [brollEnabled, setBrollEnabled] = useState(true);
   const [isAutoPickingBrolls, setIsAutoPickingBrolls] = useState(false);
   const [autoBrollMessage, setAutoBrollMessage] = useState<string | null>(null);
@@ -846,10 +854,14 @@ const ClimaxVideoEditor = () => {
       klimaxLogoEnabled,
       clipTransitionsEnabled,
       clipTransitionType,
+      brollShutterMode,
+      mirrorEnabled,
+      brollStyle,
+      brollZoom,
       logoTriggerWord: "klimax",
     });
     return () => { delete (window as any).__klimaxCurrentSnapshot; };
-  }, [hookText, subtitleSize, subtitleStyle, hookStyle, selectedMusicId, musicEnabled, musicVolumeDb, videoVolumeDb, videoFilterKey, brollEnabled, autoSfxEnabled, autoZoomEnabled, autoZoomMode, autoZoomBoostPercent, autoZoomDurationSeconds, introZoomOutEnabled, replyZoomOutEnabled, zoomOutStartPercent, zoomOutDurationSeconds, klimaxLogoEnabled, clipTransitionsEnabled, clipTransitionType]);
+  }, [hookText, subtitleSize, subtitleStyle, hookStyle, selectedMusicId, musicEnabled, musicVolumeDb, videoVolumeDb, videoFilterKey, brollEnabled, autoSfxEnabled, autoZoomEnabled, autoZoomMode, autoZoomBoostPercent, autoZoomDurationSeconds, introZoomOutEnabled, replyZoomOutEnabled, zoomOutStartPercent, zoomOutDurationSeconds, klimaxLogoEnabled, clipTransitionsEnabled, clipTransitionType, brollShutterMode, mirrorEnabled, brollStyle, brollZoom]);
 
   // Apply a preset from the Presets panel: update local state, then save the project.
   React.useEffect(() => {
@@ -885,6 +897,10 @@ const ClimaxVideoEditor = () => {
       if (typeof detail.klimaxLogoEnabled === "boolean") setKlimaxLogoEnabled(detail.klimaxLogoEnabled);
       if (typeof detail.clipTransitionsEnabled === "boolean") setClipTransitionsEnabled(detail.clipTransitionsEnabled);
       if (detail.clipTransitionType === "opacity" || detail.clipTransitionType === "camera_flash" || detail.clipTransitionType === "random") setClipTransitionType(detail.clipTransitionType);
+      if (typeof detail.brollShutterMode === "boolean") setBrollShutterMode(detail.brollShutterMode);
+      if (typeof detail.mirrorEnabled === "boolean") setMirrorEnabled(detail.mirrorEnabled);
+      if (detail.brollStyle === "square" || detail.brollStyle === "fullscreen" || detail.brollStyle === "alternate") setBrollStyle(detail.brollStyle);
+      if (detail.brollZoom === "none" || detail.brollZoom === "in" || detail.brollZoom === "out") setBrollZoom(detail.brollZoom);
       toast({ title: "Preset appliqué", description: "Les réglages sont en place. Sauvegarde le projet pour les conserver." });
     };
     window.addEventListener("klimax:apply-preset", handler as EventListener);
@@ -980,6 +996,18 @@ const ClimaxVideoEditor = () => {
         : "random"
     );
     setBrollEnabled(project.settings?.brollEnabled !== false);
+    setBrollShutterMode(project.settings?.brollShutterMode === true);
+    setMirrorEnabled(project.settings?.mirrorEnabled === true);
+    setBrollStyle(
+      ["square", "fullscreen", "alternate"].includes(project.settings?.brollStyle as string)
+        ? (project.settings!.brollStyle as "square" | "fullscreen" | "alternate")
+        : "alternate"
+    );
+    setBrollZoom(
+      ["none", "in", "out"].includes(project.settings?.brollZoom as string)
+        ? (project.settings!.brollZoom as "none" | "in" | "out")
+        : "in"
+    );
     setProjectSource(
       project.sourceGroup?.person1 && project.sourceGroup?.person2
         ? {
@@ -1210,6 +1238,9 @@ const ClimaxVideoEditor = () => {
     klimaxLogoEnabled,
     clipTransitionsEnabled,
     clipTransitionType,
+    brollShutterMode,
+    brollStyle,
+    brollZoom,
     localProject?.sourceGroup?.person1,
     localProject?.sourceGroup?.person2,
     localProject?.transcription?.clips,
@@ -1399,6 +1430,10 @@ const ClimaxVideoEditor = () => {
       klimaxLogoEnabled,
       clipTransitionsEnabled,
       clipTransitionType,
+      brollShutterMode,
+      mirrorEnabled,
+      brollStyle,
+      brollZoom,
       brollEnabled,
       logoTriggerWord: "klimax",
       subtitleStyle: { ...mergedSubtitleStyle, fontSize: subtitleSize },
@@ -1489,6 +1524,10 @@ const ClimaxVideoEditor = () => {
       klimaxLogoEnabled,
       clipTransitionsEnabled,
       clipTransitionType,
+      brollShutterMode,
+      mirrorEnabled,
+      brollStyle,
+      brollZoom,
       brollEnabled,
       logoTriggerWord: "klimax",
       subtitleStyle: { ...mergedSubtitleStyle, fontSize: subtitleSize },
@@ -1655,20 +1694,27 @@ const ClimaxVideoEditor = () => {
                           // export (cover + fraction pan + centered zoom) without
                           // needing the source dimensions. The band's overflow-hidden
                           // clips the overscan; the pan can never reveal a black bar.
-                          <video
-                            key={`${bandKey}-${url}`}
-                            src={url}
-                            muted
-                            playsInline
-                            style={{
-                              ...exportBandFrameStyle(
-                                clampValue(zoom, 100, 220) / 100,
-                                clampValue(cropX, -480, 480),
-                                clampValue(cropY, -480, 480)
-                              ),
-                              filter: selectedVideoFilter.css,
-                            }}
-                          />
+                          (() => {
+                            const bandStyle = exportBandFrameStyle(
+                              clampValue(zoom, 100, 220) / 100,
+                              clampValue(cropX, -480, 480),
+                              clampValue(cropY, -480, 480)
+                            );
+                            return (
+                              <video
+                                key={`${bandKey}-${url}`}
+                                src={url}
+                                muted
+                                playsInline
+                                style={{
+                                  ...bandStyle,
+                                  // Mirror preview matches the export's hflip (content only).
+                                  ...(mirrorEnabled ? { transform: `${bandStyle.transform ?? ""} scaleX(-1)`.trim() } : {}),
+                                  filter: selectedVideoFilter.css,
+                                }}
+                              />
+                            );
+                          })()
                         ) : (
                           <div className="absolute inset-0 grid place-items-center text-[10px] font-black uppercase tracking-[0.2em] text-white/40">
                             Source manquante
@@ -1710,6 +1756,10 @@ const ClimaxVideoEditor = () => {
                         playsInline
                         style={{
                           ...previewVideoFrameStyle,
+                          // Mirror preview matches the export's hflip (content only).
+                          ...(mirrorEnabled
+                            ? { transform: `${(previewVideoFrameStyle as React.CSSProperties).transform ?? ""} scaleX(-1)`.trim() }
+                            : {}),
                           maxWidth: "none",
                           maxHeight: "none",
                           filter: selectedVideoFilter.css,
@@ -2966,6 +3016,8 @@ const ClimaxVideoEditor = () => {
                 { label: "Zoom automatique", value: autoZoomEnabled, setter: setAutoZoomEnabled, icon: Scissors },
                 { label: "Transitions entre clips", value: clipTransitionsEnabled, setter: setClipTransitionsEnabled, icon: Scissors },
                 { label: "B-rolls sous le texte", value: brollEnabled, setter: setBrollEnabled, icon: Image },
+                { label: "Mode shutter (b-roll)", value: brollShutterMode, setter: setBrollShutterMode, icon: Image },
+                { label: "Effet miroir", value: mirrorEnabled, setter: setMirrorEnabled, icon: Scissors },
                 { label: "Musique active", value: musicEnabled, setter: setMusicEnabled, icon: Music },
                 { label: "Logo KLIMAX sur mot clé", value: klimaxLogoEnabled, setter: setKlimaxLogoEnabled, icon: Sparkles },
               ].map((setting) => {
@@ -3015,22 +3067,56 @@ const ClimaxVideoEditor = () => {
                 <h3 className="font-black uppercase tracking-tight">B-rolls IA</h3>
               </div>
               <p className="text-xs text-white/55 leading-relaxed">
-                Compare la transcription de chaque clip aux labels des b-rolls de la banque et place le bon b-roll au bon moment (sans écraser tes choix manuels).
+                Quand « B-rolls sous le texte » est activé, l'IA place automatiquement
+                plusieurs b-rolls aux bons moments du clip 2 (d'après les notes de la banque)
+                <span className="font-bold text-white/80"> au moment du rendu</span> — rien à
+                lancer. Tagge chaque b-roll « Carré » ou « Entier » dans la{" "}
+                <span className="font-bold text-white/80">Banque → onglet B-roll</span>.
               </p>
-              <Button
-                type="button"
-                onClick={autoPickBrolls}
-                disabled={isAutoPickingBrolls}
-                className="mt-4 w-full rounded-2xl bg-white text-black hover:bg-white/90 font-black disabled:opacity-40"
-              >
-                {isAutoPickingBrolls ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Wand2 className="mr-2 h-4 w-4" />}
-                {isAutoPickingBrolls ? "Analyse en cours…" : "Choisir les b-rolls via l'IA"}
-              </Button>
-              {autoBrollMessage && (
-                <p className="mt-3 rounded-2xl border border-white/10 bg-black/40 p-3 text-xs text-white/65">
-                  {autoBrollMessage}
-                </p>
-              )}
+              <p className="mt-4 mb-2 text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Style des b-rolls</p>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  { key: "square", label: "Carré" },
+                  { key: "fullscreen", label: "Entier 9:16" },
+                  { key: "alternate", label: "Les deux" },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setBrollStyle(opt.key)}
+                    className={cn(
+                      "rounded-xl border px-3 py-3 text-xs font-black transition",
+                      brollStyle === opt.key
+                        ? "border-white bg-white text-black"
+                        : "border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-4 mb-2 text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Zoom des b-rolls</p>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  { key: "in", label: "Zoom avant" },
+                  { key: "out", label: "Zoom arrière" },
+                  { key: "none", label: "Aucun" },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setBrollZoom(opt.key)}
+                    className={cn(
+                      "rounded-xl border px-3 py-3 text-xs font-black transition",
+                      brollZoom === opt.key
+                        ? "border-white bg-white text-black"
+                        : "border-white/10 bg-white/[0.03] text-white hover:bg-white/10"
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <PresetsPanel

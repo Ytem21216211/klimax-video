@@ -282,6 +282,29 @@ const AssetBank = () => {
       });
   };
 
+  const updateNote = (assetId: string, nextNote: string) => {
+    localKlimaxApi
+      .updateAssetNote(assetId, nextNote)
+      .then(({ assets: nextAssets }) => {
+        persist(nextAssets);
+        toast({ title: "Note mise à jour", description: nextNote || "(vide)" });
+      })
+      .catch((error: Error) => {
+        persist(assets.map((asset) => (asset.id === assetId ? { ...asset, note: nextNote } : asset)));
+        toast({ variant: "destructive", title: "Backend local", description: error?.message || "Note enregistrée en local uniquement." });
+      });
+  };
+
+  const updatePlacement = (assetId: string, placement: "fullscreen" | "square") => {
+    persist(assets.map((asset) => (asset.id === assetId ? { ...asset, placement } : asset)));
+    localKlimaxApi
+      .updateAssetPlacement(assetId, placement)
+      .then(({ assets: nextAssets }) => persist(nextAssets))
+      .catch((error: Error) =>
+        toast({ variant: "destructive", title: "Backend local", description: error?.message || "Placement enregistré en local uniquement." })
+      );
+  };
+
   return (
     <div className="min-h-screen bg-black text-white selection:bg-white selection:text-black">
       <div className="fixed inset-0 pointer-events-none bg-[linear-gradient(to_right,#ffffff08_1px,transparent_1px),linear-gradient(to_bottom,#ffffff06_1px,transparent_1px)] bg-[size:72px_72px]" />
@@ -563,7 +586,38 @@ const AssetBank = () => {
                               ) : (
                                 <p className="font-black uppercase tracking-tight truncate">{asset.title}</p>
                               )}
-                              <p className="mt-1 text-xs text-white/45">{asset.note}</p>
+                              {(cat === "broll" || cat === "image") ? (
+                                <div className="mt-1">
+                                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-white/30">Note (sert au placement)</p>
+                                  <EditableTitle
+                                    value={asset.note || ""}
+                                    className="text-xs text-white/60"
+                                    onSave={(next) => updateNote(asset.id, next)}
+                                  />
+                                  <div className="mt-2">
+                                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-white/30">Version</p>
+                                    <div className="mt-1 flex gap-1.5">
+                                      {(["square", "fullscreen"] as const).map((p) => (
+                                        <button
+                                          key={p}
+                                          type="button"
+                                          onClick={() => updatePlacement(asset.id, p)}
+                                          className={cn(
+                                            "rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-[0.12em] transition",
+                                            (asset.placement || "fullscreen") === p
+                                              ? "border-white bg-white text-black"
+                                              : "border-white/10 bg-white/[0.03] text-white/55 hover:bg-white/10"
+                                          )}
+                                        >
+                                          {p === "square" ? "Carré" : "Entier 9:16"}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <p className="mt-1 text-xs text-white/45">{asset.note}</p>
+                              )}
                             </div>
                             <button
                               onClick={() => removeAsset(asset.id)}

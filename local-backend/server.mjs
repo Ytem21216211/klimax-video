@@ -37,6 +37,12 @@ const logoPreviewTimeSeconds = 2;
 // at ~0.92s (measured), which is what we align to the clip cut.
 const cameraFlashTransitionPath = path.join(projectRoot, "local-backend", "transition-assets", "camera-flash-2.mp4");
 const CAMERA_FLASH_PEAK_SEC = 0.92;
+// Shutter "click" played between b-rolls in shutter mode.
+const shutterSoundPath = path.join(projectRoot, "local-backend", "transition-assets", "shutter-short.mp3");
+// Rounded-corner mask + drop-shadow for "square" b-rolls (sized to BROLL_SQUARE_SIZE).
+const brollSquareMaskPath = path.join(projectRoot, "local-backend", "transition-assets", "broll-square-mask.png");
+const brollSquareShadowPath = path.join(projectRoot, "local-backend", "transition-assets", "broll-square-shadow.png");
+const BROLL_SQUARE_PAD = 48;
 const whisperModelName = process.env.KLIMAX_WHISPER_MODEL || "tiny";
 const port = Number(process.env.KLIMAX_BACKEND_PORT || 8787);
 const transcriptionPipelineVersion = "caption-elision-logo-brand-v5";
@@ -285,6 +291,12 @@ const mergeProjectSettings = (settings = {}) => {
     clipTransitionType: ["opacity", "camera_flash", "random"].includes(settings.clipTransitionType)
       ? settings.clipTransitionType
       : "random",
+    brollShutterMode: settings.brollShutterMode === true,
+    brollAnimIn: ["fade", "none"].includes(settings.brollAnimIn) ? settings.brollAnimIn : "fade",
+    brollAnimOut: ["fade", "none"].includes(settings.brollAnimOut) ? settings.brollAnimOut : "fade",
+    brollStyle: ["square", "fullscreen", "alternate"].includes(settings.brollStyle) ? settings.brollStyle : "alternate",
+    brollZoom: ["none", "in", "out"].includes(settings.brollZoom) ? settings.brollZoom : "in",
+    mirrorEnabled: settings.mirrorEnabled === true,
     zoomOutStartPercent: clamp(safeNumber(settings.zoomOutStartPercent, defaults.zoomOutStartPercent), 110, 260),
     zoomOutDurationSeconds: clamp(safeNumber(settings.zoomOutDurationSeconds, defaults.zoomOutDurationSeconds), 0.4, 3),
     subtitleStyle,
@@ -482,6 +494,40 @@ const probeMediaDurationSec = async (filePath) => {
   } catch {
     return 0;
   }
+};
+
+// True (two-pass) EBU R128 loudness normalisation. Target overridable via
+// KLIMAX_LOUDNORM_I. measureLoudness() runs the analysis pass and returns the
+// measured values; loudnormFilterFor() builds the apply-pass filter (linear) so
+// every clip lands on the SAME loudness — a quietly-recorded clip is brought up.
+const LOUDNORM_TARGET_I = clamp(safeNumber(process.env.KLIMAX_LOUDNORM_I, -16), -30, -8);
+const LOUDNORM_TP = -1.5;
+const LOUDNORM_LRA = 11;
+const measureLoudness = async (filePath) => {
+  if (!ffmpegPath) return null;
+  try {
+    const { stderr } = await runProcess(ffmpegPath, [
+      "-hide_banner", "-nostats", "-i", filePath,
+      "-af", `loudnorm=I=${LOUDNORM_TARGET_I}:TP=${LOUDNORM_TP}:LRA=${LOUDNORM_LRA}:print_format=json`,
+      "-f", "null", "-",
+    ]);
+    const matches = stderr.match(/\{[\s\S]*?\}/g);
+    if (!matches) return null;
+    const m = JSON.parse(matches[matches.length - 1]);
+    return m && m.input_i != null && Number.isFinite(parseFloat(m.input_i)) ? m : null;
+  } catch {
+    return null;
+  }
+};
+const loudnormFilterFor = (measured) => {
+  if (measured) {
+    return `loudnorm=I=${LOUDNORM_TARGET_I}:TP=${LOUDNORM_TP}:LRA=${LOUDNORM_LRA}`
+      + `:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}`
+      + `:measured_LRA=${measured.input_lra}:measured_thresh=${measured.input_thresh}`
+      + `:offset=${measured.target_offset || 0}:linear=true`;
+  }
+  // Fallback to single-pass dynamic if the analysis pass failed.
+  return `loudnorm=I=${LOUDNORM_TARGET_I}:TP=${LOUDNORM_TP}:LRA=${LOUDNORM_LRA}`;
 };
 
 const exportMetadata = async (filePath) => {
@@ -773,6 +819,9 @@ const randomBetween = (min, max) => min + Math.random() * (max - min);
 
 const buildAutoZoomEvents = (clip, clipDuration, settings) => {
   const events = [];
+  // No auto-zoom on a split-screen (2-speaker) clip — zooming a stacked frame looks
+  // broken, so the zoom at the start is dropped when the 2nd speaker is on.
+  if (clip?.dualSpeakerEnabled) return events;
   const duration = Math.max(0.1, safeNumber(clipDuration, 0));
   const zoomDuration = clamp(safeNumber(settings.autoZoomDurationSeconds, 2), 0.6, 4);
   const zoomBoost = clamp(safeNumber(settings.autoZoomBoostPercent, 20), 5, 60) / 100;
@@ -865,8 +914,12 @@ const applyVideoZoomEvents = (filterChains, inputTag, outputTag, events) => {
   // size makes ffmpeg fail ("reinitializing filters") — and the 2x resolution
   // turns the per-frame integer crop offset into a sub-pixel move at output, so
   // there's no stair-stepping/jitter. x is centred; y uses vAnchor (0.5 = centre).
+  // Clamp the scaled size to NEVER fall below the fixed 2160x3840 crop. If the zoom
+  // expression dips below 1.0 (a zoom-out beat), an unclamped scale makes the frame
+  // smaller than the crop → ffmpeg fails ("reinitializing filters") and emits an
+  // off-by-2 frame (1080x1918), which then breaks the concat. max() pins the floor.
   filterChains.push(
-    `[${inputTag}]scale=w='2160*(${escaped})':h='3840*(${escaped})':eval=frame:flags=bicubic,` +
+    `[${inputTag}]scale=w='max(2160,2160*(${escaped}))':h='max(3840,3840*(${escaped}))':eval=frame:flags=bicubic,` +
       `crop=2160:3840:(in_w-2160)/2:(in_h-3840)*${vAnchor.toFixed(3)},` +
       `scale=1080:1920:flags=lanczos,setsar=1[${outputTag}]`
   );
@@ -951,17 +1004,37 @@ const ensureTranscription = async (project, sourceGroup) => {
     const currentHook = (project.settings?.hookText || "").trim();
     const isDefaultHook = !currentHook || currentHook === "Tu connais cette sensation ?";
     if (introText && isDefaultHook && !project.settings?.hookAutoGenerated) {
+      // Hooks that already performed. Reused ~75% of the time (at most lightly
+      // reworded), a fresh on-brand variant the other ~25%. ALWAYS matched to the
+      // clip's real topic — there will be ~20 different videos, the hook must fit.
+      const PROVEN_HOOKS = [
+        "la taille ça change vraiment tout 🍆",
+        "3 exercices pour tenir longtemps au lit 🍆",
+        "comment savoir si on est bon au lit 🍆",
+        "comment un mec peut devenir bon au lit 🍆",
+        "comment durer au lit sans bedave 🍆",
+        "est ce que la taille du zgeg ça compte 🍆",
+        "est ce que la taille ça compte 🍆",
+        "tenir 8 minutes au lit c'est grave ? 🍆",
+      ];
+      // Topic context = the opening question + the start of the reply.
+      const replyClip = clips.find((c) => c.stage === "reply");
+      const replyText = (replyClip?.cues || []).slice(0, 14).map((c) => c.text).join(" ").trim();
+      const topicText = `${introText}\n${replyText}`.slice(0, 1600);
       const variationSeed = Math.random().toString(36).slice(2, 8);
+      const useProven = Math.random() < 0.75;
       const system =
-        "Tu es monteur de vidéos courtes. On te donne le début (transcript) d'un clip où une personne pose une question ou lance un sujet. " +
-        "Génère UN hook court et accrocheur à afficher en gros à l'écran : reformule la question/accroche de départ. " +
-        "Règles strictes : une seule phrase, 8 mots max (sans compter l'emoji), en français, sans guillemets, sans ponctuation superflue. " +
-        "Termine OBLIGATOIREMENT le hook par EXACTEMENT UN emoji choisi pour coller au sujet. " +
-        "Si le sujet est sexuel, séduction, NSFW, 18+, le corps, ou une allusion grivoise du type « la taille de… », utilise un emoji suggestif parmi : 🍆 🍑 💦 😏 🔥 👀 (par défaut 🍆 pour une allusion claire à la taille / au sexe). " +
-        "Sinon, choisis UN seul emoji qui correspond vraiment au sujet (argent 💰, sport 💪, mindset 🧠, etc.). " +
+        "Tu écris LE hook (gros texte d'accroche) d'une chaîne de vidéos courtes au créneau INTIME : tenir longtemps au lit, performance et confiance sexuelle masculine, séduction et relations privées hommes-femmes. " +
+        "Hooks qui ont DÉJÀ fait des vues (référence de style et de sujets) :\n- " + PROVEN_HOOKS.join("\n- ") + "\n\n" +
+        (useProven
+          ? "CHOISIS dans cette liste LE hook qui colle le mieux au SUJET RÉEL du transcript ci-dessous. Tu peux le reformuler très légèrement (mots quasi identiques). Il DOIT correspondre au sujet du transcript."
+          : "ÉCRIS un hook NOUVEAU (variante) dans le même style et le même créneau, inspiré de la liste mais jamais identique, qui colle au SUJET RÉEL du transcript ci-dessous.") +
+        " Vérifie impérativement que le hook correspond à ce dont parle vraiment la vidéo. " +
+        "Règles : une seule phrase, 8 mots max (hors emoji), en français, sans guillemets, sans ponctuation superflue. " +
+        "Termine par EXACTEMENT UN emoji : 🍆 par défaut (sexe / taille / tenir au lit / intime), sinon le plus pertinent. " +
         "Réponds UNIQUEMENT avec le hook suivi de son unique emoji." +
-        `\n\n[variation: ${variationSeed}] Utilise cette graine uniquement pour varier légèrement le choix des mots et de l'emoji entre deux générations, jamais pour changer le sens.`;
-      const hook = (await runClaude(introText.slice(0, 1200), system)).trim().replace(/^["'«»\s]+|["'«»\s]+$/g, "");
+        `\n\n[variation: ${variationSeed}] Force une formulation différente de toute génération précédente, sans changer le sens.`;
+      const hook = (await runClaude(topicText, system)).trim().replace(/^["'«»\s]+|["'«»\s]+$/g, "");
       if (hook && hook.length <= 90) {
         project.settings = { ...(project.settings || {}), hookText: hook, hookAutoGenerated: true };
         project.clips = project.clips.map((c) => (c.stage === "intro" ? { ...c, hookText: hook } : c));
@@ -1424,6 +1497,134 @@ const dualSpeakerCutDuration = (clipTranscription, fullDuration) => {
   return fullDuration > 0 ? Math.min(candidate, fullDuration) : candidate;
 };
 
+// B-roll timeline: which b-rolls play WHEN, per clip. The brain (LLM) maps each
+// b-roll to a transcript cue; here we turn those into segments that each run from
+// their trigger until the next b-roll (capped), take a RANDOM window of the source
+// (anti-shadowban) and get trimmed to fit. Returns { [clipId]: [segment...] }.
+const BROLL_MAX_SEC = 3; // a b-roll runs until the next one, but never longer than this
+const BROLL_MIN_SEC = 2;
+const BROLL_LAST_SEC = 2.5; // a trailing video b-roll (no next) lasts this long
+const BROLL_IMAGE_LAST_SEC = 2; // a trailing image (no next) lasts 2 s
+const BROLL_FADEOUT_MIN_SEC = 1; // below this, no fade-out (just cut)
+
+// Resolve a b-roll to the EXACT time its trigger word is spoken (word-level), so it
+// lands ON the word instead of the coarser cue. Picks the matching word closest to
+// the cue the brain chose; falls back to the cue start.
+const normalizeWord = (s) =>
+  String(s || "").toLowerCase().normalize("NFD").replace(/[^a-z0-9]/g, "");
+const resolveTriggerTime = (words, trigger, cueStart) => {
+  const toks = String(trigger || "").split(/\s+/).map(normalizeWord).filter(Boolean);
+  if (!toks.length || !Array.isArray(words) || !words.length) return cueStart;
+  let best = null;
+  let bestDist = Infinity;
+  for (const w of words) {
+    if (normalizeWord(w.word) !== toks[0]) continue;
+    const t = safeNumber(w.start, 0);
+    const dist = Math.abs(t - cueStart);
+    if (dist < bestDist) { bestDist = dist; best = t; }
+  }
+  return best != null ? best : cueStart;
+};
+// Fixed square zone for "square" placement: a centred square below the text zone.
+const BROLL_SQUARE_SIZE = 720;
+const BROLL_SQUARE_Y = 1080;
+const buildBrollPlan = async (db, project, clipMeta) => {
+  const plan = {};
+  if (project.settings?.brollEnabled === false) return plan;
+  const brolls = db.assets.filter(
+    (a) => (a.category === "broll" || a.category === "image") && a.filePath && fsSync.existsSync(a.filePath) && (a.note || a.title)
+  );
+  if (!brolls.length) return plan;
+
+  // Each b-roll has a VERSION ("square" = cut 1:1 for the square zone, else
+  // "fullscreen" = full 9:16). brollStyle decides which versions are eligible and
+  // how they're shown:
+  //   square     -> the square zone. ALL b-rolls allowed (9:16 ones cover-cropped).
+  //   fullscreen -> 9:16 ONLY (a 1:1 square b-roll is never blown up fullscreen).
+  //   alternate  -> both: square versions stay square; 9:16 versions alternate
+  //                 between fullscreen and square (cover) for variety. A given
+  //                 source is used once (no-repeat), so it's never shown both ways.
+  const brollStyle = ["square", "fullscreen", "alternate"].includes(project.settings?.brollStyle)
+    ? project.settings.brollStyle
+    : "alternate";
+  const variantOf = (b) => (b.placement === "square" ? "square" : "fullscreen");
+  const pool = brollStyle === "fullscreen"
+    ? brolls.filter((b) => variantOf(b) === "fullscreen")
+    : brolls;
+  if (!pool.length) return plan;
+
+  const { pickBrollMomentsForClip } = await import("./brollIntelligence.mjs");
+  const durById = {};
+  for (const b of pool) durById[b.id] = await probeMediaDurationSec(b.filePath);
+  const brollPayload = pool.map((b) => ({ id: b.id, note: b.note, title: b.title }));
+  // Never reuse the same b-roll in the whole video — recurring themes must use a
+  // different variant (the LLM is told this too; we enforce it as a safety net).
+  const usedBrollIds = new Set();
+
+  for (const { clip, transcription, duration } of clipMeta) {
+    if (clip.stage !== "reply" || !duration || duration < 1.5) continue;
+    if (clip.imageId) continue; // a manual image overlay still owns the whole clip
+    const cues = Array.isArray(transcription?.cues) ? transcription.cues : [];
+    if (!cues.length) continue;
+
+    let moments = [];
+    try {
+      moments = await pickBrollMomentsForClip({ clip: { id: clip.id, cues }, brolls: brollPayload });
+    } catch (error) {
+      console.warn(`[broll] moment pick failed for ${clip.id}:`, error.message);
+      moments = [];
+    }
+    // Resolve each b-roll to its trigger WORD time (so it lands on the word, not
+    // late on the cue), keep distinct b-rolls only, and enforce >= BROLL_MIN_SEC
+    // between consecutive starts so segments never overlap.
+    const words = Array.isArray(transcription?.words) ? transcription.words : [];
+    const kept = [];
+    let lastStart = -Infinity;
+    for (const m of moments) {
+      if (usedBrollIds.has(m.brollId)) continue;
+      const cueStart = safeNumber(cues[m.cueIndex]?.start, 0);
+      const t = resolveTriggerTime(words, m.trigger, cueStart);
+      if (t - lastStart < BROLL_MIN_SEC) continue;
+      usedBrollIds.add(m.brollId);
+      lastStart = t;
+      kept.push({ ...m, startSec: t });
+    }
+    moments = kept;
+    if (!moments.length) continue;
+
+    const segs = [];
+    for (let i = 0; i < moments.length; i += 1) {
+      const broll = pool.find((b) => b.id === moments[i].brollId);
+      if (!broll) continue;
+      const isVideo = String(broll.mimeType || "").startsWith("video") || /\.(mp4|mov|webm|mkv|m4v)$/i.test(broll.filePath);
+      const start = clamp(safeNumber(moments[i].startSec, 0), 0, Math.max(0, duration - 0.4));
+      // Each b-roll runs until the NEXT one; a trailing one (no next) lasts its
+      // default — 2 s for an image, 2.5 s for a video — capped at BROLL_MAX_SEC.
+      const rawNext = i + 1 < moments.length
+        ? clamp(safeNumber(moments[i + 1].startSec, duration), 0, duration)
+        : start + (isVideo ? BROLL_LAST_SEC : BROLL_IMAGE_LAST_SEC);
+      let end = Math.min(rawNext, start + BROLL_MAX_SEC, duration - 0.05);
+      if (end - start < BROLL_MIN_SEC) end = Math.min(start + BROLL_MIN_SEC, duration - 0.05);
+      const segDur = end - start;
+      if (segDur < 0.4) continue;
+      const brollDur = safeNumber(durById[broll.id], 0);
+      const loop = isVideo && brollDur > 0 && brollDur < segDur + 0.05;
+      const sourceStart = isVideo && brollDur > segDur + 0.1 ? randomBetween(0, brollDur - segDur - 0.05) : 0;
+      // square -> always square; fullscreen -> always fullscreen; alternate -> a
+      // "les deux" shows each b-roll in its NATIVE form: a 9:16 version stays
+      // fullscreen, a square version stays square (no source is reused, so a given
+      // 9:16 is never shown both ways).
+      const placement = brollStyle === "square" ? "square"
+        : brollStyle === "fullscreen" ? "fullscreen"
+        : variantOf(broll);
+      segs.push({ brollId: broll.id, path: broll.filePath, start, end, segDur, sourceStart, isVideo, loop, placement });
+    }
+    if (segs.length) plan[clip.id] = segs;
+    console.log(`[broll] clip ${clip.id}: ${moments.length} moments -> ${segs.length} segments`, segs.map((s) => `${s.brollId.slice(-6)}@${s.start.toFixed(1)}-${s.end.toFixed(1)}s${s.isVideo ? `(src ${s.sourceStart.toFixed(1)})` : ""}`).join(" | "));
+  }
+  return plan;
+};
+
 const renderProject = async (db, project, sourceGroup) => {
   const { getSfxPath, listAutoSfxKeys, RISER_KEY } = await import("./sfx.mjs");
   if (!ffmpegPath) throw new Error("FFmpeg local indisponible.");
@@ -1449,11 +1650,16 @@ const renderProject = async (db, project, sourceGroup) => {
   let inputIndex = 0;
   let totalDuration = 0;
 
-  // Voice loudness normalisation (EBU R128, single-pass dynamic). Applied to
-  // every original clip BEFORE the +videoVolumeDb boost so a quietly-recorded
-  // clip (e.g. personne 2) ends up at the same perceived level as a loud one
-  // instead of staying low. Target overridable via KLIMAX_LOUDNORM_I.
-  const loudnormFilter = `loudnorm=I=${clamp(safeNumber(process.env.KLIMAX_LOUDNORM_I, -16), -30, -8)}:TP=-1.5:LRA=11`;
+  // Voice loudness normalisation (EBU R128, TWO-PASS): measure each source's real
+  // loudness first, then normalise every clip to the same target — so a quietly
+  // recorded clip (e.g. personne 2) is brought up to match the louder one.
+  const loudnessByPath = new Map();
+  for (const clip of clipsToRender) {
+    const asset = sourceAssetForClip(sourceGroup, clip);
+    if (asset?.filePath && !loudnessByPath.has(asset.filePath)) {
+      loudnessByPath.set(asset.filePath, await measureLoudness(asset.filePath));
+    }
+  }
 
   // Per-clip cut duration + transcription, in play order. Drives the whole-video
   // SFX plan (computed ONCE so the 2-3 effects span the entire video, not per clip)
@@ -1469,6 +1675,27 @@ const renderProject = async (db, project, sourceGroup) => {
   const videoSfxPlan = project.settings?.autoSfxEnabled !== false
     ? buildVideoSfxPlan(clipMeta, listAutoSfxKeys())
     : [];
+
+  // Moment-level b-roll timeline (which b-rolls play when, per clip).
+  const brollPlan = await buildBrollPlan(db, project, clipMeta);
+  const brollShutterMode = project.settings?.brollShutterMode === true;
+  const brollAnimIn = ["fade", "none"].includes(project.settings?.brollAnimIn) ? project.settings.brollAnimIn : "fade";
+  const brollAnimOut = ["fade", "none"].includes(project.settings?.brollAnimOut) ? project.settings.brollAnimOut : "fade";
+  const brollZoom = ["none", "in", "out"].includes(project.settings?.brollZoom) ? project.settings.brollZoom : "in";
+  // Smooth Ken-Burns zoom on a b-roll (scale-over-time + centre crop, no jitter).
+  const brollZoomFx = (W, H, segDur) => {
+    if (brollZoom === "none") return "";
+    const d = Math.max(0.2, segDur).toFixed(3);
+    const z = 0.07; // 7% travel over the b-roll
+    const f = brollZoom === "out" ? `(1+${z}-${z}*t/${d})` : `(1+${z}*t/${d})`;
+    return `,scale=w='ceil(${W}*${f}/2)*2':h='ceil(${H}*${f}/2)*2':eval=frame,crop=${W}:${H}`;
+  };
+  const hasShutter = fsSync.existsSync(shutterSoundPath);
+  const hasSquareAssets = fsSync.existsSync(brollSquareMaskPath) && fsSync.existsSync(brollSquareShadowPath);
+  // Mirror effect: flips the SOURCE footage of every clip horizontally (the whole
+  // podcast is mirrored consistently, people keep their relative positions).
+  // Overlays (hook, subtitles, b-rolls, logo) are added AFTER, so text stays readable.
+  const mirrorFx = project.settings?.mirrorEnabled === true ? "hflip," : "";
 
   for (let clipIndex = 0; clipIndex < clipsToRender.length; clipIndex += 1) {
     const clip = clipsToRender[clipIndex];
@@ -1556,10 +1783,10 @@ const renderProject = async (db, project, sourceGroup) => {
       const fxBottom = panFrac(bottomCropX).toFixed(4);
       const fyBottom = panFrac(bottomCropY).toFixed(4);
       filterChains.push(
-        `[${topSrcIdx}:v]scale=${Math.round(1080 * topZoom)}:${Math.round(TOP * topZoom)}:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:${TOP}:(in_w-1080)*${fxTop}:(in_h-${TOP})*${fyTop},setsar=1${bandTrim}[${bandTop}]`
+        `[${topSrcIdx}:v]${mirrorFx}scale=${Math.round(1080 * topZoom)}:${Math.round(TOP * topZoom)}:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:${TOP}:(in_w-1080)*${fxTop}:(in_h-${TOP})*${fyTop},setsar=1${bandTrim}[${bandTop}]`
       );
       filterChains.push(
-        `[${bottomSrcIdx}:v]scale=${Math.round(1080 * bottomZoom)}:${Math.round(BOTTOM * bottomZoom)}:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:${BOTTOM}:(in_w-1080)*${fxBottom}:(in_h-${BOTTOM})*${fyBottom},setsar=1${bandTrim}[${bandBottom}]`
+        `[${bottomSrcIdx}:v]${mirrorFx}scale=${Math.round(1080 * bottomZoom)}:${Math.round(BOTTOM * bottomZoom)}:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:${BOTTOM}:(in_w-1080)*${fxBottom}:(in_h-${BOTTOM})*${fyBottom},setsar=1${bandTrim}[${bandBottom}]`
       );
       filterChains.push(
         `[${bandTop}][${bandBottom}]vstack=inputs=2[clipStacked${clipIndex}]`
@@ -1572,7 +1799,7 @@ const renderProject = async (db, project, sourceGroup) => {
       const baseOffsetX = safeNumber(clipLayout.videoTransform.x, 0);
       const baseOffsetY = safeNumber(clipLayout.videoTransform.y, 0);
       filterChains.push(
-        `[${sourceInput}:v]scale=1080*${baseScale}:1920*${baseScale}:force_original_aspect_ratio=increase,crop=1080:1920:min(max((in_w-1080)/2+${baseOffsetX}\\,0)\\,in_w-1080):min(max((in_h-1920)/2+${baseOffsetY}\\,0)\\,in_h-1920),setsar=1${videoFilterChain(project.settings?.videoFilterKey)},format=rgba[${currentVideo}]`
+        `[${sourceInput}:v]${mirrorFx}scale=1080*${baseScale}:1920*${baseScale}:force_original_aspect_ratio=increase,crop=1080:1920:min(max((in_w-1080)/2+${baseOffsetX}\\,0)\\,in_w-1080):min(max((in_h-1920)/2+${baseOffsetY}\\,0)\\,in_h-1920),setsar=1${videoFilterChain(project.settings?.videoFilterKey)},format=rgba[${currentVideo}]`
       );
     }
     const zoomedVideo = `vzoom${clipIndex}`;
@@ -1590,13 +1817,46 @@ const renderProject = async (db, project, sourceGroup) => {
       currentVideo = nextVideo;
     }
 
-    // Image overlay: manual `imageId` (category "image") wins. If none, fall back to
-    // `autoBrollId` (category "broll") set by the b-roll intelligence module.
-    const overlayId = clip.stage === "reply" && project.settings?.brollEnabled !== false
-      ? clip.imageId || clip.brollId || clip.autoBrollId
-      : null;
-    if (overlayId) {
-      const overlayAsset = db.assets.find((asset) => asset.id === overlayId && (asset.category === "image" || asset.category === "broll"));
+    // Klimax logo pop-up — placed BEFORE the b-roll so the b-roll sits ON TOP of it,
+    // and started 1.5 s EARLY so the animation leads into the spoken "klimax".
+    if (
+      clip.stage === "reply" &&
+      project.settings?.klimaxLogoEnabled &&
+      fsSync.existsSync(logoAnimationPath) &&
+      clipTranscription?.logoMoments?.length
+    ) {
+      const logoMoments = clipTranscription.logoMoments.slice(0, 3);
+      for (let logoIndex = 0; logoIndex < logoMoments.length; logoIndex += 1) {
+        const moment = logoMoments[logoIndex];
+        inputArgs.push("-i", logoAnimationPath);
+        const logoInput = inputIndex;
+        inputIndex += 1;
+        const shiftedLogo = `logo${clipIndex}_${logoIndex}`;
+        const nextVideo = `vlogo${clipIndex}_${logoIndex}`;
+        const triggerTime = safeNumber(moment.start, 0);
+        const logoStart = Math.max(0, triggerTime - 1.5);
+        const logoDuration = Math.max(0.1, safeNumber(moment.end, triggerTime + 4.8) - triggerTime);
+        const logoX = clipLayout.logoPosition.x;
+        const logoY = clipLayout.logoPosition.y;
+        const logoSize = clipLayout.logoSize;
+        filterChains.push(`[${logoInput}:v]scale=${logoSize}:-1,format=rgba[${shiftedLogo}]`);
+        filterChains.push(
+          `[${shiftedLogo}]trim=duration=${logoDuration.toFixed(3)},setpts=PTS-STARTPTS+${logoStart.toFixed(3)}/TB[${shiftedLogo}_delayed]`
+        );
+        filterChains.push(
+          `[${currentVideo}][${shiftedLogo}_delayed]overlay=x=${Math.round(logoX)}-w/2:y=${Math.round(logoY)}-h/2:eof_action=pass[${nextVideo}]`
+        );
+        currentVideo = nextVideo;
+      }
+    }
+
+    // B-roll overlay. A manual image (clip.imageId) still owns the whole clip as a
+    // centered overlay (legacy). Otherwise the moment-level plan composites several
+    // FULL-SCREEN b-rolls in sequence — each its own window, a RANDOM slice of the
+    // source, fade in/out — or hard cuts + a shutter click in shutter mode.
+    const brollShutterTimes = [];
+    if (clip.stage === "reply" && project.settings?.brollEnabled !== false && clip.imageId) {
+      const overlayAsset = db.assets.find((asset) => asset.id === clip.imageId && (asset.category === "image" || asset.category === "broll"));
       if (overlayAsset?.filePath) {
         inputArgs.push("-i", overlayAsset.filePath);
         const imageInput = inputIndex;
@@ -1612,41 +1872,77 @@ const renderProject = async (db, project, sourceGroup) => {
         );
         currentVideo = nextVideo;
       }
-    }
-
-    if (
-      clip.stage === "reply" &&
-      project.settings?.klimaxLogoEnabled &&
-      fsSync.existsSync(logoAnimationPath) &&
-      clipTranscription?.logoMoments?.length
-    ) {
-      const logoMoments = clipTranscription.logoMoments.slice(0, 3);
-      for (let logoIndex = 0; logoIndex < logoMoments.length; logoIndex += 1) {
-        const moment = logoMoments[logoIndex];
-        inputArgs.push("-i", logoAnimationPath);
-        const logoInput = inputIndex;
+    } else if (brollPlan[clip.id]?.length) {
+      const FADE = 0.25;
+      const segments = brollPlan[clip.id];
+      for (let bi = 0; bi < segments.length; bi += 1) {
+        const seg = segments[bi];
+        // Input: a random window of a video (loop if shorter than the slot), or a held image.
+        if (!seg.isVideo) {
+          inputArgs.push("-loop", "1", "-t", seg.segDur.toFixed(3), "-i", seg.path);
+        } else if (seg.loop) {
+          inputArgs.push("-stream_loop", "-1", "-t", seg.segDur.toFixed(3), "-i", seg.path);
+        } else {
+          inputArgs.push("-ss", seg.sourceStart.toFixed(3), "-t", seg.segDur.toFixed(3), "-i", seg.path);
+        }
+        const brIn = inputIndex;
         inputIndex += 1;
-        const shiftedLogo = `logo${clipIndex}_${logoIndex}`;
-        const nextVideo = `vlogo${clipIndex}_${logoIndex}`;
-        const logoStart = safeNumber(moment.start, 0);
-        const logoDuration = Math.max(0.1, safeNumber(moment.end, logoStart + 4.8) - logoStart);
-        const logoX = clipLayout.logoPosition.x;
-        const logoY = clipLayout.logoPosition.y;
-        const logoSize = clipLayout.logoSize;
-        filterChains.push(`[${logoInput}:v]scale=${logoSize}:-1,format=rgba[${shiftedLogo}]`);
-        filterChains.push(
-          `[${shiftedLogo}]trim=duration=${logoDuration.toFixed(3)},setpts=PTS-STARTPTS+${logoStart.toFixed(3)}/TB[${shiftedLogo}_delayed]`
-        );
-        filterChains.push(
-          `[${currentVideo}][${shiftedLogo}_delayed]overlay=x=${Math.round(logoX)}-w/2:y=${Math.round(logoY)}-h/2:eof_action=pass[${nextVideo}]`
-        );
+        const fadeOut = Math.max(0, seg.segDur - FADE).toFixed(3);
+        // Animations are INDEPENDENT of shutter mode (you can have fade + zoom AND
+        // the shutter click). fade=alpha multiplies the existing alpha (keeps rounded
+        // corners). A b-roll < 1 s gets no fade-out — it just cuts.
+        let anim = "";
+        if (brollAnimIn === "fade") anim += `,fade=t=in:st=0:d=${FADE}:alpha=1`;
+        if (brollAnimOut === "fade" && seg.segDur >= BROLL_FADEOUT_MIN_SEC) anim += `,fade=t=out:st=${fadeOut}:d=${FADE}:alpha=1`;
+        const shift = `setpts=PTS-STARTPTS+${seg.start.toFixed(3)}/TB`;
+        const enable = `enable='between(t,${seg.start.toFixed(3)},${seg.end.toFixed(3)})'`;
+        const brTag = `broll${clipIndex}_${bi}`;
+        const nextVideo = `vbroll${clipIndex}_${bi}`;
+
+        if (seg.placement === "square" && hasSquareAssets) {
+          // Cover-fit a fixed centred square below the text, with ROUNDED corners
+          // (alpha mask) and a DROP SHADOW (pre-blurred PNG behind). Cover-fit keeps
+          // the source ratio — a 1:1 source fills exactly, any other ratio is cropped.
+          const S = BROLL_SQUARE_SIZE;
+          const PAD = BROLL_SQUARE_PAD;
+          const ox = Math.round((1080 - S) / 2) - PAD; // combined layer carries the shadow margin
+          const oy = BROLL_SQUARE_Y - PAD;
+          inputArgs.push("-i", brollSquareMaskPath);
+          const maskIn = inputIndex; inputIndex += 1;
+          inputArgs.push("-i", brollSquareShadowPath);
+          const shadowIn = inputIndex; inputIndex += 1;
+          const p = `${clipIndex}_${bi}`;
+          filterChains.push(`[${brIn}:v]scale=${S}:${S}:force_original_aspect_ratio=increase,crop=${S}:${S},setsar=1,fps=30${brollZoomFx(S, S, seg.segDur)},format=rgba[bsc${p}]`);
+          filterChains.push(`[${maskIn}:v]format=gray[bmask${p}]`);
+          filterChains.push(`[bsc${p}][bmask${p}]alphamerge[bround${p}]`);
+          filterChains.push(`[${shadowIn}:v]format=rgba[bshad${p}]`);
+          filterChains.push(`[bshad${p}][bround${p}]overlay=${PAD}:${PAD}[bcomb${p}]`);
+          filterChains.push(`[bcomb${p}]${anim ? anim.slice(1) + "," : ""}${shift}[${brTag}]`);
+          filterChains.push(`[${currentVideo}][${brTag}]overlay=${ox}:${oy}:${enable}[${nextVideo}]`);
+        } else {
+          // "fullscreen" fills the 9:16 frame (or a plain square fallback if the
+          // rounded/shadow assets are missing).
+          const isSquare = seg.placement === "square";
+          const W = isSquare ? BROLL_SQUARE_SIZE : 1080;
+          const H = isSquare ? BROLL_SQUARE_SIZE : 1920;
+          const ox = isSquare ? Math.round((1080 - BROLL_SQUARE_SIZE) / 2) : 0;
+          const oy = isSquare ? BROLL_SQUARE_Y : 0;
+          filterChains.push(
+            `[${brIn}:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,fps=30${brollZoomFx(W, H, seg.segDur)},format=rgba${anim},${shift}[${brTag}]`
+          );
+          filterChains.push(`[${currentVideo}][${brTag}]overlay=${ox}:${oy}:${enable}[${nextVideo}]`);
+        }
         currentVideo = nextVideo;
+        if (brollShutterMode) brollShutterTimes.push(seg.start);
       }
     }
 
     const assFilePath = await buildAssSubtitleFile(project, clip, clipTranscription);
     const subtitledVideo = `vsub${clipIndex}`;
-    filterChains.push(`[${currentVideo}]subtitles='${assFilePath}':fontsdir='${fontRoot}'[${subtitledVideo}]`);
+    // Normalise to EXACTLY 1080x1920 before concat/xfade: some upstream filters
+    // (zoom, dual-speaker stack) can round a clip to 1080x1918, which makes concat
+    // fail ("parameters do not match"). A no-op for already-correct clips.
+    filterChains.push(`[${currentVideo}]subtitles='${assFilePath}':fontsdir='${fontRoot}',scale=1080:1920,setsar=1[${subtitledVideo}]`);
     const videoVolumeDb = safeNumber(project.settings?.videoVolumeDb, 2);
     // For a dual-speaker clip the video is cut short at clipDuration; trim the
     // audio to match so the main speaker's voice doesn't bleed over the next
@@ -1656,6 +1952,7 @@ const renderProject = async (db, project, sourceGroup) => {
       : "";
     // loudnorm (consistent level) → aformat pins the rate back to 48 kHz (its
     // dynamic mode emits 192 kHz) → +videoVolumeDb boost on top → async resample.
+    const loudnormFilter = loudnormFilterFor(loudnessByPath.get(sourceAsset.filePath));
     filterChains.push(`[${sourceInput}:a]${loudnormFilter},aformat=sample_rates=48000,volume=${videoVolumeDb}dB,aresample=async=1${clipAudioTrim}[acl${clipIndex}]`);
 
     // Sound effects: the 2-3 strongest keyword beats of the WHOLE video carry one
@@ -1666,31 +1963,38 @@ const renderProject = async (db, project, sourceGroup) => {
     const sfxEvents = [];
     if (project.settings?.autoSfxEnabled !== false) {
       sfxEvents.push(...videoSfxPlan.filter((event) => event.clipIndex === clipIndex));
-      // Riser: a riser has to resolve on a cut, so we anchor its tail to the end
-      // of the first clip (the hand-off to Personne 2) and start it earlier by
-      // its own length.
+      // End-of-intro accent: varies between the metallic riser (-15 dB) and the
+      // "fahh" (quieter, -19 dB). Its tail is anchored to the first clip's cut and
+      // it starts earlier by its own length (sped up if the intro is too short, so
+      // the climax always lands exactly on the cut).
       if (clipIndex === 0 && clipsToRender.length > 1 && clipDuration > 1.4) {
-        const riserPath = getSfxPath(RISER_KEY);
-        if (riserPath) {
-          const riserDur = await probeMediaDurationSec(riserPath);
-          let riserStart = Math.max(0, clipDuration - (riserDur > 0 ? riserDur : 1.15));
-          let riserTempo;
-          // If the intro is shorter than the riser, it would start at 0 and get cut
-          // at the transition — you'd only hear the quiet build, never the metallic
-          // resolve. Speed it up (atempo) so the whole build+climax fits the intro
-          // and the climax lands exactly on the cut.
-          if (riserDur > 0 && riserDur > clipDuration) {
-            riserTempo = clamp(riserDur / clipDuration, 1, 2);
-            riserStart = Math.max(0, clipDuration - riserDur / riserTempo);
+        const useFahh = Math.random() < 0.5;
+        const accentKey = useFahh && getSfxPath(SFX_FAHH_KEY) ? SFX_FAHH_KEY : RISER_KEY;
+        const accentPath = getSfxPath(accentKey);
+        if (accentPath) {
+          const accentDur = await probeMediaDurationSec(accentPath);
+          let accentStart = Math.max(0, clipDuration - (accentDur > 0 ? accentDur : 1.15));
+          let accentTempo;
+          if (accentDur > 0 && accentDur > clipDuration) {
+            accentTempo = clamp(accentDur / clipDuration, 1, 2);
+            accentStart = Math.max(0, clipDuration - accentDur / accentTempo);
           }
-          sfxEvents.push({ key: RISER_KEY, time: riserStart, volumeDb: -15, word: "riser", atempo: riserTempo });
+          const accentVolume = accentKey === SFX_FAHH_KEY ? SFX_FAHH_VOLUME_DB : -15;
+          sfxEvents.push({ key: accentKey, time: accentStart, volumeDb: accentVolume, word: "accent-intro", atempo: accentTempo });
         }
+      }
+    }
+
+    // Shutter mode: a camera-shutter click on each b-roll's appearance.
+    if (brollShutterMode && hasShutter) {
+      for (const t of brollShutterTimes) {
+        sfxEvents.push({ path: shutterSoundPath, time: t, volumeDb: -6, word: "shutter" });
       }
     }
 
     const sfxMixTags = [];
     const usedSfxEvents = sfxEvents
-      .map((event) => ({ ...event, path: getSfxPath(event.key) }))
+      .map((event) => ({ ...event, path: event.path || getSfxPath(event.key) }))
       .filter((event) => event.path && safeNumber(event.time, 0) < clipDuration);
 
     for (let eventIndex = 0; eventIndex < usedSfxEvents.length; eventIndex += 1) {
@@ -1710,7 +2014,9 @@ const renderProject = async (db, project, sourceGroup) => {
 
     if (sfxMixTags.length) {
       filterChains.push(
-        `[acl${clipIndex}]${sfxMixTags.join("")}amix=inputs=${sfxMixTags.length + 1}:duration=first:dropout_transition=0:weights=${["1", ...sfxMixTags.map(() => "1")].join(" ")}[a${clipIndex}]`
+        // normalize=0 so amix SUMS (doesn't divide the voice by the input count) —
+        // otherwise each extra SFX would quieten the voice. A limiter guards peaks.
+        `[acl${clipIndex}]${sfxMixTags.join("")}amix=inputs=${sfxMixTags.length + 1}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[a${clipIndex}]`
       );
     } else {
       filterChains.push(`[acl${clipIndex}]anull[a${clipIndex}]`);
@@ -1929,9 +2235,16 @@ app.patch("/api/assets/:id", async (req, res) => {
   const db = await readDb();
   const target = db.assets.find((asset) => asset.id === req.params.id);
   if (!target) return res.status(404).json({ error: "Asset introuvable." });
-  const nextTitle = typeof req.body?.title === "string" ? req.body.title.trim() : "";
-  if (!nextTitle) return res.status(400).json({ error: "Titre manquant." });
-  target.title = nextTitle;
+  const nextTitle = typeof req.body?.title === "string" ? req.body.title.trim() : null;
+  const nextNote = typeof req.body?.note === "string" ? req.body.note.trim() : null;
+  // "fullscreen" | "square" — how this b-roll is composited (manual, per b-roll).
+  const nextPlacement = ["fullscreen", "square"].includes(req.body?.placement) ? req.body.placement : null;
+  // The note is the b-roll's description used by the placement brain — editable
+  // from the bank so the user can refine what each b-roll "means".
+  if (nextNote !== null) target.note = nextNote;
+  if (nextTitle) target.title = nextTitle;
+  if (nextPlacement) target.placement = nextPlacement;
+  if (nextNote === null && !nextTitle && !nextPlacement) return res.status(400).json({ error: "Rien à mettre à jour." });
   await writeDb(db);
   res.json({ ok: true, asset: target, assets: db.assets, videoGroups: getVideoGroups(db.assets) });
 });
@@ -2336,6 +2649,429 @@ app.post("/api/projects/:id/auto-brolls", async (req, res) => {
   res.json({ picks, project: resolveProject(db, project.id) });
 });
 
+// -------------------------------------------------------------------------
+// Automatic Mode — batch variant generation. Builds the SAME settings/clips
+// manual mode builds (via autoVariants.mjs) and renders each variant through the
+// EXISTING manual pipeline (renderProject / ensureTranscription). No manual code
+// is touched. Jobs are PERSISTED to disk and RESUMED on startup, so a backend
+// restart (or the sandbox killing the process) never loses or stalls a batch —
+// variants are re-derived deterministically (seed = videoId:index).
+// -------------------------------------------------------------------------
+const autoJobsFile = path.join(dataRoot, "auto-jobs.json");
+const autoJobs = new Map(); // jobId -> job
+let autoJobsLoaded = false;
+
+const loadAutoJobs = async () => {
+  if (autoJobsLoaded) return;
+  autoJobsLoaded = true;
+  try {
+    const raw = JSON.parse(await fs.readFile(autoJobsFile, "utf8"));
+    for (const job of raw.jobs || []) autoJobs.set(job.id, job);
+  } catch { /* no jobs file yet */ }
+};
+const saveAutoJobs = async () => {
+  const jobs = [...autoJobs.values()].slice(-30).map(({ _running, ...j }) => j); // keep last 30, drop transient flag
+  await fs.writeFile(autoJobsFile, JSON.stringify({ jobs }, null, 2)).catch(() => {});
+};
+const jobDoneCount = (job) => job.items.filter((it) => it.status === "ready" || it.status === "failed").length;
+const cleanJob = ({ _running, hooksByProject, ...j }) => j; // hide internals from the UI
+
+// Hook bank: proven hooks the user curates. 75% of variant hooks are EXACT copies
+// from the bank (the ones that fit the transcript); 25% are AI variants in the same
+// style. Stored in local-data/klimax/hook-bank.json (editable), seeded with defaults.
+const HOOK_BANK_DEFAULT = [
+  "la taille ça change vraiment tout 🍆",
+  "3 exercices pour tenir longtemps au lit 🍆",
+  "comment savoir si on est bon au lit 🍆",
+  "comment un mec peut devenir bon au lit 🍆",
+  "comment durer au lit sans bedave 🍆",
+  "comment durer au lit sans se dr**er 🍆",
+  "est ce que la taille du zgeg ça compte 🍆",
+  "est ce que la taille ça compte 🍆",
+  "tenir 8 minutes au lit c'est grave ? 🍆",
+];
+const hookBankFile = path.join(dataRoot, "hook-bank.json");
+const readHookBank = async () => {
+  try {
+    const parsed = JSON.parse(await fs.readFile(hookBankFile, "utf8"));
+    return Array.isArray(parsed.hooks) && parsed.hooks.length ? parsed.hooks.map(String) : HOOK_BANK_DEFAULT;
+  } catch {
+    // Seed the editable file on first use.
+    fs.writeFile(hookBankFile, JSON.stringify({ hooks: HOOK_BANK_DEFAULT }, null, 2)).catch(() => {});
+    return HOOK_BANK_DEFAULT;
+  }
+};
+
+// Build the N hooks of a batch: ~75% exact bank copies (transcript-matched, best
+// first), ~25% AI variants in the same crude/punchy style. One Claude call does both
+// the matching and the variants; on failure we fall back to cycling the whole bank.
+const genVariantHooks = async (introText, replyText, n) => {
+  const ctx = `${introText} ${replyText}`.trim();
+  const bank = await readHookBank();
+  const nVariants = Math.max(0, Math.round(n * 0.25));
+  const nCopies = n - nVariants;
+  let fits = bank.map((_, i) => i);
+  let variants = [];
+  if (ctx) {
+    const system =
+      "Tu es monteur de vidéos courtes virales. On te donne le TRANSCRIPT d'un clip et une BANQUE de hooks éprouvés (numérotés). " +
+      '1) "fits" : les indices des hooks de la banque qui collent VRAIMENT au sujet du transcript, du plus au moins pertinent (exclus ceux qui ne collent pas). ' +
+      `2) "variants" : ${Math.max(1, nVariants)} NOUVEAUX hooks, variantes des hooks de la banque adaptées au transcript — EXACTEMENT le même style (court, percutant, ton cru assumé, max ~9 mots, terminé par UN emoji collant au sujet). ` +
+      'Réponds UNIQUEMENT en JSON : {"fits":[...], "variants":["..."]}.';
+    try {
+      const raw = await runClaude(
+        `BANQUE:\n${bank.map((h, i) => `${i}: ${h}`).join("\n")}\n\nTRANSCRIPT:\n${ctx.slice(0, 1500)}`,
+        system
+      );
+      const m = String(raw).match(/\{[\s\S]*\}/);
+      if (m) {
+        const parsed = JSON.parse(m[0]);
+        if (Array.isArray(parsed.fits)) {
+          const valid = parsed.fits.map(Number).filter((i) => Number.isInteger(i) && i >= 0 && i < bank.length);
+          if (valid.length) fits = valid;
+        }
+        if (Array.isArray(parsed.variants)) {
+          variants = parsed.variants.map((s) => String(s).trim().replace(/^["'«»\s]+|["'«»\s]+$/g, "")).filter(Boolean);
+        }
+      }
+    } catch (e) {
+      console.warn("[auto] hook bank pick failed:", e.message);
+    }
+  }
+  const copies = [];
+  for (let i = 0; copies.length < nCopies && fits.length; i += 1) copies.push(bank[fits[i % fits.length]]);
+  variants = variants.slice(0, nVariants);
+  // Interleave: copies dominate, one variant every ~4 slots.
+  const out = [];
+  let ci = 0;
+  let vi = 0;
+  for (let i = 0; i < n; i += 1) {
+    const useVariant = vi < variants.length && (i % 4 === 3 || ci >= copies.length);
+    if (useVariant) out.push(variants[vi++]);
+    else if (copies.length) out.push(copies[ci++ % copies.length]);
+  }
+  console.log(`[auto] hooks (${out.length}): ${out.map((h, i) => `${i}:${h.slice(0, 30)}`).join(" | ")}`);
+  return out.slice(0, n);
+};
+
+// Auto mode picks VIDEO PAIRS from the bank (not pre-made projects). For a pair we
+// reuse an existing project if one exists (keeps its cached transcription), else we
+// assemble one exactly like manual mode (intro = personne 1, reply = personne 2).
+const ensureAutoProject = async (db, groupId) => {
+  const sourceGroup = getVideoGroups(db.assets).find((g) => g.id === groupId);
+  if (!sourceGroup?.person1?.filePath || !sourceGroup?.person2?.filePath) return null;
+  const existing = db.projects.find((p) => p.sourceGroupId === groupId);
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const settings = defaultProjectSettings();
+  const project = normalizeProject({
+    id: id("project"),
+    title: `Auto ${sourceGroup.title}`,
+    description: sourceGroup.note || "Projet auto Klimax",
+    status: "draft", render_progress: 0, created_at: now, updated_at: now,
+    sourceGroupId: sourceGroup.id, settings,
+    clips: [
+      { id: id("intro"), stage: "intro", sourceVideoId: sourceGroup.person1?.id || null, title: "Personne 1 - segment 1", hookText: settings.hookText, subtitle: "Transcription en attente", musicId: null, brollId: null, imageId: null, ...defaultClipLayout("intro"), imageTransform: { scale: 100, x: 0, y: 0 } },
+      { id: id("reply"), stage: "reply", sourceVideoId: sourceGroup.person2?.id || null, title: "Personne 2 - segment 2", hookText: "La suite arrive maintenant", subtitle: "Transcription en attente", musicId: null, brollId: null, imageId: null, ...defaultClipLayout("reply"), imageTransform: { scale: 100, x: 0, y: 0 } },
+    ],
+  });
+  db.projects.unshift(project);
+  await writeDb(db);
+  return project;
+};
+
+// Render every not-yet-ready item of a job. Variants are re-derived from the stored
+// params so a resumed job reproduces them exactly. Renders run with a small worker
+// pool (AUTO_RENDER_CONCURRENCY at a time) — ffmpeg is heavy but parallelises well.
+const AUTO_RENDER_CONCURRENCY = clamp(Math.round(safeNumber(process.env.KLIMAX_AUTO_CONCURRENCY, 2)), 1, 4);
+const processAutoJob = async (job) => {
+  if (job._running) return;
+  job._running = true;
+  try {
+    const { planVideoVariants } = await import("./autoVariants.mjs");
+    const db = await readDb();
+    const p = job.params;
+
+    // 1) Re-derive the full flat work list (variant params per item).
+    const work = [];
+    for (const pid of p.projectIds) {
+      const project = db.projects.find((x) => x.id === pid);
+      if (!project) continue;
+      const sourceGroup = getVideoGroups(db.assets).find((g) => g.id === project.sourceGroupId);
+      if (!sourceGroup?.person1?.filePath || !sourceGroup?.person2?.filePath) continue;
+      const banks = {
+        speakers: db.assets.filter((a) => a.category === "speaker"),
+        brolls: db.assets.filter((a) => a.category === "broll"),
+        images: db.assets.filter((a) => a.category === "image"),
+        music: db.assets.filter((a) => a.category === "music"),
+        hooks: (job.hooksByProject || {})[pid] || [],
+      };
+      const plan = planVideoVariants({
+        base: {
+          settings: project.settings || {},
+          clips: project.clips || [],
+          sourceNames: { person1: sourceGroup.person1?.title, person2: sourceGroup.person2?.title },
+        },
+        videoId: pid, requested: p.variantsPerVideo, varied: p.varied, lockSplitScreen: p.lockSplitScreen, banks,
+      });
+      for (const v of plan.variants) {
+        const item = job.items.find((it) => it.id === `${job.id}-${pid}-${v.index}`);
+        if (!item || item.status === "ready") continue;
+        work.push({ item, project, sourceGroup, variant: v, pid });
+      }
+    }
+
+    // 2) Worker pool: N concurrent renders.
+    let cursor = 0;
+    const worker = async () => {
+      for (;;) {
+        const slot = cursor < work.length ? work[cursor++] : null;
+        if (!slot) return;
+        const { item, project, sourceGroup, variant: v, pid } = slot;
+        item.status = "rendering"; await saveAutoJobs();
+        try {
+          const variantProject = {
+            id: `${pid}-auto-${v.index}-${Date.now()}`,
+            sourceGroupId: project.sourceGroupId,
+            settings: mergeProjectSettings({ ...v.settings, hookAutoGenerated: true }), // skip in-render hook regen
+            clips: v.clips,
+            transcription: project.transcription, // reuse cached transcription -> no re-transcribe, 0 tokens
+          };
+          const exported = await renderProject(db, variantProject, sourceGroup);
+          item.status = "ready"; item.url = exported.url; item.path = exported.path; item.error = null;
+        } catch (e) {
+          item.status = "failed"; item.error = String(e.message || e).slice(0, 300);
+          console.error("[auto] variant render failed:", e.message);
+        }
+        job.done = jobDoneCount(job); await saveAutoJobs();
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(AUTO_RENDER_CONCURRENCY, work.length || 1) }, worker));
+    job.finishedAt = new Date().toISOString();
+  } finally {
+    job._running = false;
+    await saveAutoJobs();
+  }
+};
+
+// On startup: resume any batch that didn't finish (requeue interrupted renders).
+const resumeAutoJobs = async () => {
+  await loadAutoJobs();
+  for (const job of autoJobs.values()) {
+    for (const it of job.items) if (it.status === "rendering") it.status = "queued";
+    job.done = jobDoneCount(job);
+    if (jobDoneCount(job) < job.total) processAutoJob(job).catch(() => {});
+  }
+  await saveAutoJobs();
+};
+
+app.post("/api/auto/generate", async (req, res) => {
+  const { planVideoVariants } = await import("./autoVariants.mjs");
+  await loadAutoJobs();
+  const db = await readDb();
+  const videoGroupIds = Array.isArray(req.body?.videoGroupIds) ? req.body.videoGroupIds : [];
+  const projectIds = Array.isArray(req.body?.projectIds) ? req.body.projectIds : [];
+  const variantsPerVideo = clamp(Math.round(safeNumber(req.body?.variantsPerVideo, 6)), 1, 20);
+  const varied = req.body?.varied || { broll: true, subtitles: true, hook: true, sfx: false, zooms: false, music: true };
+  const lockSplitScreen = req.body?.lockSplitScreen === true;
+
+  // Auto mode takes VIDEO PAIRS from the bank (video 1 + video 2): assemble/reuse a
+  // project per pair and transcribe it (whisper) — full A→Z, separate from manual.
+  const allProjectIds = [...projectIds];
+  for (const gid of videoGroupIds) {
+    const proj = await ensureAutoProject(db, gid);
+    if (proj && !allProjectIds.includes(proj.id)) allProjectIds.push(proj.id);
+  }
+  if (!allProjectIds.length) return res.status(400).json({ error: "Aucune vidéo sélectionnée." });
+  for (const pid of allProjectIds) {
+    const project = db.projects.find((p) => p.id === pid);
+    const sg = project && getVideoGroups(db.assets).find((g) => g.id === project.sourceGroupId);
+    if (project && sg && project.transcription?.status !== "completed") {
+      try { await ensureTranscription(project, sg); } catch (e) { console.warn("[auto] transcription failed:", e.message); }
+    }
+  }
+  await writeDb(db);
+
+  const jobId = `auto-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const items = [];
+  const hooksByProject = {};
+  const achievablePerVideo = [];
+  for (const pid of allProjectIds) {
+    const project = db.projects.find((p) => p.id === pid);
+    if (!project) continue;
+    const sourceGroup = getVideoGroups(db.assets).find((g) => g.id === project.sourceGroupId);
+    if (!sourceGroup?.person1?.filePath || !sourceGroup?.person2?.filePath) continue;
+
+    let hooks = [];
+    if (varied.hook && project.transcription?.status === "completed") {
+      const tc = project.transcription.clips || [];
+      const introText = (tc.find((c) => c.stage === "intro")?.cues || []).map((c) => c.text).join(" ");
+      const replyText = (tc.find((c) => c.stage === "reply")?.cues || []).map((c) => c.text).join(" ");
+      hooks = await genVariantHooks(introText, replyText, variantsPerVideo); // [] -> style-only fallback (C)
+    }
+    hooksByProject[pid] = hooks;
+    const banks = {
+      speakers: db.assets.filter((a) => a.category === "speaker"),
+      brolls: db.assets.filter((a) => a.category === "broll"),
+      images: db.assets.filter((a) => a.category === "image"),
+      music: db.assets.filter((a) => a.category === "music"),
+      hooks,
+    };
+    const plan = planVideoVariants({
+      base: {
+        settings: project.settings || {},
+        clips: project.clips || [],
+        sourceNames: { person1: sourceGroup.person1?.title, person2: sourceGroup.person2?.title },
+      },
+      videoId: pid, requested: variantsPerVideo, varied, lockSplitScreen, banks,
+    });
+    achievablePerVideo.push({ projectId: pid, source: project.title || pid, achievable: plan.variants.length, requested: variantsPerVideo });
+    for (const v of plan.variants) {
+      items.push({ id: `${jobId}-${pid}-${v.index}`, projectId: pid, source: project.title || pid, index: v.index, combo: v.combo, status: "queued", url: null });
+    }
+  }
+  if (!items.length) return res.status(400).json({ error: "Aucune variante générable (vérifie sources + transcription)." });
+
+  const job = {
+    id: jobId, createdAt: new Date().toISOString(), finishedAt: null, total: items.length, done: 0,
+    params: { projectIds: allProjectIds, variantsPerVideo, varied, lockSplitScreen }, hooksByProject, items,
+  };
+  autoJobs.set(jobId, job);
+  await saveAutoJobs();
+  processAutoJob(job).catch((e) => console.error("[auto] job failed:", e.message)); // background
+
+  res.json({ jobId, total: job.total, items: job.items, achievablePerVideo });
+});
+
+app.get("/api/auto/jobs", async (_req, res) => {
+  await loadAutoJobs();
+  const jobs = [...autoJobs.values()]
+    .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))
+    .slice(0, 10).map(cleanJob);
+  res.json({ jobs });
+});
+
+app.get("/api/auto/jobs/:jobId", async (req, res) => {
+  await loadAutoJobs();
+  const job = autoJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "Job introuvable." });
+  res.json({ job: cleanJob(job) });
+});
+
+// "Tout télécharger": zip every READY variant of a job (system zip, -j flattens).
+app.get("/api/auto/jobs/:jobId/download", async (req, res) => {
+  await loadAutoJobs();
+  const job = autoJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "Job introuvable." });
+  const files = job.items
+    .filter((it) => it.status === "ready" && it.path && fsSync.existsSync(it.path))
+    .map((it) => it.path);
+  if (!files.length) return res.status(400).json({ error: "Aucune variante prête." });
+  const zipPath = path.join(tempRoot, `auto-${job.id}-${Date.now()}.zip`);
+  try {
+    await runProcess("/usr/bin/zip", ["-j", "-q", zipPath, ...files]);
+    res.download(zipPath, `klimax-variantes-${job.id}.zip`, () => {
+      fs.unlink(zipPath).catch(() => {});
+    });
+  } catch (e) {
+    fs.unlink(zipPath).catch(() => {});
+    res.status(500).json({ error: `Zip impossible: ${String(e.message || e).slice(0, 200)}` });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Batch presets + planification. A preset stores a full batch config (selection,
+// variantes, dimensions variées) and can be scheduled daily at HH:MM — the runner
+// re-posts /api/auto/generate so scheduled runs share the exact same pipeline.
+// ---------------------------------------------------------------------------
+const autoPresetsFile = path.join(dataRoot, "auto-presets.json");
+const readAutoPresets = async () => {
+  try { return JSON.parse(await fs.readFile(autoPresetsFile, "utf8")).presets || []; }
+  catch { return []; }
+};
+const writeAutoPresets = async (presets) =>
+  fs.writeFile(autoPresetsFile, JSON.stringify({ presets }, null, 2));
+
+app.get("/api/auto/presets", async (_req, res) => {
+  res.json({ presets: await readAutoPresets() });
+});
+
+app.post("/api/auto/presets", async (req, res) => {
+  const presets = await readAutoPresets();
+  const body = req.body || {};
+  const preset = {
+    id: body.id || `preset-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+    name: String(body.name || "Preset").slice(0, 80),
+    videoGroupIds: Array.isArray(body.videoGroupIds) ? body.videoGroupIds : [],
+    variantsPerVideo: clamp(Math.round(safeNumber(body.variantsPerVideo, 6)), 1, 20),
+    varied: body.varied || {},
+    lockSplitScreen: body.lockSplitScreen === true,
+    schedule: body.schedule && typeof body.schedule === "object"
+      ? { enabled: body.schedule.enabled === true, time: /^\d{2}:\d{2}$/.test(body.schedule.time || "") ? body.schedule.time : "09:00" }
+      : { enabled: false, time: "09:00" },
+    lastRunDate: body.lastRunDate || null,
+  };
+  const idx = presets.findIndex((p) => p.id === preset.id);
+  if (idx >= 0) presets[idx] = { ...presets[idx], ...preset };
+  else presets.push(preset);
+  await writeAutoPresets(presets);
+  res.json({ presets });
+});
+
+app.delete("/api/auto/presets/:id", async (req, res) => {
+  const presets = (await readAutoPresets()).filter((p) => p.id !== req.params.id);
+  await writeAutoPresets(presets);
+  res.json({ presets });
+});
+
+// Run a preset NOW (also used by the scheduler).
+const runAutoPreset = async (preset) => {
+  const resp = await fetch(`http://127.0.0.1:${port}/api/auto/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      videoGroupIds: preset.videoGroupIds,
+      variantsPerVideo: preset.variantsPerVideo,
+      varied: preset.varied,
+      lockSplitScreen: preset.lockSplitScreen,
+    }),
+  });
+  if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).error || `HTTP ${resp.status}`);
+  return resp.json();
+};
+
+app.post("/api/auto/presets/:id/run", async (req, res) => {
+  const preset = (await readAutoPresets()).find((p) => p.id === req.params.id);
+  if (!preset) return res.status(404).json({ error: "Preset introuvable." });
+  try {
+    res.json(await runAutoPreset(preset));
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e).slice(0, 200) });
+  }
+});
+
+// Scheduler: every minute, launch any enabled preset whose HH:MM just passed and
+// that hasn't run today yet.
+setInterval(async () => {
+  try {
+    const presets = await readAutoPresets();
+    const now = new Date();
+    const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const today = now.toISOString().slice(0, 10);
+    let changed = false;
+    for (const preset of presets) {
+      if (!preset.schedule?.enabled || preset.lastRunDate === today) continue;
+      if (hhmm < preset.schedule.time) continue;
+      preset.lastRunDate = today;
+      changed = true;
+      runAutoPreset(preset)
+        .then(() => console.log(`[auto] preset planifié lancé: ${preset.name}`))
+        .catch((e) => console.error(`[auto] preset planifié échec (${preset.name}):`, e.message));
+    }
+    if (changed) await writeAutoPresets(presets);
+  } catch { /* next tick */ }
+}, 60_000).unref();
+
 await Promise.all([
   ensureDir(uploadRoot),
   ensureDir(renderRoot),
@@ -2350,6 +3086,9 @@ await compactDb();
 app.listen(port, "127.0.0.1", () => {
   console.log(`Klimax local backend: http://127.0.0.1:${port}`);
 });
+
+// Resume any Automatic-Mode batch that was interrupted by a previous shutdown.
+resumeAutoJobs().catch((e) => console.error("[auto] resume failed:", e.message));
 
 // Start the local Supabase-compatible shim (auth + rest + storage on port 54321)
 // so the front-end can use real Postgres-backed auth/db/storage without any

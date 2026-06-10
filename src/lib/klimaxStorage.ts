@@ -15,6 +15,9 @@ export type KlimaxBankAsset = {
   groupId?: string;
   groupTitle?: string;
   videoPart?: KlimaxVideoPart;
+  // B-roll compositing: "fullscreen" (fills 9:16) or "square" (centred square
+  // below the text). Manual per b-roll for now; auto can set it later.
+  placement?: "fullscreen" | "square";
 };
 
 export type KlimaxVideoGroup = {
