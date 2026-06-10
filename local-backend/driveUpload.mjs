@@ -18,6 +18,15 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const keyPath = process.env.KLIMAX_GDRIVE_KEY || path.join(__dirname, "google-service-account.json");
+// Service accounts have NO storage quota of their own — uploads must land inside a
+// folder the USER owns and has shared (Editor) with the service-account email.
+// Configure it in google-drive-config.json: { "parentFolderId": "<id du dossier>" }.
+const configPath = process.env.KLIMAX_GDRIVE_CONFIG || path.join(__dirname, "google-drive-config.json");
+const readParentFolderId = () => {
+  const fromEnv = process.env.KLIMAX_GDRIVE_PARENT;
+  if (fromEnv) return fromEnv;
+  try { return JSON.parse(fs.readFileSync(configPath, "utf8")).parentFolderId || null; } catch { return null; }
+};
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 
@@ -80,12 +89,18 @@ const driveFetch = async (url, options = {}) => {
   return resp.json();
 };
 
-const createFolder = async (name) =>
-  driveFetch("https://www.googleapis.com/drive/v3/files?fields=id,webViewLink", {
+const createFolder = async (name) => {
+  const parent = readParentFolderId();
+  return driveFetch("https://www.googleapis.com/drive/v3/files?fields=id,webViewLink&supportsAllDrives=true", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, mimeType: "application/vnd.google-apps.folder" }),
+    body: JSON.stringify({
+      name,
+      mimeType: "application/vnd.google-apps.folder",
+      ...(parent ? { parents: [parent] } : {}),
+    }),
   });
+};
 
 // Anyone with the link can view — so the UI link works without a Google login.
 const shareAnyoneReader = async (fileId) =>
@@ -95,22 +110,46 @@ const shareAnyoneReader = async (fileId) =>
     body: JSON.stringify({ role: "reader", type: "anyone" }),
   });
 
-// Multipart upload (metadata + bytes in one request) — fine for short-form videos.
-const uploadFile = async (filePath, fileName, folderId) => {
-  const boundary = `klimax-${crypto.randomBytes(8).toString("hex")}`;
-  const metadata = JSON.stringify({ name: fileName, parents: [folderId] });
-  const fileBytes = await fsp.readFile(filePath);
-  const body = Buffer.concat([
-    Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`),
-    Buffer.from(`--${boundary}\r\nContent-Type: video/mp4\r\n\r\n`),
-    fileBytes,
-    Buffer.from(`\r\n--${boundary}--`),
-  ]);
-  return driveFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink", {
-    method: "POST",
-    headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
-    body,
+// Resumable upload, STREAMED with node:https — Node's fetch chokes on multi-MB
+// request bodies ("fetch failed"), a piped read stream has no size limit.
+import https from "node:https";
+
+const httpsPut = (url, headers, bodyStream, contentLength) =>
+  new Promise((resolve, reject) => {
+    const req = https.request(url, { method: "PUT", headers: { ...headers, "Content-Length": contentLength } }, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { resolve(JSON.parse(data)); } catch { resolve({}); }
+        } else {
+          reject(new Error(`Drive upload ${res.statusCode}: ${data.slice(0, 300)}`));
+        }
+      });
+    });
+    req.on("error", reject);
+    bodyStream.pipe(req);
   });
+
+const uploadFile = async (filePath, fileName, folderId) => {
+  const token = await getAccessToken();
+  const { size } = await fsp.stat(filePath);
+  // 1) open a resumable session
+  const init = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id&supportsAllDrives=true", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json; charset=UTF-8",
+      "X-Upload-Content-Type": "video/mp4",
+      "X-Upload-Content-Length": String(size),
+    },
+    body: JSON.stringify({ name: fileName, parents: [folderId] }),
+  });
+  if (!init.ok) throw new Error(`Session Drive refusée (${init.status}): ${(await init.text()).slice(0, 200)}`);
+  const sessionUrl = init.headers.get("location");
+  if (!sessionUrl) throw new Error("Session Drive sans URL.");
+  // 2) stream the bytes
+  return httpsPut(sessionUrl, { "Content-Type": "video/mp4" }, fs.createReadStream(filePath), size);
 };
 
 // Upload a finished batch: one folder per import, all ready variants inside.

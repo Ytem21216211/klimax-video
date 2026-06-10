@@ -45,3 +45,4 @@ supabase/.temp/
 
 # Google Drive service-account key (NEVER commit)
 local-backend/google-service-account.json
+local-backend/google-drive-config.json
