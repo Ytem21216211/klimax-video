@@ -155,26 +155,36 @@ const shareAnyoneReader = async (fileId) =>
 // request bodies ("fetch failed"), a piped read stream has no size limit.
 import https from "node:https";
 
-const httpsPut = (url, headers, bodyStream, contentLength) =>
+// PUT a Buffer (whole file in memory — fine for short-form videos) via node:https.
+// We send the Buffer, not a piped read stream: a stream that never flushes/`end`s
+// is what made the upload hang forever. A hard socket timeout guarantees we error
+// out instead of blocking the whole batch.
+const httpsPutBuffer = (url, headers, buffer, timeoutMs = 600_000) =>
   new Promise((resolve, reject) => {
-    const req = https.request(url, { method: "PUT", headers: { ...headers, "Content-Length": contentLength } }, (res) => {
-      let data = "";
-      res.on("data", (chunk) => { data += chunk; });
-      res.on("end", () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          try { resolve(JSON.parse(data)); } catch { resolve({}); }
-        } else {
-          reject(new Error(`Drive upload ${res.statusCode}: ${data.slice(0, 300)}`));
-        }
-      });
-    });
+    const req = https.request(
+      url,
+      { method: "PUT", headers: { ...headers, "Content-Length": buffer.length } },
+      (res) => {
+        let data = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => { data += chunk; });
+        res.on("end", () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            try { resolve(JSON.parse(data)); } catch { resolve({}); }
+          } else {
+            reject(new Error(`Drive upload ${res.statusCode}: ${data.slice(0, 300)}`));
+          }
+        });
+      }
+    );
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`Upload Drive expiré après ${Math.round(timeoutMs / 1000)}s`)));
     req.on("error", reject);
-    bodyStream.pipe(req);
+    req.end(buffer); // send all bytes at once, then close the request
   });
 
 const uploadFile = async (filePath, fileName, folderId) => {
   const token = await getAccessToken();
-  const { size } = await fsp.stat(filePath);
+  const buffer = await fsp.readFile(filePath);
   // 1) open a resumable session
   const init = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id&supportsAllDrives=true", {
     method: "POST",
@@ -182,15 +192,15 @@ const uploadFile = async (filePath, fileName, folderId) => {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json; charset=UTF-8",
       "X-Upload-Content-Type": "video/mp4",
-      "X-Upload-Content-Length": String(size),
+      "X-Upload-Content-Length": String(buffer.length),
     },
     body: JSON.stringify({ name: fileName, parents: [folderId] }),
   });
   if (!init.ok) throw new Error(`Session Drive refusée (${init.status}): ${(await init.text()).slice(0, 200)}`);
   const sessionUrl = init.headers.get("location");
   if (!sessionUrl) throw new Error("Session Drive sans URL.");
-  // 2) stream the bytes
-  return httpsPut(sessionUrl, { "Content-Type": "video/mp4" }, fs.createReadStream(filePath), size);
+  // 2) upload the bytes in one PUT
+  return httpsPutBuffer(sessionUrl, { "Content-Type": "video/mp4" }, buffer);
 };
 
 // Upload a finished batch: one folder per import, all ready variants inside.
