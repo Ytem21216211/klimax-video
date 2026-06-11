@@ -57,10 +57,15 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// FIXED port so the redirect URI is predictable: a "web" OAuth client requires it
+// to be pre-registered (Authorized redirect URIs), and a "Desktop" client accepts
+// any loopback anyway — so a fixed localhost port works for both. Override with
+// KLIMAX_OAUTH_PORT if 42813 is taken.
+const AUTH_PORT = Number(process.env.KLIMAX_OAUTH_PORT) || 42813;
 let redirectUri;
-server.listen(0, "127.0.0.1", () => {
+server.listen(AUTH_PORT, "127.0.0.1", () => {
   const port = server.address().port;
-  redirectUri = `http://127.0.0.1:${port}`;
+  redirectUri = `http://localhost:${port}`;
   const authUrl = "https://accounts.google.com/o/oauth2/v2/auth?" + new URLSearchParams({
     client_id: client.client_id,
     redirect_uri: redirectUri,
