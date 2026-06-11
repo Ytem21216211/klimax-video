@@ -30,6 +30,21 @@ const readParentFolderId = () => {
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 
+// ---------------------------------------------------------------------------
+// Auth: a personal Gmail Drive can ONLY receive bytes via a USER OAuth token
+// (a service account has no storage quota, so its uploads 403). So we prefer an
+// OAuth refresh token (google-oauth-token.json, produced by `node driveAuth.mjs`)
+// and only fall back to the service account for Workspace/Shared-Drive setups.
+// ---------------------------------------------------------------------------
+export const oauthClientPath = process.env.KLIMAX_GDRIVE_OAUTH_CLIENT || path.join(__dirname, "google-oauth-client.json");
+export const oauthTokenPath = process.env.KLIMAX_GDRIVE_OAUTH_TOKEN || path.join(__dirname, "google-oauth-token.json");
+const readJson = (p) => { try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; } };
+export const readOAuthClient = () => {
+  const raw = readJson(oauthClientPath);
+  return raw?.installed || raw?.web || raw; // accept the file Google downloads verbatim
+};
+const hasOAuthUser = () => Boolean(readOAuthClient()?.client_id && readJson(oauthTokenPath)?.refresh_token);
+
 let cachedKey = null;
 const readKey = () => {
   if (cachedKey) return cachedKey;
@@ -41,14 +56,37 @@ const readKey = () => {
   return cachedKey;
 };
 
-export const isDriveConfigured = () => Boolean(readKey()?.client_email && readKey()?.private_key);
+export const isDriveConfigured = () => hasOAuthUser() || Boolean(readKey()?.client_email && readKey()?.private_key);
+export const driveMode = () => (hasOAuthUser() ? "oauth" : isDriveConfigured() ? "service" : "off");
 
 const b64url = (input) =>
   Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
+// A user access token from the stored refresh token (preferred for personal Drive).
+let userTokenCache = { token: null, expiresAt: 0 };
+const getUserAccessToken = async () => {
+  if (userTokenCache.token && Date.now() < userTokenCache.expiresAt - 120_000) return userTokenCache.token;
+  const client = readOAuthClient();
+  const { refresh_token } = readJson(oauthTokenPath) || {};
+  const resp = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: client.client_id,
+      client_secret: client.client_secret,
+      refresh_token,
+      grant_type: "refresh_token",
+    }),
+  });
+  if (!resp.ok) throw new Error(`Token OAuth refusé (HTTP ${resp.status}): ${(await resp.text()).slice(0, 200)}`);
+  const data = await resp.json();
+  userTokenCache = { token: data.access_token, expiresAt: Date.now() + (data.expires_in || 3600) * 1000 };
+  return userTokenCache.token;
+};
+
 // OAuth2 access token via signed JWT (cached until ~5 min before expiry).
 let tokenCache = { token: null, expiresAt: 0 };
-const getAccessToken = async () => {
+const getServiceAccessToken = async () => {
   const key = readKey();
   if (!key) throw new Error("Clé de service Google Drive absente.");
   if (tokenCache.token && Date.now() < tokenCache.expiresAt - 300_000) return tokenCache.token;
@@ -78,6 +116,9 @@ const getAccessToken = async () => {
   tokenCache = { token: data.access_token, expiresAt: Date.now() + (data.expires_in || 3600) * 1000 };
   return tokenCache.token;
 };
+
+// Prefer the user token (personal Drive), fall back to the service account.
+const getAccessToken = async () => (hasOAuthUser() ? getUserAccessToken() : getServiceAccessToken());
 
 const driveFetch = async (url, options = {}) => {
   const token = await getAccessToken();

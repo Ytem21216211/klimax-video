@@ -2248,12 +2248,15 @@ const renderProject = async (db, project, sourceGroup) => {
 };
 
 app.get("/api/health", async (_req, res) => {
+  let drive = "off";
+  try { ({ driveMode: drive } = await import("./driveUpload.mjs")); drive = drive(); } catch { drive = "off"; }
   res.json({
     ok: true,
     ffmpeg: ffmpegPath,
     ffprobe: ffprobe.path,
     dataRoot,
     python: fsSync.existsSync(pythonBin) ? pythonBin : null,
+    drive, // "oauth" (perso, OK) | "service" (Workspace/Shared Drive) | "off"
     logoAnimation: fsSync.existsSync(logoAnimationPath) ? publicUrlFor(logoAnimationPath) : null,
     logoPreview: fsSync.existsSync(logoPreviewPath) ? publicUrlFor(logoPreviewPath) : null,
   });
