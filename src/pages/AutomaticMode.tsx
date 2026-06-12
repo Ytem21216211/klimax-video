@@ -115,10 +115,64 @@ const AutomaticMode = () => {
   const [starting, setStarting] = useState(false);
   const [presets, setPresets] = useState<LocalAutoPreset[]>([]);
   const [presetName, setPresetName] = useState("");
+  const [recentJobs, setRecentJobs] = useState<LocalAutoJob[]>([]);
+  const [downloading, setDownloading] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     localKlimaxApi.listAutoPresets().then(({ presets }) => setPresets(presets || [])).catch(() => {});
   }, []);
+
+  // Au montage : recharge les lots récents. Un batch EN COURS continue de tourner
+  // côté backend même si on a quitté la page — on se re-branche dessus (le polling
+  // existant reprend tout seul) et les anciens lots restent consultables à gauche.
+  const jobIsRunning = (j: LocalAutoJob) => !j.finishedAt || j.done < j.total || j.drive?.status === "uploading";
+  useEffect(() => {
+    localKlimaxApi
+      .listAutoJobs()
+      .then(({ jobs }) => {
+        setRecentJobs(jobs || []);
+        const running = (jobs || []).find(jobIsRunning);
+        if (running) setJob(running);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Garde la liste de gauche en phase avec le job affiché (progression, nouveaux lots).
+  useEffect(() => {
+    if (!job) return;
+    setRecentJobs((cur) =>
+      cur.some((j) => j.id === job.id) ? cur.map((j) => (j.id === job.id ? job : j)) : [job, ...cur].slice(0, 10)
+    );
+  }, [job]);
+
+  // Téléchargement DIRECT (fetch -> blob -> <a download>). Un simple href serait
+  // cross-origin (front 4587, fichiers 4588) : l'attribut `download` est ignoré et
+  // le navigateur NAVIGUE vers la vidéo — au retour, la page était réinitialisée.
+  const downloadFile = async (url: string, filename: string, key: string) => {
+    setDownloading((cur) => new Set(cur).add(key));
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000);
+    } catch (e: any) {
+      toast({ title: "Téléchargement échoué", description: String(e?.message || e), variant: "destructive" });
+    } finally {
+      setDownloading((cur) => {
+        const next = new Set(cur);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
 
   const savePreset = async () => {
     const name = presetName.trim() || `Preset ${presets.length + 1}`;
@@ -277,7 +331,43 @@ const AutomaticMode = () => {
         </div>
       </header>
 
-      <main className="relative z-10 mx-auto grid max-w-6xl gap-6 px-6 py-6">
+      <main className="relative z-10 mx-auto grid max-w-7xl gap-6 px-6 py-6 lg:grid-cols-[250px_minmax(0,1fr)] lg:items-start">
+        {/* Anciens lots — l'historique des batchs (le backend garde les 10 derniers).
+            Un lot en cours continue de tourner même si on quitte la page : il est
+            re-affiché automatiquement au retour, pastille ambre animée. */}
+        <aside className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 lg:sticky lg:top-6">
+          <p className="text-xs font-black uppercase tracking-[0.18em] text-white/50">Anciens lots</p>
+          <div className="mt-3 grid gap-2">
+            {recentJobs.length === 0 && (
+              <p className="text-[11px] leading-relaxed text-white/35">Aucun lot pour l'instant. Lance une génération et elle restera consultable ici.</p>
+            )}
+            {recentJobs.map((j) => {
+              const running = jobIsRunning(j);
+              const d = new Date(j.createdAt);
+              const label = `${d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })} · ${d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`;
+              return (
+                <button
+                  key={j.id}
+                  onClick={() => setJob(j)}
+                  className={cn(
+                    "rounded-xl border px-3 py-2 text-left transition",
+                    job?.id === j.id ? "border-white/40 bg-white/10" : "border-white/10 bg-white/[0.03] hover:border-white/25"
+                  )}
+                >
+                  <span className="flex items-center gap-2 text-[11px] font-black uppercase tracking-tight">
+                    <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", running ? "animate-pulse bg-amber-400" : "bg-emerald-400")} />
+                    {label}
+                  </span>
+                  <span className="mt-0.5 block text-[10px] text-white/45">
+                    {j.done}/{j.total} rendu(s){running ? " · en cours…" : ""}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </aside>
+
+        <div className="grid min-w-0 gap-6">
         {/* 1 — PROJECT SELECTION */}
         <SectionShell
           step={1}
@@ -502,12 +592,13 @@ const AutomaticMode = () => {
               <div className="flex items-center gap-2">
                 <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs font-black uppercase tracking-[0.18em] text-white/70">{job.done}/{job.total} · {readyItems.length} prêt(s)</span>
                 {readyItems.length > 0 && (
-                  <a
-                    href={localKlimaxApi.autoJobDownloadUrl(job.id)}
-                    className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-1.5 text-xs font-black uppercase tracking-[0.14em] text-black hover:bg-white/90"
+                  <button
+                    onClick={() => downloadFile(localKlimaxApi.autoJobDownloadUrl(job.id), `klimax-variantes-${job.id}.zip`, "zip")}
+                    disabled={downloading.has("zip")}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-1.5 text-xs font-black uppercase tracking-[0.14em] text-black hover:bg-white/90 disabled:opacity-60"
                   >
-                    <Download className="h-4 w-4" /> Tout télécharger
-                  </a>
+                    {downloading.has("zip") ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />} Tout télécharger
+                  </button>
                 )}
               </div>
             ) : null
@@ -533,16 +624,19 @@ const AutomaticMode = () => {
                   </div>
                   <p className="mt-3 truncate text-sm font-black uppercase tracking-tight">{item.source}</p>
                   <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-white/45">{item.combo}</p>
-                  <a
-                    href={item.status === "ready" && item.url ? item.url : undefined}
-                    download
+                  <button
+                    onClick={() =>
+                      item.status === "ready" && item.url &&
+                      downloadFile(item.url, `${String(item.source || "variante").replace(/[^\w\- ]+/g, "").trim() || "variante"} - v${(item.index ?? 0) + 1}.mp4`, item.id)
+                    }
+                    disabled={!(item.status === "ready" && item.url) || downloading.has(item.id)}
                     className={cn(
                       "mt-3 inline-flex w-full items-center justify-center gap-1 rounded-full border px-3 py-2 text-xs font-black uppercase tracking-[0.14em] transition",
-                      item.status === "ready" && item.url ? "border-white/10 bg-white text-black hover:bg-white/90" : "pointer-events-none border-white/10 bg-white/[0.03] text-white/40"
+                      item.status === "ready" && item.url ? "border-white/10 bg-white text-black hover:bg-white/90 disabled:opacity-60" : "pointer-events-none border-white/10 bg-white/[0.03] text-white/40"
                     )}
                   >
-                    <Download className="h-4 w-4" /> Exporter
-                  </a>
+                    {downloading.has(item.id) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />} Exporter
+                  </button>
                 </div>
               ))}
             </div>
@@ -580,6 +674,7 @@ const AutomaticMode = () => {
             </div>
           )}
         </SectionShell>
+        </div>
       </main>
     </div>
   );

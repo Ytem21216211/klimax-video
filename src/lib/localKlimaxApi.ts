@@ -290,6 +290,9 @@ export const localKlimaxApi = {
   async getAutoJob(jobId: string) {
     return parseResponse<{ job: LocalAutoJob }>(await fetch(`${LOCAL_KLIMAX_API}/api/auto/jobs/${jobId}`));
   },
+  async listAutoJobs() {
+    return parseResponse<{ jobs: LocalAutoJob[] }>(await fetch(`${LOCAL_KLIMAX_API}/api/auto/jobs`));
+  },
   autoJobDownloadUrl(jobId: string) {
     return `${LOCAL_KLIMAX_API}/api/auto/jobs/${jobId}/download`;
   },
