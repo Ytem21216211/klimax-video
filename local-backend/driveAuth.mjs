@@ -14,7 +14,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import crypto from "node:crypto";
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { oauthClientPath, oauthTokenPath, readOAuthClient } from "./driveUpload.mjs";
 
 // Full drive scope so we can drop batch folders INSIDE your chosen parent folder
@@ -76,5 +76,5 @@ server.listen(AUTH_PORT, "127.0.0.1", () => {
     state: crypto.randomBytes(8).toString("hex"),
   });
   console.log("\n👉 Ouvre cette URL dans ton navigateur et connecte-toi avec TON compte Google :\n\n" + authUrl + "\n");
-  exec(`open "${authUrl}"`); // macOS: open it automatically
+  execFile("open", [authUrl]); // macOS: open it automatically (no shell — no interpolation)
 });

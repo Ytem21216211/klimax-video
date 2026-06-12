@@ -34,14 +34,23 @@ const isOpenRouterKey = (key) => /^sk-or-/i.test(key || "");
 function runProcess(command, args, opts = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, opts);
+    // Bounded capture: a long transcription emits a lot of progress on stderr —
+    // accumulating it unbounded can overflow V8's max string length and crash the
+    // process (RangeError). stdout is the transcript JSON (cap generously); stderr
+    // keeps only its tail (where any real error is).
+    const MAX_OUT = 64 * 1024 * 1024;
+    const MAX_ERR = 256 * 1024;
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.stdout.on("data", (chunk) => { if (stdout.length < MAX_OUT) stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > MAX_ERR) stderr = stderr.slice(stderr.length - MAX_ERR);
+    });
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(stderr || stdout || `${command} exited with code ${code}`));
+      else reject(new Error((stderr || stdout || `${command} exited with code ${code}`).slice(-4000)));
     });
   });
 }

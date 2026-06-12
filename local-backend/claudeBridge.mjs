@@ -22,12 +22,16 @@ export function runClaude(prompt, systemPrompt) {
     const child = spawn(CLAUDE_BIN, args, { cwd: "/tmp", env: process.env });
     let out = "";
     let err = "";
+    // Bounded capture so a runaway Claude response can't overflow V8's max string
+    // length and crash the backend (same RangeError class as the ffmpeg flood).
+    const MAX_OUT = 32 * 1024 * 1024;
+    const MAX_ERR = 256 * 1024;
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       reject(new Error(`claude timed out after ${CLAUDE_TIMEOUT_MS}ms`));
     }, CLAUDE_TIMEOUT_MS);
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
+    child.stdout.on("data", (d) => { if (out.length < MAX_OUT) out += d; });
+    child.stderr.on("data", (d) => { err += d; if (err.length > MAX_ERR) err = err.slice(err.length - MAX_ERR); });
     child.on("error", (e) => {
       clearTimeout(timer);
       reject(e);

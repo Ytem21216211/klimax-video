@@ -342,7 +342,14 @@ async function deleteRows(table, query) {
 
 // ===== App =====
 const app = express();
-app.use(cors({ origin: true, credentials: true, exposedHeaders: ["Content-Range", "Range"] }));
+// Restrict CORS to localhost front-ends (this shim holds auth sessions + the user's
+// Postgres-backed data); `origin:true` let any visited website read it via the browser.
+const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+app.use(cors({
+  origin: (origin, cb) => cb(null, !origin || LOCAL_ORIGIN.test(origin)),
+  credentials: true,
+  exposedHeaders: ["Content-Range", "Range"],
+}));
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ limit: "100mb", extended: true }));
 

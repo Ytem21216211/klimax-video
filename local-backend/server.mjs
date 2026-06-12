@@ -140,8 +140,31 @@ const defaultProjectSettings = () => ({
   hookStyle: { ...defaultHookStyle },
 });
 
-app.use(cors({ origin: true, credentials: true }));
+// CORS: this server binds to localhost, but `origin:true` reflected ANY website's
+// origin (with credentials) — so a malicious page the user visits could read every
+// API response (assets, projects, settings) via the browser. Restrict to localhost
+// front-ends; tools without an Origin header (curl, server-to-server) still pass.
+const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+app.use(cors({
+  origin: (origin, cb) => cb(null, !origin || LOCAL_ORIGIN.test(origin)),
+  credentials: true,
+}));
 app.use(express.json({ limit: "25mb" }));
+// /files serves rendered + uploaded MEDIA only. dataRoot's TOP LEVEL also holds the
+// state/config files (db.json, settings.json with API keys, job/preset stores) — those
+// must NEVER be downloadable. Only allow paths that resolve INSIDE a media subdir
+// (this also defeats `..` traversal, which express.static alone would happily follow
+// back up to dataRoot/db.json).
+const FILES_ALLOWED_DIRS = [uploadRoot, renderRoot, textRoot, systemRoot, tempRoot];
+app.use("/files", (req, res, next) => {
+  let rel;
+  try { rel = decodeURIComponent(req.path); } catch { return res.status(400).end(); }
+  const abs = path.resolve(dataRoot, `.${rel.startsWith("/") ? rel : `/${rel}`}`);
+  if (!FILES_ALLOWED_DIRS.some((dir) => abs === dir || abs.startsWith(dir + path.sep))) {
+    return res.status(403).end();
+  }
+  next();
+});
 app.use("/files", express.static(dataRoot));
 
 // OpenAI-compatible AI brain backed by the local `claude` CLI.
