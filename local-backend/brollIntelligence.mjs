@@ -11,6 +11,7 @@
 
 import { settings as appSettings } from "./settings.mjs";
 import { runClaude } from "./claudeBridge.mjs";
+import { buildLearnedRulesBlock } from "./learnedRules.mjs";
 
 const SYSTEM_INSTRUCTION = `Tu es un monteur vidéo expert. On te donne :
 1. Une liste de b-rolls avec, pour chacun, un identifiant et une description (ce que la vidéo montre réellement, en français ou dans la langue du transcript).
@@ -55,7 +56,7 @@ function extractJson(text) {
 
 async function callClaude({ clips, brolls }) {
   const prompt = `${buildUserPayload({ clips, brolls })}\n\nRends le tableau JSON demandé.`;
-  const text = await runClaude(prompt, SYSTEM_INSTRUCTION);
+  const text = await runClaude(prompt, SYSTEM_INSTRUCTION + (await buildLearnedRulesBlock("broll")));
   const parsed = extractJson(text);
   if (!Array.isArray(parsed)) {
     throw new Error("Réponse Claude invalide (JSON non parsé).");
@@ -130,7 +131,7 @@ export async function pickBrollMomentsForClip({ clip, brolls }) {
     brolls: brolls.map((b) => ({ id: b.id, description: (b.note || b.title || "").trim() })),
     cues: clip.cues.map((c, i) => ({ cueIndex: i, t: Number((c.start || 0).toFixed(2)), text: (c.text || "").trim() })),
   }, null, 2);
-  const text = await runClaude(`${payload}\n\nRends le tableau JSON demandé.`, MOMENT_SYSTEM);
+  const text = await runClaude(`${payload}\n\nRends le tableau JSON demandé.`, MOMENT_SYSTEM + (await buildLearnedRulesBlock("broll")));
   const parsed = extractJson(text);
   if (!Array.isArray(parsed)) return [];
   const seen = new Set();

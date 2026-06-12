@@ -11,6 +11,11 @@ import { fileURLToPath } from "node:url";
 import { mergeFrenchElisionWords } from "./captionWords.mjs";
 import { buildLogoMoments, normalizeLogoWords } from "./logoMoments.mjs";
 import { claudeChatHandler, runClaude } from "./claudeBridge.mjs";
+import {
+  buildLearnedRulesBlock, getPlannerOverrides, readLearnedRules,
+  ingestFeedback, deleteRule, clearAllRules,
+} from "./learnedRules.mjs";
+import { faceToBandCrop } from "./autoVariants.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
@@ -26,6 +31,8 @@ const publicSeedRoot = path.join(projectRoot, "public", "klimax-videos");
 const pythonBin = path.join(projectRoot, "local-backend", ".venv", "bin", "python");
 const transcribeScriptPath = path.join(projectRoot, "local-backend", "transcribe.py");
 const hookBubbleScriptPath = path.join(projectRoot, "local-backend", "render_hook_bubble.py");
+const detectFacesScriptPath = path.join(projectRoot, "local-backend", "detect_faces.py");
+const faceModelPath = path.join(projectRoot, "local-backend", "models", "ultraface-rfb-320.onnx");
 const cropAlphaScriptPath = path.join(projectRoot, "local-backend", "crop_alpha_image.py");
 const logoAnimationSourceCandidate = "/Users/juliengoussale/Downloads/pop up klimax app store.mov";
 const logoAnimationPath = path.join(systemRoot, "klimax-pop-up.mov");
@@ -521,6 +528,168 @@ const probeMediaDurationSec = async (filePath) => {
   return duration;
 };
 
+// B-roll robustness: some uploaded clips carry a cover-art / data stream or a
+// variable resolution/format that crashes the overlay filter at render
+// ("Unknown cover type" / "reinitializing filters"). Normalise each b-roll ONCE to a
+// clean, stable file — single video stream (drops cover-art/data), yuv420p, constant
+// 30fps + SAR=1, capped at 1080 wide — replacing it in place so the fileUrl stays the
+// same. Idempotent via the asset's `normalized` flag.
+// True if the container has at least one real video stream (not a cover-art
+// "attached_pic"). A file failing this is empty/corrupt at the container level.
+const hasRealVideo = async (filePath) => {
+  try {
+    const p = await ffprobeJson(filePath);
+    return (p.streams || []).some((s) => s.codec_type === "video" && Number(s.width) > 0 && Number(s.height) > 0 && !(s.disposition && s.disposition.attached_pic));
+  } catch { return false; }
+};
+// Non-destructive normalise: re-encode to a temp file (strip cover-art/data, force
+// yuv420p/30fps/SAR, cap 1080 wide) and ONLY replace the original if the result is a
+// real, readable video. A bad/partial re-encode must NEVER overwrite a good source
+// (that is what previously corrupted b-rolls into 0-stream files).
+const normalizeBrollFile = async (filePath) => {
+  const tmp = `${filePath}.norm.${Date.now()}.${Math.random().toString(16).slice(2, 8)}.mp4`;
+  try {
+    await runProcess(ffmpegPath, [
+      "-y", "-i", filePath,
+      "-map", "0:v:0", "-an",
+      "-vf", "fps=30,scale='min(1080,iw)':-2,setsar=1",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+      "-movflags", "+faststart", tmp,
+    ]);
+    // Guard: the freshly-encoded file must itself contain a real video stream before
+    // we swap it in. If not, keep the original untouched.
+    if (!(await hasRealVideo(tmp))) throw new Error("re-encode produced no video stream");
+    await fs.rename(tmp, filePath);
+    durationCache.delete(mediaCacheKey(filePath)); // mtime changed
+  } finally {
+    try { if (fsSync.existsSync(tmp)) fsSync.unlinkSync(tmp); } catch { /* ignore */ }
+  }
+};
+// Self-repair for a SPECIFIC, common corruption: an interrupted/buggy MP4 "faststart"
+// remux leaves the `mvhd` (movie-header) box size — the first 4 bytes inside `moov` —
+// overwritten with the `mdat` size. Every parser then skips past the whole header and
+// finds NO video stream, even though the track + media data are intact. The fix is a
+// 4-byte rewrite to the canonical size (mvhd v0 = 108, v1 = 120). Returns true if it
+// rewrote the file into a now-readable video.
+const tryRepairMoovHeader = async (filePath) => {
+  try {
+    const buf = await fs.readFile(filePath);
+    const sz = buf.length;
+    let off = 0, moovOff = -1;
+    while (off + 8 <= sz) {
+      let s = buf.readUInt32BE(off);
+      const t = buf.toString("latin1", off + 4, off + 8);
+      if (s === 1) s = Number(buf.readBigUInt64BE(off + 8));
+      if (s === 0) s = sz - off;
+      if (t === "moov") { moovOff = off; break; }
+      if (s < 8) break;
+      off += s;
+    }
+    if (moovOff < 0 || buf.toString("latin1", moovOff + 12, moovOff + 16) !== "mvhd") return false;
+    const correct = buf[moovOff + 16] === 1 ? 120 : 108;
+    if (buf.readUInt32BE(moovOff + 8) === correct) return false; // not this corruption
+    buf.writeUInt32BE(correct, moovOff + 8);
+    const tmp = `${filePath}.fix.${Date.now()}`;
+    await fs.writeFile(tmp, buf);
+    if (await hasRealVideo(tmp)) {
+      await fs.rename(tmp, filePath);
+      durationCache.delete(mediaCacheKey(filePath));
+      return true;
+    }
+    try { await fs.unlink(tmp); } catch { /* ignore */ }
+    return false;
+  } catch { return false; }
+};
+// Quarantine gate — TOLERANT on purpose. A b-roll is unusable only when its container
+// has NO real video stream (missing file / 0-stream corruption) AND can't be repaired.
+// Per-packet H.264 warnings ("Invalid NAL unit size") are NOT fatal — perfectly good
+// clips emit them and still render fine — so they must never quarantine a file. This
+// also SELF-HEALS: a file wrongly flagged `broken` is un-quarantined once readable again.
+const ensureAssetNormalized = async (asset) => {
+  if (!asset || asset.category !== "broll" || !asset.filePath) return false;
+  if (asset.normalized && !asset.broken) return false; // already known-good — skip re-probe
+  let usable = fsSync.existsSync(asset.filePath) && (await hasRealVideo(asset.filePath));
+  // Before quarantining, try the 4-byte moov repair — it resurrects the common
+  // faststart-corruption that otherwise looks like a dead, 0-stream file.
+  if (!usable && fsSync.existsSync(asset.filePath) && (await tryRepairMoovHeader(asset.filePath))) {
+    usable = true;
+    console.log("[broll] auto-repaired corrupt moov header:", asset.title);
+  }
+  if (!usable) {
+    if (!asset.broken) { asset.broken = true; console.warn("[broll] no video stream -> quarantined:", asset.title); return true; }
+    return false; // already quarantined (genuinely dead — re-upload needed)
+  }
+  let changed = false;
+  if (asset.broken) { asset.broken = false; console.log("[broll] recovered (valid video stream):", asset.title); changed = true; }
+  if (!asset.normalized) {
+    try { await normalizeBrollFile(asset.filePath); }
+    catch (e) { console.warn("[broll] clean skipped (file still usable):", asset.title, e.message); }
+    asset.normalized = true; changed = true;
+  }
+  return changed;
+};
+// Globally-serialised one-shot: only ONE pool normalisation runs at a time across all
+// jobs/renders (otherwise concurrent calls race on the same files). Reads + writes its
+// own fresh db snapshot, so callers should re-read db AFTER awaiting this.
+let brollNormalizeInFlight = null;
+const normalizeBrollPoolOnce = async () => {
+  if (brollNormalizeInFlight) return brollNormalizeInFlight;
+  brollNormalizeInFlight = (async () => {
+    const db = await readDb();
+    let changed = false;
+    for (const a of db.assets) if (await ensureAssetNormalized(a)) changed = true;
+    if (changed) await writeDb(db);
+  })();
+  try { await brollNormalizeInFlight; } finally { brollNormalizeInFlight = null; }
+};
+
+// Face-aware split-screen framing. detect_faces.py samples ~12 frames of a source and
+// returns the DOMINANT face's centre as fractions of the frame ({cx,cy,w,h}). We cache
+// per source (keyed by filePath:mtime) so a source is analysed at most once, then reuse
+// the box for every clip / variant / render that draws from it.
+const faceBoxCache = new Map(); // mediaCacheKey -> { cx, cy, w, h, srcW, srcH } | null
+const ensureFaceBox = async (asset) => {
+  if (!asset || !asset.filePath || !fsSync.existsSync(asset.filePath)) return null;
+  const key = mediaCacheKey(asset.filePath);
+  if (faceBoxCache.has(key)) return faceBoxCache.get(key);
+  let box = null;
+  try {
+    const { stdout } = await runProcess(pythonBin, [
+      detectFacesScriptPath, asset.filePath, "--samples", "12", "--model", faceModelPath,
+    ]);
+    const line = stdout.trim().split("\n").filter(Boolean).pop() || "{}";
+    const parsed = JSON.parse(line);
+    if (parsed && parsed.found) {
+      let srcW = 0, srcH = 0;
+      try {
+        const p = await ffprobeJson(asset.filePath);
+        const v = (p.streams || []).find((s) => s.codec_type === "video") || {};
+        srcW = Number(v.width) || 0; srcH = Number(v.height) || 0;
+      } catch { /* dims optional */ }
+      box = { cx: parsed.cx, cy: parsed.cy, w: parsed.w, h: parsed.h, srcW, srcH };
+    } else if (parsed && parsed.error) {
+      console.warn("[face] detect error:", asset.title, parsed.error);
+    }
+  } catch (e) {
+    console.warn("[face] detect failed:", asset && asset.title, e.message);
+  }
+  faceBoxCache.set(key, box);
+  return box;
+};
+
+// Detect faces for every source an auto batch could draw from (both podcast cameras +
+// each reaction/speaker bank clip), keyed by asset id, so the engine can frame each band
+// on the real face. Detection is cached per source, so this is cheap after the first run.
+const detectFacesForSources = async (sourceGroup, banks) => {
+  const assets = [sourceGroup?.person1, sourceGroup?.person2, ...((banks?.speakers) || [])].filter(Boolean);
+  const faceBoxes = {};
+  await Promise.all(assets.map(async (a) => {
+    const box = await ensureFaceBox(a);
+    if (box) faceBoxes[a.id] = box;
+  }));
+  return faceBoxes;
+};
+
 // True (two-pass) EBU R128 loudness normalisation. Target overridable via
 // KLIMAX_LOUDNORM_I. measureLoudness() runs the analysis pass and returns the
 // measured values; loudnormFilterFor() builds the apply-pass filter (linear) so
@@ -784,6 +953,7 @@ const fallbackWordsFromCues = (clipTranscription) => {
 // kept at least SFX_MIN_GAP_SECONDS apart, with a random sound each (the "fahh"
 // quieter). The metallic riser is handled separately in the render.
 const SFX_EFFECT_VOLUME_DB = -13;
+const LOGO_VOLUME_DB = -4;        // Klimax logo pop-up sound — present but not overpowering
 const SFX_FAHH_KEY = "effect_fahhh";
 const SFX_FAHH_VOLUME_DB = -19;
 const SFX_PER_VIDEO = 3;          // target number of effects per video
@@ -1425,7 +1595,7 @@ const subtitleAnimationOverride = (subtitleStyle, x, y, shadowDown, options = {}
   ].join("")}}`;
 };
 
-const buildAssSubtitleFile = async (project, clip, clipTranscription) => {
+const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindows = [], subtitleAboveSquare = false, hideInLogoWindow = false) => {
   const subtitleStyle = project.settings?.subtitleStyle || defaultSubtitleStyle;
   const renderStyle = resolveSubtitleRenderStyle(subtitleStyle);
   const clipLayout = normalizeClipLayout(clip);
@@ -1444,27 +1614,39 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription) => {
     ? 0
     : clamp(outline > 0 ? outline + 3 : renderStyle.shadowBlur / 4, 0, 10);
   const keywordSet = buildSubtitleKeywordSet(clipTranscription, renderStyle);
-  const mainOverride = subtitleAnimationOverride(renderStyle, x, y, 0, { blur: 0 });
-  const shadowOverride = subtitleAnimationOverride(renderStyle, x, y, 0, {
-    yOffset: shadowOffset,
-    blur: renderStyle.shadowBlur,
+  // Per-Y override pair (main + shadow). Normally the clip's subtitle Y; but while
+  // the Klimax logo is on screen (auto mode, see `logoWindows`) the subtitle is
+  // lifted to the TOP so it is NEVER over OR under the logo.
+  const overridesForY = (cy) => ({
+    main: subtitleAnimationOverride(renderStyle, x, cy, 0, { blur: 0 }),
+    shadow: subtitleAnimationOverride(renderStyle, x, cy, 0, { yOffset: shadowOffset, blur: renderStyle.shadowBlur }),
   });
+  const SUBTITLE_LOGO_TOP_Y = 280; // very top band, well clear of the centred logo card
+  // Just above the centred square b-roll (square image top ≈ BROLL_SQUARE_Y = 1080).
+  const SUBTITLE_ABOVE_SQUARE_Y = 990;
+  const baseOverrides = overridesForY(subtitleAboveSquare ? SUBTITLE_ABOVE_SQUARE_Y : y);
+  const topOverrides = logoWindows.length ? overridesForY(SUBTITLE_LOGO_TOP_Y) : baseOverrides;
+  const inLogoWindow = (cue) =>
+    logoWindows.some((w) => safeNumber(cue.start, 0) < w.end && safeNumber(cue.end, 0) > w.start);
   const cues = clipTranscription?.cues?.length
     ? clipTranscription.cues
     : [{ start: 0, end: 2, text: stripCaptionPunctuation(clip.subtitle || "Sous titres automatiques") }];
   const events = cues.flatMap((cue) => {
+    // Centred-logo variant: remove any caption that overlaps the pop-up window entirely.
+    if (hideInLogoWindow && inLogoWindow(cue)) return [];
     const start = assTime(cue.start);
     const end = assTime(cue.end);
     const shadowText = assEscapePlain(cue.text);
     const mainText = formatAssSubtitleText(cue.text, keywordSet, renderStyle);
+    const ov = inLogoWindow(cue) ? topOverrides : baseOverrides;
     const layers = [
-      `Dialogue: 0,${start},${end},KlimaxShadow,,0,0,0,,${shadowOverride}${shadowText}`,
+      `Dialogue: 0,${start},${end},KlimaxShadow,,0,0,0,,${ov.shadow}${shadowText}`,
     ];
     if (outline > 0) {
-      layers.push(`Dialogue: 1,${start},${end},KlimaxOutline,,0,0,0,,${mainOverride}${shadowText}`);
+      layers.push(`Dialogue: 1,${start},${end},KlimaxOutline,,0,0,0,,${ov.main}${shadowText}`);
     }
     layers.push(
-      `Dialogue: 2,${start},${end},Klimax,,0,0,0,,${mainOverride}${mainText}`,
+      `Dialogue: 2,${start},${end},Klimax,,0,0,0,,${ov.main}${mainText}`,
     );
     return layers;
   });
@@ -1496,21 +1678,26 @@ const createHookBubbleOverlay = async (project, clip) => {
   // the subtitle font. Only the hook text options (color, size, position) are kept.
   const font = await resolveFontDescriptor("Helvetica", 600);
   const outputPath = path.join(tempRoot, `${project.id}-${clip.id}-hook.png`);
+  // Shrink the WHOLE hook (bubble + text) uniformly — it was taking too much space.
+  // One factor scales font, box bounds, padding and radius together so proportions
+  // stay intact. Applies to both manual and automatic mode (shared render path).
+  // Tune this single value up/down to make the hook bigger/smaller.
+  const HOOK_SCALE = 0.8;
   const configPath = await writeJsonFile(project.id, `${clip.id}-hook-style`, {
     outputPath,
     text: sanitizeHookText(clip.hookText || project.settings?.hookText || "Tu connais cette sensation"),
-    fontSize: hookStyle.fontSize || 53,
+    fontSize: Math.round((hookStyle.fontSize || 53) * HOOK_SCALE),
     fontPath: font.fontPath,
     bubbleColor: hookStyle.bubbleColor || "#ffffff",
     textColor: hookStyle.textColor || "#000000",
     centerX: clipLayout.hookPosition.x,
     centerY: clipLayout.hookPosition.y,
     // The bubble auto-stretches with the text and wraps once it hits maxWidth.
-    maxWidth: clipLayout.hookSize.width,
-    minHeight: clipLayout.hookSize.height,
-    radius: 64,
-    paddingX: 56,
-    paddingY: 30,
+    maxWidth: Math.round(clipLayout.hookSize.width * HOOK_SCALE),
+    minHeight: Math.round(clipLayout.hookSize.height * HOOK_SCALE),
+    radius: Math.round(64 * HOOK_SCALE),
+    paddingX: Math.round(56 * HOOK_SCALE),
+    paddingY: Math.round(30 * HOOK_SCALE),
   });
 
   await runProcess(pythonBin, [hookBubbleScriptPath, configPath]);
@@ -1566,13 +1753,30 @@ const resolveTriggerTime = (words, trigger, cueStart) => {
   return best != null ? best : cueStart;
 };
 // Fixed square zone for "square" placement: a centred square below the text zone.
-const BROLL_SQUARE_SIZE = 720;
+// Kept a touch smaller (620) so the subtitle band sits comfortably just above it.
+const BROLL_SQUARE_SIZE = 620;
 const BROLL_SQUARE_Y = 1080;
+// Theme matching for b-rolls: two clips are the SAME subject if they share ANY
+// meaningful word (accent-folded; generic filler dropped). Order-insensitive, so
+// "exercice périné kegel" and "kegel périné exercice 2" match on {perine, kegel}.
+// Lets the engine rotate through ALL of a subject's clips across a batch (kegel-1,
+// kegel-2, …) instead of always picking the same one.
+const BROLL_STOPWORDS = new Set(["exercice", "exercices", "sport", "difficile", "forte", "devant", "avec", "pour", "dans", "les", "des", "une", "qui", "met", "pression", "mettre", "plus", "tres", "bon", "lit", "the", "video", "mp4", "mov"]);
+const foldAccents = (s) => String(s).normalize("NFD").replace(/[̀-ͯ]/g, "");
+const brollTokens = (asset) => {
+  const raw = foldAccents(String(asset.note || asset.title || "").toLowerCase()).replace(/[^a-z0-9 ]+/g, " ");
+  return new Set(raw.split(/\s+/).filter((t) => t.length >= 3 && !/^\d+$/.test(t) && !BROLL_STOPWORDS.has(t)));
+};
+const brollSameTheme = (a, b) => {
+  const ta = brollTokens(a);
+  for (const t of brollTokens(b)) if (ta.has(t)) return true;
+  return false;
+};
 const buildBrollPlan = async (db, project, clipMeta) => {
   const plan = {};
   if (project.settings?.brollEnabled === false) return plan;
   const brolls = db.assets.filter(
-    (a) => (a.category === "broll" || a.category === "image") && a.filePath && fsSync.existsSync(a.filePath) && (a.note || a.title)
+    (a) => (a.category === "broll" || a.category === "image") && !a.broken && a.filePath && fsSync.existsSync(a.filePath) && (a.note || a.title)
   );
   if (!brolls.length) return plan;
 
@@ -1600,6 +1804,10 @@ const buildBrollPlan = async (db, project, clipMeta) => {
   // Never reuse the same b-roll in the whole video — recurring themes must use a
   // different variant (the LLM is told this too; we enforce it as a safety net).
   const usedBrollIds = new Set();
+  // ROTATE through all of a subject's b-rolls across the batch (variant 0 → kegel-1,
+  // variant 1 → kegel-2, …) instead of always picking the same file. `brollRotation`
+  // = the variant index (set per render); siblings are matched by shared theme below.
+  const rotation = Math.max(0, Math.floor(safeNumber(project.settings?.brollRotation, 0)));
 
   for (const { clip, transcription, duration } of clipMeta) {
     if (clip.stage !== "reply" || !duration || duration < 1.5) continue;
@@ -1630,13 +1838,22 @@ const buildBrollPlan = async (db, project, clipMeta) => {
     const kept = [];
     let lastStart = -Infinity;
     for (const m of moments) {
-      if (usedBrollIds.has(m.brollId)) continue;
+      // Rotate within the picked b-roll's THEME: successive variants use DIFFERENT
+      // files of the same subject (kegel-1, kegel-2, …), never the same one twice in a
+      // video, spread across the batch via `rotation`. Falls back to the LLM's pick.
+      const picked = pool.find((b) => b.id === m.brollId);
+      let brollId = m.brollId;
+      if (picked) {
+        const siblings = pool.filter((b) => brollSameTheme(b, picked) && !usedBrollIds.has(b.id));
+        if (siblings.length) brollId = siblings[(rotation + m.cueIndex) % siblings.length].id;
+      }
+      if (usedBrollIds.has(brollId)) continue;
       const cueStart = safeNumber(cues[m.cueIndex]?.start, 0);
       const t = resolveTriggerTime(words, m.trigger, cueStart);
       if (t - lastStart < BROLL_MIN_SEC) continue;
-      usedBrollIds.add(m.brollId);
+      usedBrollIds.add(brollId);
       lastStart = t;
-      kept.push({ ...m, startSec: t });
+      kept.push({ ...m, brollId, startSec: t });
     }
     moments = kept;
     if (!moments.length) continue;
@@ -1870,44 +2087,82 @@ const renderProject = async (db, project, sourceGroup) => {
       currentVideo = nextVideo;
     }
 
-    // Klimax logo pop-up — placed BEFORE the b-roll so the b-roll sits ON TOP of it,
-    // and started 1.5 s EARLY so the animation leads into the spoken "klimax".
-    if (
+    // Klimax logo pop-up — started 1.5 s EARLY so the animation leads into the
+    // spoken "klimax". In MANUAL mode it's composited here (before the b-roll, so
+    // the b-roll sits ON TOP of it); in AUTO mode `applyLogoOverlay` is instead
+    // called LAST (after b-roll AND subtitles) so the logo stays on top and nothing
+    // ever covers it — see the subtitles step below.
+    const logoApplies =
       clip.stage === "reply" &&
       project.settings?.klimaxLogoEnabled &&
       fsSync.existsSync(logoAnimationPath) &&
-      clipTranscription?.logoMoments?.length
-    ) {
-      const logoMoments = clipTranscription.logoMoments.slice(0, 3);
-      for (let logoIndex = 0; logoIndex < logoMoments.length; logoIndex += 1) {
-        const moment = logoMoments[logoIndex];
+      Boolean(clipTranscription?.logoMoments?.length);
+    const logoOnTop = project.settings?.autoMode === true && logoApplies;
+    // Per-variant the logo either sits at its base position OR jumps to the exact centre
+    // of the frame (same size, in front of everything). When centred, the subtitle is
+    // dropped during the logo window so nothing sits behind/over it.
+    const logoCenter = clip.logoCenter === true;
+    // Logo audio ("garder le son"): collected while compositing each pop-up, then mixed
+    // into the clip's audio below so the Klimax animation plays its sound.
+    const logoAudioTags = [];
+    // The on-screen time window of each logo pop-up (clip-local secs). Used to place
+    // the overlay AND — in auto mode — to keep the b-roll OUT of these windows so
+    // nothing ever shares the screen with the logo.
+    const logoWindows = logoApplies
+      ? clipTranscription.logoMoments.slice(0, 3).map((moment) => {
+          const triggerTime = safeNumber(moment.start, 0);
+          const start = Math.max(0, triggerTime - 1.5);
+          const duration = Math.max(0.1, safeNumber(moment.end, triggerTime + 4.8) - triggerTime);
+          return { start, end: start + duration };
+        })
+      : [];
+    // Overlays the Klimax pop-up onto `inLabel`; the last overlay writes to
+    // `finalLabel` when given (so the auto path can land directly on `vsub`).
+    const applyLogoOverlay = (inLabel, finalLabel = null) => {
+      if (!logoApplies) return inLabel;
+      let cur = inLabel;
+      for (let logoIndex = 0; logoIndex < logoWindows.length; logoIndex += 1) {
+        const win = logoWindows[logoIndex];
         inputArgs.push("-i", logoAnimationPath);
         const logoInput = inputIndex;
         inputIndex += 1;
         const shiftedLogo = `logo${clipIndex}_${logoIndex}`;
-        const nextVideo = `vlogo${clipIndex}_${logoIndex}`;
-        const triggerTime = safeNumber(moment.start, 0);
-        const logoStart = Math.max(0, triggerTime - 1.5);
-        const logoDuration = Math.max(0.1, safeNumber(moment.end, triggerTime + 4.8) - triggerTime);
-        const logoX = clipLayout.logoPosition.x;
-        const logoY = clipLayout.logoPosition.y;
+        const isLast = logoIndex === logoWindows.length - 1;
+        const nextVideo = isLast && finalLabel ? finalLabel : `vlogo${clipIndex}_${logoIndex}`;
+        // Centred variant → dead centre of the 1080x1920 frame; else the clip's base pos.
+        const logoX = logoCenter ? 540 : clipLayout.logoPosition.x;
+        const logoY = logoCenter ? 960 : clipLayout.logoPosition.y;
         const logoSize = clipLayout.logoSize;
         filterChains.push(`[${logoInput}:v]scale=${logoSize}:-1,format=rgba[${shiftedLogo}]`);
         filterChains.push(
-          `[${shiftedLogo}]trim=duration=${logoDuration.toFixed(3)},setpts=PTS-STARTPTS+${logoStart.toFixed(3)}/TB[${shiftedLogo}_delayed]`
+          `[${shiftedLogo}]trim=duration=${(win.end - win.start).toFixed(3)},setpts=PTS-STARTPTS+${win.start.toFixed(3)}/TB[${shiftedLogo}_delayed]`
         );
         filterChains.push(
-          `[${currentVideo}][${shiftedLogo}_delayed]overlay=x=${Math.round(logoX)}-w/2:y=${Math.round(logoY)}-h/2:eof_action=pass[${nextVideo}]`
+          `[${cur}][${shiftedLogo}_delayed]overlay=x=${Math.round(logoX)}-w/2:y=${Math.round(logoY)}-h/2:eof_action=pass[${nextVideo}]`
         );
-        currentVideo = nextVideo;
+        cur = nextVideo;
+        // Keep the pop-up's own sound: delay this logo's audio to its window start and
+        // collect it for the clip audio mix below. Bounded to the clip length.
+        const logoDelayMs = Math.max(0, Math.round(win.start * 1000));
+        const logoATag = `alogo${clipIndex}_${logoIndex}`;
+        filterChains.push(
+          `[${logoInput}:a]aresample=async=1,volume=${LOGO_VOLUME_DB}dB,adelay=${logoDelayMs}:all=1,atrim=0:${Math.max(0.1, clipDuration).toFixed(3)},asetpts=PTS-STARTPTS[${logoATag}]`
+        );
+        logoAudioTags.push(`[${logoATag}]`);
       }
-    }
+      return cur;
+    };
+    if (logoApplies && !logoOnTop) currentVideo = applyLogoOverlay(currentVideo);
 
     // B-roll overlay. A manual image (clip.imageId) still owns the whole clip as a
     // centered overlay (legacy). Otherwise the moment-level plan composites several
     // FULL-SCREEN b-rolls in sequence — each its own window, a RANDOM slice of the
     // source, fade in/out — or hard cuts + a shutter click in shutter mode.
     const brollShutterTimes = [];
+    // Auto mode: when a SQUARE b-roll sits in the fixed bottom zone, the subtitle is
+    // pulled to JUST ABOVE the square (instead of its default band, which would land
+    // on top of the square). Set while compositing the b-roll below.
+    let subtitleAboveSquare = false;
     if (clip.stage === "reply" && project.settings?.brollEnabled !== false && clip.imageId) {
       const overlayAsset = db.assets.find((asset) => asset.id === clip.imageId && (asset.category === "image" || asset.category === "broll"));
       if (overlayAsset?.filePath) {
@@ -1927,7 +2182,16 @@ const renderProject = async (db, project, sourceGroup) => {
       }
     } else if (brollPlan[clip.id]?.length) {
       const FADE = 0.25;
-      const segments = brollPlan[clip.id];
+      // AUTO mode: the Klimax logo owns its window alone — drop any b-roll segment
+      // that overlaps a logo pop-up so nothing shares the screen with it (no b-roll
+      // over OR under the logo during those ~seconds).
+      const segments = logoOnTop && logoWindows.length
+        ? brollPlan[clip.id].filter((seg) => !logoWindows.some((w) => seg.start < w.end && seg.end > w.start))
+        : brollPlan[clip.id];
+      // Auto mode only: a square segment means the subtitle should ride just above it.
+      if (project.settings?.autoMode === true && segments.some((seg) => seg.placement === "square")) {
+        subtitleAboveSquare = true;
+      }
       for (let bi = 0; bi < segments.length; bi += 1) {
         const seg = segments[bi];
         // Input: a random window of a video (loop if shorter than the slot), or a held image.
@@ -1990,13 +2254,22 @@ const renderProject = async (db, project, sourceGroup) => {
       }
     }
 
-    const assFilePath = await buildAssSubtitleFile(project, clip, clipTranscription);
+    // In auto mode, lift any subtitle that overlaps a logo pop-up to the TOP of the
+    // frame so it's never over or under the logo (manual mode: no windows passed).
+    // Centred logo → DROP the subtitle during the pop-up window (nothing behind it);
+    // base-position logo → LIFT the subtitle to the top so it clears the logo (default).
+    const assFilePath = await buildAssSubtitleFile(project, clip, clipTranscription, logoOnTop ? logoWindows : [], subtitleAboveSquare, logoCenter);
     const subtitledVideo = `vsub${clipIndex}`;
+    // In AUTO mode the logo is composited LAST (on top of the b-roll AND the
+    // subtitles), so write the subtitles to a pre-logo label and let the logo
+    // overlay land on `vsub`. Otherwise subtitles write straight to `vsub`.
+    const subOut = logoOnTop ? `vsubpre${clipIndex}` : subtitledVideo;
     // Normalise to EXACTLY 1080x1920 before concat/xfade: some upstream filters
     // (zoom, dual-speaker stack) can round a clip to 1080x1918, which makes concat
     // fail ("parameters do not match"). A no-op for already-correct clips.
     // fps=30 normalises mixed-framerate sources — xfade/concat require matching fps.
-    filterChains.push(`[${currentVideo}]subtitles='${assFilePath}':fontsdir='${fontRoot}',scale=1080:1920,setsar=1,fps=30[${subtitledVideo}]`);
+    filterChains.push(`[${currentVideo}]subtitles='${assFilePath}':fontsdir='${fontRoot}',scale=1080:1920,setsar=1,fps=30[${subOut}]`);
+    if (logoOnTop) applyLogoOverlay(subOut, subtitledVideo);
     const videoVolumeDb = safeNumber(project.settings?.videoVolumeDb, 2);
     // For a dual-speaker clip the video is cut short at clipDuration; trim the
     // audio to match so the main speaker's voice doesn't bleed over the next
@@ -2066,11 +2339,13 @@ const renderProject = async (db, project, sourceGroup) => {
       sfxMixTags.push(`[${tag}]`);
     }
 
-    if (sfxMixTags.length) {
+    // The voice gets the SFX beats AND the Klimax logo pop-up sound(s) summed on top.
+    const extraAudioTags = [...sfxMixTags, ...logoAudioTags];
+    if (extraAudioTags.length) {
       filterChains.push(
         // normalize=0 so amix SUMS (doesn't divide the voice by the input count) —
-        // otherwise each extra SFX would quieten the voice. A limiter guards peaks.
-        `[acl${clipIndex}]${sfxMixTags.join("")}amix=inputs=${sfxMixTags.length + 1}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[a${clipIndex}]`
+        // otherwise each extra SFX/logo would quieten the voice. A limiter guards peaks.
+        `[acl${clipIndex}]${extraAudioTags.join("")}amix=inputs=${extraAudioTags.length + 1}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[a${clipIndex}]`
       );
     } else {
       filterChains.push(`[acl${clipIndex}]anull[a${clipIndex}]`);
@@ -2298,6 +2573,7 @@ app.post("/api/assets/:category", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Fichier manquant." });
   const db = await readDb();
   const asset = assetFromFile({ file: req.file, category, note: req.body?.note || req.file.originalname });
+  await ensureAssetNormalized(asset); // clean b-roll files at upload so they never crash a render
   db.assets.unshift(asset);
   await writeDb(db);
   res.json({ asset, assets: db.assets });
@@ -2417,6 +2693,59 @@ app.patch("/api/projects/:id", async (req, res) => {
   res.json({ project: resolveProject(db, project.id) });
 });
 
+// Auto-centre the split-screen bands on each speaker's face. Detects the dominant
+// face in the MAIN source (sourceAssetForClip) and the ADDED source
+// (dualSpeakerSource), then fills the exact cropX/cropY that lands each face in the
+// centre of its band — accounting for split ratio, top/bottom position, per-band zoom
+// and mirror. Writes to the same fields the preview & export already read, so it's
+// WYSIWYG. `clipId` in the body targets one clip; omitted = every dual-speaker clip.
+app.post("/api/projects/:id/center-faces", async (req, res) => {
+  const db = await readDb();
+  const project = db.projects.find((item) => item.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Projet introuvable." });
+  const sourceGroup = getVideoGroups(db.assets).find((group) => group.id === project.sourceGroupId);
+  if (!sourceGroup) return res.status(400).json({ error: "Source vidéo manquante." });
+
+  const mirror = project.settings?.mirrorEnabled === true;
+  const clipId = req.body?.clipId;
+  const targets = (project.clips || []).filter(
+    (c) => c.dualSpeakerEnabled && (!clipId || c.id === clipId)
+  );
+  let centered = 0;
+  let noFace = 0;
+  for (const clip of targets) {
+    const ratio = clamp(safeNumber(clip.dualSpeakerSplitRatio, 0.5), 0.2, 0.8);
+    const TOP = Math.round(1920 * ratio);
+    const BOTTOM = 1920 - TOP;
+    const addedOnTop = clip.dualSpeakerPosition === "top";
+    const mainBandH = addedOnTop ? BOTTOM : TOP;
+    const addedBandH = addedOnTop ? TOP : BOTTOM;
+    const mainZoom = clamp(safeNumber(clip.dualSpeakerMainZoom, 100), 100, 220) / 100;
+    const addedZoom = clamp(safeNumber(clip.dualSpeakerAddedZoom, 100), 100, 220) / 100;
+
+    const mainAsset = sourceAssetForClip(sourceGroup, clip);
+    const addedAsset = db.assets.find((a) => a.id === clip.dualSpeakerSource);
+    const [mainBox, addedBox] = await Promise.all([
+      ensureFaceBox(mainAsset),
+      ensureFaceBox(addedAsset),
+    ]);
+    if (mainBox) {
+      const { cropX, cropY } = faceToBandCrop({ ...mainBox, bandH: mainBandH, zoom: mainZoom, mirror });
+      clip.dualSpeakerMainCropX = cropX;
+      clip.dualSpeakerMainCropY = cropY;
+      centered += 1;
+    } else { noFace += 1; }
+    if (addedBox) {
+      const { cropX, cropY } = faceToBandCrop({ ...addedBox, bandH: addedBandH, zoom: addedZoom, mirror });
+      clip.dualSpeakerAddedCropX = cropX;
+      clip.dualSpeakerAddedCropY = cropY;
+    }
+  }
+  project.updated_at = new Date().toISOString();
+  await writeDb(db);
+  res.json({ project: resolveProject(db, project.id), centered, noFace, clips: targets.length });
+});
+
 // Long-running routes (transcribe, render) hold their `db` snapshot for minutes.
 // Writing that stale snapshot back would clobber anything saved meanwhile (asset
 // uploads, project edits, auto jobs) — so the FINAL write re-reads the db and
@@ -2471,6 +2800,7 @@ app.post("/api/projects/:id/transcribe", async (req, res) => {
 });
 
 app.post("/api/projects/:id/render", async (req, res) => {
+  await normalizeBrollPoolOnce(); // clean/quarantine b-roll first (serialised), then read fresh db
   const db = await readDb();
   const project = db.projects.find((item) => item.id === req.params.id);
   if (!project) return res.status(404).json({ error: "Projet introuvable." });
@@ -2799,7 +3129,8 @@ const genVariantHooks = async (introText, replyText, n) => {
       `2) "variants" : ${Math.max(1, nVariants)} NOUVEAUX hooks, variantes des hooks de la banque adaptées au transcript — EXACTEMENT le même style (court, percutant, ton cru assumé, max ~9 mots, terminé par UN emoji collant au sujet). ` +
       "RÈGLE ABSOLUE pour les variants : le CONTEXTE du sujet doit être explicite dans le hook. Si le sujet est la performance sexuelle, mentionne \"au lit\" (ou équivalent clair). " +
       'CONTRE-EXEMPLE interdit : "3 exos pour finir en 7 minutes" (ambigu, on dirait du sport) → il faut "il finissait en 7 minutes au lit" ou "3 exos pour tenir au lit". Un hook sans son contexte est un hook raté. ' +
-      'Réponds UNIQUEMENT en JSON : {"fits":[...], "variants":["..."]}.';
+      'Réponds UNIQUEMENT en JSON : {"fits":[...], "variants":["..."]}.' +
+      (await buildLearnedRulesBlock("hooks"));
     try {
       const raw = await runClaude(
         `BANQUE:\n${bank.map((h, i) => `${i}: ${h}`).join("\n")}\n\nTRANSCRIPT:\n${ctx.slice(0, 1500)}`,
@@ -2885,6 +3216,10 @@ const processAutoJob = async (job) => {
   job._running = true;
   try {
     const { planVideoVariants } = await import("./autoVariants.mjs");
+
+    // 0) Clean/quarantine every b-roll once (globally serialised), THEN read fresh db
+    //    so the work list excludes any quarantined file.
+    await normalizeBrollPoolOnce();
     const db = await readDb();
     const p = job.params;
 
@@ -2897,22 +3232,24 @@ const processAutoJob = async (job) => {
       if (!sourceGroup?.person1?.filePath || !sourceGroup?.person2?.filePath) continue;
       const banks = {
         speakers: db.assets.filter((a) => a.category === "speaker"),
-        brolls: db.assets.filter((a) => a.category === "broll"),
+        brolls: db.assets.filter((a) => a.category === "broll" && !a.broken),
         images: db.assets.filter((a) => a.category === "image"),
         music: db.assets.filter((a) => a.category === "music"),
         hooks: (job.hooksByProject || {})[pid] || [],
       };
+      const faceBoxes = await detectFacesForSources(sourceGroup, banks);
       const plan = planVideoVariants({
         base: {
           settings: project.settings || {},
           clips: project.clips || [],
           sourceNames: { person1: sourceGroup.person1?.title, person2: sourceGroup.person2?.title },
         },
-        videoId: pid, requested: p.variantsPerVideo, varied: p.varied, lockSplitScreen: p.lockSplitScreen, banks,
+        videoId: pid, requested: p.variantsPerVideo, varied: p.varied, lockSplitScreen: p.lockSplitScreen, banks, faceBoxes, overrides: p.plannerOverrides || {},
       });
       for (const v of plan.variants) {
         const item = job.items.find((it) => it.id === `${job.id}-${pid}-${v.index}`);
         if (!item || item.status === "ready") continue;
+        if (!item.decisions) item.decisions = v.decisions; // backfill for jobs created before this field
         work.push({ item, project, sourceGroup, variant: v, pid });
       }
     }
@@ -2930,15 +3267,30 @@ const processAutoJob = async (job) => {
           const variantProject = {
             id: `${pid}-auto-${v.index}-${Date.now()}`,
             sourceGroupId: project.sourceGroupId,
-            settings: mergeProjectSettings({ ...v.settings, hookAutoGenerated: true }), // skip in-render hook regen
+            settings: mergeProjectSettings({ ...v.settings, hookAutoGenerated: true, brollRotation: v.index }), // skip in-render hook regen; rotate b-roll theme per variant
             clips: v.clips,
             transcription: project.transcription, // reuse cached transcription -> no re-transcribe, 0 tokens
           };
           const exported = await renderProject(db, variantProject, sourceGroup);
           item.status = "ready"; item.url = exported.url; item.path = exported.path; item.error = null;
         } catch (e) {
-          item.status = "failed"; item.error = String(e.message || e).slice(0, 300);
-          console.error("[auto] variant render failed:", e.message);
+          // Salvage: a bad b-roll shouldn't waste the slot — retry once WITHOUT b-roll
+          // before marking the variant failed.
+          try {
+            const salvageProject = {
+              id: `${pid}-auto-${v.index}-salvage-${Date.now()}`,
+              sourceGroupId: project.sourceGroupId,
+              settings: mergeProjectSettings({ ...v.settings, brollEnabled: false, hookAutoGenerated: true }),
+              clips: v.clips.map((c) => ({ ...c, brollId: null, imageId: null, autoBrollId: null })),
+              transcription: project.transcription,
+            };
+            const exported = await renderProject(db, salvageProject, sourceGroup);
+            item.status = "ready"; item.url = exported.url; item.path = exported.path; item.error = null; item.salvaged = true;
+            console.warn("[auto] variant salvaged without b-roll:", e.message);
+          } catch (e2) {
+            item.status = "failed"; item.error = String(e.message || e).slice(0, 300);
+            console.error("[auto] variant render failed (salvage too):", e2.message);
+          }
         } finally {
           releaseRenderSlot();
         }
@@ -3003,6 +3355,10 @@ app.post("/api/auto/generate", async (req, res) => {
   const variantsPerVideo = clamp(Math.round(safeNumber(req.body?.variantsPerVideo, 6)), 1, 20);
   const varied = req.body?.varied || { broll: true, subtitles: true, hook: true, sfx: false, zooms: false, music: true };
   const lockSplitScreen = req.body?.lockSplitScreen === true;
+  // Training mode: learned overrides narrow the deterministic picks. Snapshot them
+  // ON the job so a resumed/re-derived job reproduces the exact same variants even
+  // if rules change later.
+  const plannerOverrides = await getPlannerOverrides();
 
   // Auto mode takes VIDEO PAIRS from the bank (video 1 + video 2): assemble/reuse a
   // project per pair and transcribe it (whisper) — full A→Z, separate from manual.
@@ -3046,24 +3402,25 @@ app.post("/api/auto/generate", async (req, res) => {
       music: db.assets.filter((a) => a.category === "music"),
       hooks,
     };
+    const faceBoxes = await detectFacesForSources(sourceGroup, banks);
     const plan = planVideoVariants({
       base: {
         settings: project.settings || {},
         clips: project.clips || [],
         sourceNames: { person1: sourceGroup.person1?.title, person2: sourceGroup.person2?.title },
       },
-      videoId: pid, requested: variantsPerVideo, varied, lockSplitScreen, banks,
+      videoId: pid, requested: variantsPerVideo, varied, lockSplitScreen, banks, faceBoxes, overrides: plannerOverrides,
     });
     achievablePerVideo.push({ projectId: pid, source: project.title || pid, achievable: plan.variants.length, requested: variantsPerVideo });
     for (const v of plan.variants) {
-      items.push({ id: `${jobId}-${pid}-${v.index}`, projectId: pid, source: project.title || pid, index: v.index, combo: v.combo, status: "queued", url: null });
+      items.push({ id: `${jobId}-${pid}-${v.index}`, projectId: pid, source: project.title || pid, index: v.index, combo: v.combo, decisions: v.decisions, status: "queued", url: null });
     }
   }
   if (!items.length) return res.status(400).json({ error: "Aucune variante générable (vérifie sources + transcription)." });
 
   const job = {
     id: jobId, createdAt: new Date().toISOString(), finishedAt: null, total: items.length, done: 0,
-    params: { projectIds: allProjectIds, variantsPerVideo, varied, lockSplitScreen }, hooksByProject, items,
+    params: { projectIds: allProjectIds, variantsPerVideo, varied, lockSplitScreen, plannerOverrides }, hooksByProject, items,
   };
   autoJobs.set(jobId, job);
   await saveAutoJobs();
@@ -3179,9 +3536,64 @@ app.post("/api/auto/presets/:id/run", async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// TRAINING MODE — the feedback loop. The user writes free-text feedback on a
+// generated variant; Claude distills it into persistent learned rules (text for
+// hooks/b-roll prompts, params for the deterministic planner) that auto-apply on
+// the next /api/auto/generate run. See learnedRules.mjs.
+// ---------------------------------------------------------------------------
+
+// List every learned rule + the resolved planner overrides + recent history.
+app.get("/api/training/rules", async (_req, res) => {
+  const store = await readLearnedRules();
+  res.json({ rules: store.rules, overrides: await getPlannerOverrides(), history: store.history.slice(0, 20), updatedAt: store.updatedAt });
+});
+
+// Submit feedback on a job/item -> distill -> persist -> return what was learned.
+app.post("/api/training/feedback", async (req, res) => {
+  const feedback = String(req.body?.feedback || "").trim();
+  if (!feedback) return res.status(400).json({ error: "Feedback vide." });
+  const { jobId = null, itemId = null } = req.body || {};
+
+  // Pull the actual decisions for this item (context for the distillation).
+  let decisions = req.body?.decisions || null;
+  if (!decisions && jobId) {
+    await loadAutoJobs();
+    const job = autoJobs.get(jobId);
+    const item = job && (itemId ? job.items.find((it) => it.id === itemId) : job.items.find((it) => it.status === "ready") || job.items[0]);
+    decisions = item?.decisions || null;
+  }
+
+  try {
+    const result = await ingestFeedback({ feedback, decisions, jobId, itemId });
+    const store = result.store;
+    res.json({
+      added: result.added, removed: result.removed, distilled: result.distilled,
+      rules: store.rules, overrides: await getPlannerOverrides(), history: store.history.slice(0, 20),
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e).slice(0, 300) });
+  }
+});
+
+app.delete("/api/training/rules/:id", async (req, res) => {
+  const { store, removed } = await deleteRule(req.params.id);
+  if (!removed) return res.status(404).json({ error: "Règle introuvable." });
+  res.json({ rules: store.rules, overrides: await getPlannerOverrides() });
+});
+
+app.post("/api/training/rules/clear", async (_req, res) => {
+  const { store } = await clearAllRules();
+  res.json({ rules: store.rules, overrides: await getPlannerOverrides() });
+});
+
 // Scheduler: every minute, launch any enabled preset whose HH:MM just passed and
 // that hasn't run today yet.
-setInterval(async () => {
+// DISABLED by default (KLIMAX_AUTO_SCHEDULER!=="1") so NO planned generation ever runs
+// on its own — auto batches only happen when YOU click "Générer" (manual). Set the env
+// flag to re-enable timed presets.
+const AUTO_SCHEDULER_ENABLED = process.env.KLIMAX_AUTO_SCHEDULER === "1";
+if (AUTO_SCHEDULER_ENABLED) setInterval(async () => {
   try {
     const presets = await readAutoPresets();
     const now = new Date();

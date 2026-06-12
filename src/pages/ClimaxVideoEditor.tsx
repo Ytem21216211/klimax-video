@@ -918,6 +918,7 @@ const ClimaxVideoEditor = () => {
   const [isRendering, setIsRendering] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [isCenteringFaces, setIsCenteringFaces] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [activeDragKind, setActiveDragKind] = useState<"video" | "hook" | "subtitle" | "logo" | "image" | null>(null);
   const [sourceVideoSizes, setSourceVideoSizes] = React.useState<Record<string, { width: number; height: number }>>({});
@@ -1321,6 +1322,52 @@ const ClimaxVideoEditor = () => {
       current.map((clip) => (clip.id === id ? { ...clip, ...patch } : clip))
     );
   }, []);
+
+  // Auto-frame the split-screen bands on each speaker's face. Pushes the current
+  // clips (so the server centres against the live split ratio / zoom / sources), runs
+  // detection, then folds the returned crop values back into local state — the preview
+  // recentres immediately because exportBandFrameStyle already reads these fields.
+  const handleCenterFaces = React.useCallback(async () => {
+    const clip = clips.find((c) => c.id === selectedClipIdRef.current);
+    if (!projectId || isCenteringFaces || !clip?.dualSpeakerEnabled) return;
+    setIsCenteringFaces(true);
+    try {
+      await localKlimaxApi.saveProject(projectId, { clips });
+      const { project, centered, noFace } = await localKlimaxApi.centerFaces(projectId, clip.id);
+      const updated = project.clips || [];
+      setClips((current) =>
+        current.map((c) => {
+          const u = updated.find((x) => x.id === c.id);
+          return u
+            ? {
+                ...c,
+                dualSpeakerMainCropX: u.dualSpeakerMainCropX ?? c.dualSpeakerMainCropX,
+                dualSpeakerMainCropY: u.dualSpeakerMainCropY ?? c.dualSpeakerMainCropY,
+                dualSpeakerAddedCropX: u.dualSpeakerAddedCropX ?? c.dualSpeakerAddedCropX,
+                dualSpeakerAddedCropY: u.dualSpeakerAddedCropY ?? c.dualSpeakerAddedCropY,
+              }
+            : c;
+        })
+      );
+      if (centered > 0) {
+        toast({ title: "Visages centrés", description: "Les bandes sont recadrées sur chaque visage." });
+      } else {
+        toast({
+          title: "Aucun visage détecté",
+          description: noFace > 0 ? "Recadrage laissé centré — ajuste à la main si besoin." : "Rien à recadrer.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      toast({
+        title: "Échec du centrage",
+        description: error instanceof Error ? error.message : "Erreur inconnue.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsCenteringFaces(false);
+    }
+  }, [projectId, isCenteringFaces, clips]);
 
   const startClipDrag = (
     kind: "video" | "hook" | "subtitle" | "logo" | "image",
@@ -2737,6 +2784,23 @@ const ClimaxVideoEditor = () => {
                                   />
                                   <p className="text-[11px] text-white/40">Glisse pour agrandir la bande du bas / du haut.</p>
                                 </div>
+                                {/* Auto-centrage visages */}
+                                <div className="space-y-2 pt-1">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={isCenteringFaces}
+                                    onClick={handleCenterFaces}
+                                    className="w-full rounded-full border-white/15 bg-white/[0.04] text-white hover:bg-white/10"
+                                  >
+                                    {isCenteringFaces ? "Détection des visages…" : "Centrer sur les visages"}
+                                  </Button>
+                                  <p className="text-[11px] text-white/40">
+                                    Détecte automatiquement chaque visage et recadre les deux bandes dessus.
+                                  </p>
+                                </div>
+
                                 {/* Bande originale */}
                                 <p className="pt-2 text-xs font-black uppercase tracking-[0.2em] text-white/45">Bande originale</p>
                                 <div className="space-y-2">
@@ -2797,7 +2861,7 @@ const ClimaxVideoEditor = () => {
                                   <p className="text-[11px] text-white/40">positif = sujet vers la gauche</p>
                                 </div>
                                 <p className="text-[11px] text-white/40">
-                                  Ces réglages gardent chaque visage centré dans sa bande (bientôt automatique via la détection de visage).
+                                  Ces réglages gardent chaque visage centré dans sa bande. Utilise « Centrer sur les visages » pour les remplir automatiquement, puis ajuste ici si besoin.
                                 </p>
                               </div>
                             )}

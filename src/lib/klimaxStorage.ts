@@ -60,6 +60,7 @@ export type KlimaxProjectClip = {
     y: number;
   };
   logoSize?: number;
+  logoCenter?: boolean;                      // auto mode: pop the logo dead-centre (hides subtitle behind it)
   imageTransform?: {
     scale: number;
     x: number;

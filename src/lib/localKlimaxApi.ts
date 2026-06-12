@@ -253,6 +253,18 @@ export const localKlimaxApi = {
     );
   },
 
+  // Auto-frame the split-screen bands on each speaker's face. clipId omitted = all
+  // dual-speaker clips in the project.
+  async centerFaces(projectId: string, clipId?: string) {
+    return parseResponse<{ project: LocalKlimaxProject; centered: number; noFace: number; clips: number }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/projects/${projectId}/center-faces`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clipId }),
+      })
+    );
+  },
+
   async autoPickBrolls(projectId: string) {
     return parseResponse<{ picks: { clipId: string; brollId: string | null; reason: string }[]; project: LocalKlimaxProject }>(
       await fetch(`${LOCAL_KLIMAX_API}/api/projects/${projectId}/auto-brolls`, { method: "POST" })
@@ -303,6 +315,30 @@ export const localKlimaxApi = {
   async runAutoPreset(id: string) {
     return parseResponse<{ jobId: string; total: number; items: LocalAutoItem[] }>(
       await fetch(`${LOCAL_KLIMAX_API}/api/auto/presets/${id}/run`, { method: "POST" })
+    );
+  },
+
+  // Training mode — learned-rules feedback loop
+  async getTrainingRules() {
+    return parseResponse<LocalTrainingState>(await fetch(`${LOCAL_KLIMAX_API}/api/training/rules`));
+  },
+  async submitTrainingFeedback(payload: { feedback: string; jobId?: string | null; itemId?: string | null; decisions?: LocalAutoDecisions | null }) {
+    return parseResponse<LocalTrainingState & { added: string[]; removed: string[]; distilled: unknown }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/training/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+    );
+  },
+  async deleteTrainingRule(id: string) {
+    return parseResponse<{ rules: LocalLearnedRule[]; overrides: Record<string, unknown> }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/training/rules/${id}`, { method: "DELETE" })
+    );
+  },
+  async clearTrainingRules() {
+    return parseResponse<{ rules: LocalLearnedRule[]; overrides: Record<string, unknown> }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/training/rules/clear`, { method: "POST" })
     );
   },
 
@@ -380,15 +416,62 @@ export type LocalKlimaxPreset = {
   settings: Record<string, unknown>;
 };
 
+export type LocalAutoDecisions = {
+  hookText?: string | null;
+  splitScreen?: boolean;
+  splitRatio?: number | null;
+  subtitlePreset?: string | null;
+  subtitleSize?: number | null;
+  videoFilter?: string | null;
+  brollStyle?: string | null;
+  brollId?: string | null;
+  musicId?: string | null;
+  musicVolumeDb?: number | null;
+  zoomMode?: string | null;
+  zoomBoostPercent?: number | null;
+  mirror?: boolean;
+};
+
 export type LocalAutoItem = {
   id: string;
   projectId: string;
   source: string;
   index?: number;
   combo: string;
+  decisions?: LocalAutoDecisions;
   status: "queued" | "rendering" | "ready" | "failed";
   url: string | null;
   error?: string;
+};
+
+// Training mode (learned-rules feedback loop)
+export type LocalLearnedRule = {
+  id: string;
+  category: "hooks" | "broll" | "general" | "subtitles" | "zoom" | "music" | "splitscreen";
+  kind: "text" | "param";
+  text?: string;
+  param?: string;
+  value?: unknown;
+  weight?: number;
+  source?: string;
+  createdAt?: string;
+};
+
+export type LocalTrainingHistory = {
+  id: string;
+  jobId: string | null;
+  itemId: string | null;
+  feedback: string;
+  addedRuleIds: string[];
+  removedRuleIds: string[];
+  createdAt: string;
+};
+
+export type LocalTrainingState = {
+  rules: LocalLearnedRule[];
+  overrides: Record<string, unknown>;
+  history: LocalTrainingHistory[];
+  updatedAt?: string | null;
 };
 
 export type LocalAutoAchievable = {

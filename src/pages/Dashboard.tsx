@@ -464,6 +464,7 @@ const Dashboard = () => {
               <div className="space-y-1">
                 <SidebarItem icon={<Plus className="w-4 h-4" />} text="Nouveau projet" onClick={() => setNewProjectOpen(true)} active={false} />
                 <SidebarItem icon={<Zap className="w-4 h-4" />} text="Mode automatique" onClick={() => navigate("/automatic-mode")} active={window.location.pathname === "/automatic-mode"} />
+                <SidebarItem icon={<Brain className="w-4 h-4" />} text="Mode entraînement" onClick={() => navigate("/training-mode")} active={window.location.pathname === "/training-mode"} />
               </div>
             </div>
 

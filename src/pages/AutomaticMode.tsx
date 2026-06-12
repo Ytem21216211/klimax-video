@@ -42,7 +42,7 @@ const VARY_DIMENSIONS: VaryDimension[] = [
   { key: "broll", label: "B-roll", icon: <Film className="h-4 w-4" />, lockedHint: "Garde le b-roll d'origine.", variedHint: "Pioche un b-roll + style (carré / entier) par variante." },
   { key: "music", label: "Musique", icon: <Music className="h-4 w-4" />, lockedHint: "Garde la musique d'origine.", variedHint: "Change de piste + ajuste légèrement les niveaux." },
   { key: "sfx", label: "SFX / transitions", icon: <Waves className="h-4 w-4" />, lockedHint: "Garde les transitions d'origine.", variedHint: "Varie le type de transition entre clips." },
-  { key: "zooms", label: "Zooms", icon: <ZoomIn className="h-4 w-4" />, lockedHint: "Conserve les zooms d'origine.", variedHint: "Varie mode (cut/smooth), intensité et zoom-out." },
+  { key: "zooms", label: "Zooms", icon: <ZoomIn className="h-4 w-4" />, lockedHint: "Aucun zoom punch-in (effet désactivé).", variedHint: "Varie mode (cut/smooth) et intensité du zoom punch-in." },
 ];
 
 // Google Drive tricolor logo (inline SVG so we can animate it).
