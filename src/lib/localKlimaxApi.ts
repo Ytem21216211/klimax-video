@@ -278,6 +278,7 @@ export const localKlimaxApi = {
     variantsPerVideo: number;
     varied: Record<string, boolean>;
     lockSplitScreen?: boolean;
+    subtitleSizePx?: number;
   }) {
     return parseResponse<{ jobId: string; total: number; items: LocalAutoItem[]; achievablePerVideo: LocalAutoAchievable[] }>(
       await fetch(`${LOCAL_KLIMAX_API}/api/auto/generate`, {

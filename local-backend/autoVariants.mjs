@@ -392,7 +392,13 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
       ? FILTER_KEYS.filter((k) => !ov.filterDenylist.includes(k))
       : FILTER_KEYS;
     const presetKey = pickUnused(presetPool.length ? presetPool : PRESET_KEYS, rng, used.presets, prev.stylePreset);
-    let subtitleSize = q(65 + rng() * 25, 1);
+    // Subtitle SIZE: if the user gave a px (base.settings.subtitleSize), keep the text
+    // NEAR it (gentle ±7 jitter for anti-shadowban variety) instead of the engine's old
+    // free 65–90 random that ignored the user's value entirely. No size given -> 65–90.
+    const userSize = Number(base.settings?.subtitleSize);
+    let subtitleSize = userSize >= 30
+      ? q(clamp(userSize - 7 + rng() * 14, 40, 120), 1)
+      : q(65 + rng() * 25, 1);
     if (typeof ov.subtitleSizeMax === "number") subtitleSize = Math.min(subtitleSize, ov.subtitleSizeMax);
     settings.subtitleStyle = { ...SUBTITLE_PRESETS[presetKey], fontSize: subtitleSize };
     settings.subtitleSize = subtitleSize;

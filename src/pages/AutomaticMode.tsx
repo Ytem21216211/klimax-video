@@ -112,6 +112,7 @@ const AutomaticMode = () => {
   const [varied, setVaried] = useState<Record<VaryKey, boolean>>({ broll: true, subtitles: true, hook: true, sfx: false, zooms: false, music: true });
   const [varySplit, setVarySplit] = useState(true); // split-screen is the primary lever; lock = !varySplit
   const [variantsPerVideo, setVariantsPerVideo] = useState(6);
+  const [subtitleSizePx, setSubtitleSizePx] = useState(75); // taille des sous-titres (px) appliquée au lot
   const [job, setJob] = useState<LocalAutoJob | null>(null);
   const [starting, setStarting] = useState(false);
   const [presets, setPresets] = useState<LocalAutoPreset[]>([]);
@@ -291,6 +292,7 @@ const AutomaticMode = () => {
         variantsPerVideo,
         varied,
         lockSplitScreen: !varySplit,
+        subtitleSizePx,
       });
       setJob({ id: res.jobId, createdAt: new Date().toISOString(), finishedAt: null, total: res.total, done: 0, items: res.items });
       const capped = (res.achievablePerVideo || []).filter((a) => a.achievable < a.requested);
@@ -521,6 +523,19 @@ const AutomaticMode = () => {
                 <button type="button" onClick={() => setVariantsPerVideo((v) => Math.min(20, v + 1))} className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-white/10 bg-white/[0.03] text-lg font-black text-white/70 hover:bg-white hover:text-black">+</button>
               </div>
               <div className="mt-3 flex items-center justify-between text-[10px] font-black uppercase tracking-[0.18em] text-white/35"><span>1 variante</span><span>20 variantes</span></div>
+
+              {/* Taille des sous-titres (px) appliquée à TOUTES les vidéos du lot.
+                  Exacte si « sous-titres » est verrouillé, sinon ±7px autour de cette valeur. */}
+              <div className="mt-6 flex items-end justify-between gap-4">
+                <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">Taille sous-titres</Label>
+                <span className="text-3xl font-black leading-none">{subtitleSizePx}<span className="ml-1 text-base text-white/40">px</span></span>
+              </div>
+              <div className="mt-5 flex items-center gap-4">
+                <button type="button" onClick={() => setSubtitleSizePx((v) => Math.max(40, v - 1))} className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-white/10 bg-white/[0.03] text-lg font-black text-white/70 hover:bg-white hover:text-black">−</button>
+                <Slider value={[subtitleSizePx]} min={40} max={120} step={1} onValueChange={([n]) => setSubtitleSizePx(n)} className="flex-1" />
+                <button type="button" onClick={() => setSubtitleSizePx((v) => Math.min(120, v + 1))} className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-white/10 bg-white/[0.03] text-lg font-black text-white/70 hover:bg-white hover:text-black">+</button>
+              </div>
+              <div className="mt-3 flex items-center justify-between text-[10px] font-black uppercase tracking-[0.18em] text-white/35"><span>40 px</span><span>{varySplit ? "" : ""}{varied.subtitles ? "± 7px autour" : "exacte (verrouillé)"}</span><span>120 px</span></div>
             </div>
 
             <div className="flex flex-col justify-center rounded-2xl border border-white/15 bg-white/[0.06] p-5">

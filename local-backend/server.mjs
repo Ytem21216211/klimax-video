@@ -3472,6 +3472,12 @@ app.post("/api/auto/generate", async (req, res) => {
   const variantsPerVideo = clamp(Math.round(safeNumber(req.body?.variantsPerVideo, 6)), 1, 20);
   const varied = req.body?.varied || { broll: true, subtitles: true, hook: true, sfx: false, zooms: false, music: true };
   const lockSplitScreen = req.body?.lockSplitScreen === true;
+  // Subtitle SIZE in px chosen by the user for THIS batch (0/absent = keep the engine
+  // default). Applied to each project's base so the planner honours it: exact when the
+  // subtitle dimension is locked, ±7px jitter when varied. See autoVariants.buildVariant.
+  const subtitleSizePx = req.body?.subtitleSizePx != null
+    ? clamp(Math.round(safeNumber(req.body.subtitleSizePx, 0)), 30, 120)
+    : 0;
   // Training mode: learned overrides narrow the deterministic picks. Snapshot them
   // ON the job so a resumed/re-derived job reproduces the exact same variants even
   // if rules change later.
@@ -3526,8 +3532,15 @@ app.post("/api/auto/generate", async (req, res) => {
       hooks,
     };
     const faceBoxes = await detectFacesForSources(sourceGroup, banks);
+    // Apply the user's chosen subtitle px to the base so the planner honours it
+    // (exact when subtitles are locked, ±7px jitter when varied).
+    const baseSettings = { ...(project.settings || {}) };
+    if (subtitleSizePx) {
+      baseSettings.subtitleSize = subtitleSizePx;
+      baseSettings.subtitleStyle = { ...(baseSettings.subtitleStyle || {}), fontSize: subtitleSizePx };
+    }
     const base = {
-      settings: project.settings || {},
+      settings: baseSettings,
       clips: project.clips || [],
       sourceNames: { person1: sourceGroup.person1?.title, person2: sourceGroup.person2?.title },
     };
