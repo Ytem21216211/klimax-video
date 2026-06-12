@@ -155,31 +155,58 @@ const shareAnyoneReader = async (fileId) =>
 // request bodies ("fetch failed"), a piped read stream has no size limit.
 import https from "node:https";
 
-// PUT a Buffer (whole file in memory — fine for short-form videos) via node:https.
-// We send the Buffer, not a piped read stream: a stream that never flushes/`end`s
-// is what made the upload hang forever. A hard socket timeout guarantees we error
-// out instead of blocking the whole batch.
-const httpsPutBuffer = (url, headers, buffer, timeoutMs = 600_000) =>
+// TRUE chunked resumable upload. A single monolithic PUT of a 35 MB body dies on a
+// slow uplink (the previous hard 600 s timeout killed every big upload). Instead the
+// resumable session is fed in 4 MiB chunks: each chunk is its own short request with
+// its own timeout, Drive answers 308 + a Range header with what it stored, and a
+// failed/timed-out chunk is retried from the server's confirmed offset — so progress
+// is never lost and no single request has to survive for minutes.
+const UPLOAD_CHUNK = 4 * 1024 * 1024; // multiple of 256 KiB as required by Drive
+const CHUNK_TIMEOUT_MS = 300_000;
+
+const putChunk = (url, buffer, start, total) =>
   new Promise((resolve, reject) => {
+    const end = Math.min(start + UPLOAD_CHUNK, total);
+    const chunk = buffer.subarray(start, end);
     const req = https.request(
       url,
-      { method: "PUT", headers: { ...headers, "Content-Length": buffer.length } },
+      {
+        method: "PUT",
+        headers: {
+          "Content-Length": chunk.length,
+          "Content-Range": `bytes ${start}-${end - 1}/${total}`,
+        },
+      },
       (res) => {
         let data = "";
         res.setEncoding("utf8");
-        res.on("data", (chunk) => { data += chunk; });
+        res.on("data", (c) => { data += c; });
+        res.on("end", () => resolve({ status: res.statusCode, body: data, range: res.headers.range }));
+      }
+    );
+    req.setTimeout(CHUNK_TIMEOUT_MS, () => req.destroy(new Error(`chunk Drive expiré (${Math.round(CHUNK_TIMEOUT_MS / 1000)}s)`)));
+    req.on("error", reject);
+    req.end(chunk);
+  });
+
+// Ask the session where it stopped (PUT with empty body + Content-Range bytes */total).
+// 308 + Range: bytes=0-N -> resume at N+1; 308 without Range -> nothing stored yet.
+const querySessionOffset = (url, total) =>
+  new Promise((resolve, reject) => {
+    const req = https.request(
+      url,
+      { method: "PUT", headers: { "Content-Length": 0, "Content-Range": `bytes */${total}` } },
+      (res) => {
+        res.resume();
         res.on("end", () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            try { resolve(JSON.parse(data)); } catch { resolve({}); }
-          } else {
-            reject(new Error(`Drive upload ${res.statusCode}: ${data.slice(0, 300)}`));
-          }
+          const m = /bytes=0-(\d+)/.exec(res.headers.range || "");
+          resolve(m ? Number(m[1]) + 1 : 0);
         });
       }
     );
-    req.setTimeout(timeoutMs, () => req.destroy(new Error(`Upload Drive expiré après ${Math.round(timeoutMs / 1000)}s`)));
+    req.setTimeout(30_000, () => req.destroy(new Error("status Drive expiré")));
     req.on("error", reject);
-    req.end(buffer); // send all bytes at once, then close the request
+    req.end();
   });
 
 const uploadFile = async (filePath, fileName, folderId) => {
@@ -199,8 +226,32 @@ const uploadFile = async (filePath, fileName, folderId) => {
   if (!init.ok) throw new Error(`Session Drive refusée (${init.status}): ${(await init.text()).slice(0, 200)}`);
   const sessionUrl = init.headers.get("location");
   if (!sessionUrl) throw new Error("Session Drive sans URL.");
-  // 2) upload the bytes in one PUT
-  return httpsPutBuffer(sessionUrl, { "Content-Type": "video/mp4" }, buffer);
+  // 2) feed the session chunk by chunk, resuming from the server's offset on errors
+  let offset = 0;
+  let failures = 0;
+  while (offset < buffer.length) {
+    try {
+      const res = await putChunk(sessionUrl, buffer, offset, buffer.length);
+      if (res.status === 308) {
+        const m = /bytes=0-(\d+)/.exec(res.range || "");
+        offset = m ? Number(m[1]) + 1 : offset + UPLOAD_CHUNK;
+        failures = 0;
+      } else if (res.status >= 200 && res.status < 300) {
+        try { return JSON.parse(res.body); } catch { return {}; }
+      } else {
+        throw new Error(`Drive upload ${res.status}: ${res.body.slice(0, 200)}`);
+      }
+    } catch (error) {
+      failures += 1;
+      if (failures > 3) throw error;
+      // resync with what the server actually stored, then retry from there
+      try { offset = await querySessionOffset(sessionUrl, buffer.length); } catch { /* keep offset */ }
+    }
+  }
+  // All bytes sent but no 2xx seen (e.g. final 308 race): confirm completion.
+  const fin = await putChunk(sessionUrl, buffer, Math.max(0, buffer.length - 1) - ((buffer.length - 1) % UPLOAD_CHUNK), buffer.length);
+  if (fin.status >= 200 && fin.status < 300) { try { return JSON.parse(fin.body); } catch { return {}; } }
+  throw new Error(`Drive upload incomplet (${fin.status})`);
 };
 
 // Upload a finished batch: one folder per import, all ready variants inside.

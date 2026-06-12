@@ -1453,8 +1453,15 @@ const assEscapePlain = (text) =>
     .replace(/[{}]/g, "")
     .trim();
 
-const formatAssSubtitleText = (text, keywordSet, subtitleStyle) => {
-  if (!keywordSet?.size) return assEscapePlain(text);
+// Render a cue's text with inline ASS color tags. Two layers of emphasis:
+//  - KEYWORDS (heuristic set) get the preset's keyword colors (alternating pair).
+//  - The ACTIVE word (karaoke: the word being SPOKEN right now, `activeIndex` =
+//    word position in the cue) gets the active color — CapCut-style word-by-word
+//    highlight. Color-only (no size change) so glyph geometry never reflows and
+//    the shadow/outline layers (rendered per-cue) stay perfectly aligned.
+const formatAssSubtitleText = (text, keywordSet, subtitleStyle, activeIndex = null) => {
+  const hasKeywords = Boolean(keywordSet?.size);
+  if (!hasKeywords && activeIndex === null) return assEscapePlain(text);
 
   const primary = hexToAssOverrideColor(subtitleStyle.textColor, "#ffffff");
   const outline = hexToAssOverrideColor(subtitleStyle.strokeColor, "#000000");
@@ -1462,18 +1469,28 @@ const formatAssSubtitleText = (text, keywordSet, subtitleStyle) => {
     hexToAssOverrideColor(subtitleStyle.keywordColor, defaultSubtitleStyle.keywordColor),
     hexToAssOverrideColor(subtitleStyle.keywordSecondaryColor, defaultSubtitleStyle.keywordSecondaryColor),
   ];
+  const activeColor = hexToAssOverrideColor(subtitleStyle.activeWordColor || subtitleStyle.keywordColor, defaultSubtitleStyle.keywordColor);
   let highlighted = 0;
+  let wordIndex = -1;
 
   return String(text || "")
     .split(/(\s+)/)
     .map((part) => {
       if (!part.trim()) return part.replace(/\r?\n/g, "\\N");
+      wordIndex += 1;
       const escaped = assEscapePlain(part);
       const token = normalizeKeywordToken(part);
-      if (!token || (!keywordSet.has(token) && !/^[0-9]+%?$/.test(token))) return escaped;
-      const color = palette[highlighted % palette.length];
-      highlighted += 1;
-      return `{\\c${color}\\3c${outline}\\b1}${escaped}{\\c${primary}\\3c${outline}\\b1}`;
+      const isKeyword = Boolean(token && hasKeywords && (keywordSet.has(token) || /^[0-9]+%?$/.test(token)));
+      const keywordColor = isKeyword ? palette[highlighted % palette.length] : null;
+      if (isKeyword) highlighted += 1;
+      if (wordIndex === activeIndex) {
+        // Active word: if it's a keyword already shown in the active color, flip to
+        // the secondary so the karaoke step stays visible.
+        const color = keywordColor === activeColor ? palette[1] : activeColor;
+        return `{\\c${color}\\3c${outline}\\b1}${escaped}{\\c${primary}\\3c${outline}\\b1}`;
+      }
+      if (!isKeyword) return escaped;
+      return `{\\c${keywordColor}\\3c${outline}\\b1}${escaped}{\\c${primary}\\3c${outline}\\b1}`;
     })
     .join("");
 };
@@ -1511,7 +1528,10 @@ const resolveSubtitleRenderStyle = (subtitleStyle = defaultSubtitleStyle) => {
 const subtitleAnimationOverride = (subtitleStyle, x, y, shadowDown, options = {}) => {
   const yOffset = safeNumber(options.yOffset, 0);
   const blur = Math.max(0, Math.min(8, safeNumber(options.blur ?? subtitleStyle.shadowBlur, 10) / 5));
-  const targetY = y + yOffset;
+  // Integer coordinates: libass rounds floats unpredictably, causing 1px jitter
+  // between the shadow/outline/main layers of the same caption.
+  x = Math.round(x);
+  const targetY = Math.round(y + yOffset);
   const base = [`\\an5`, `\\xshad0`, `\\yshad${shadowDown}`, `\\blur${blur.toFixed(1)}`];
   const animation = subtitleStyle.animationPreset || "pop";
 
@@ -1631,23 +1651,65 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindow
   const cues = clipTranscription?.cues?.length
     ? clipTranscription.cues
     : [{ start: 0, end: 2, text: stripCaptionPunctuation(clip.subtitle || "Sous titres automatiques") }];
+  // KARAOKE (active-word highlight): the word being SPOKEN is recolored in real time
+  // (CapCut style). The main layer is split into one Dialogue event per word window
+  // (timings from Whisper's per-word timestamps; even split as fallback). Shadow and
+  // outline layers stay per-cue — the recolor never moves glyphs, so they align.
+  // The cue's entry animation plays once (first window); the following windows are
+  // static repositions so the text doesn't re-pop on every word.
+  const transcriptWords = Array.isArray(clipTranscription?.words) ? clipTranscription.words : [];
+  const karaokeOn = renderStyle.activeWordEnabled !== false;
+  const staticForY = (cy) => subtitleAnimationOverride({ ...renderStyle, animationPreset: "none" }, x, cy, 0, { blur: 0 });
+  const baseStatic = staticForY(subtitleAboveSquare ? SUBTITLE_ABOVE_SQUARE_Y : y);
+  const topStatic = logoWindows.length ? staticForY(SUBTITLE_LOGO_TOP_Y) : baseStatic;
   const events = cues.flatMap((cue) => {
     // Centred-logo variant: remove any caption that overlaps the pop-up window entirely.
     if (hideInLogoWindow && inLogoWindow(cue)) return [];
-    const start = assTime(cue.start);
-    const end = assTime(cue.end);
-    const shadowText = assEscapePlain(cue.text);
-    const mainText = formatAssSubtitleText(cue.text, keywordSet, renderStyle);
-    const ov = inLogoWindow(cue) ? topOverrides : baseOverrides;
+    const cueStart = safeNumber(cue.start, 0);
+    const cueEnd = Math.max(cueStart + 0.05, safeNumber(cue.end, cueStart + 0.05));
+    const start = assTime(cueStart);
+    const end = assTime(cueEnd);
+    const cueText = renderStyle.uppercase === true ? String(cue.text || "").toUpperCase() : String(cue.text || "");
+    const shadowText = assEscapePlain(cueText);
+    const inLogo = inLogoWindow(cue);
+    const ov = inLogo ? topOverrides : baseOverrides;
     const layers = [
       `Dialogue: 0,${start},${end},KlimaxShadow,,0,0,0,,${ov.shadow}${shadowText}`,
     ];
     if (outline > 0) {
       layers.push(`Dialogue: 1,${start},${end},KlimaxOutline,,0,0,0,,${ov.main}${shadowText}`);
     }
-    layers.push(
-      `Dialogue: 2,${start},${end},Klimax,,0,0,0,,${ov.main}${mainText}`,
-    );
+    const tokens = cueText.split(/\s+/).filter(Boolean);
+    if (karaokeOn && tokens.length >= 2) {
+      // Word boundaries inside the cue: Whisper word starts when they match the
+      // token count, else an even split. Each word stays "active" until the next.
+      const cueWords = transcriptWords.filter((w) => safeNumber(w.start, -1) < cueEnd && safeNumber(w.end, -1) > cueStart);
+      const boundaries = [cueStart];
+      if (cueWords.length === tokens.length) {
+        for (let k = 1; k < tokens.length; k += 1) boundaries.push(clamp(safeNumber(cueWords[k].start, cueStart), cueStart, cueEnd));
+      } else {
+        const step = (cueEnd - cueStart) / tokens.length;
+        for (let k = 1; k < tokens.length; k += 1) boundaries.push(cueStart + k * step);
+      }
+      boundaries.push(cueEnd);
+      const staticOv = inLogo ? topStatic : baseStatic;
+      // Merge ultra-fast words into the previous segment (never leave a text gap).
+      const segs = [];
+      for (let k = 0; k < tokens.length; k += 1) {
+        const segStart = boundaries[k];
+        const segEnd = boundaries[k + 1];
+        if (segs.length && segEnd - segStart < 0.03) { segs[segs.length - 1].end = segEnd; continue; }
+        segs.push({ start: segStart, end: segEnd, idx: k });
+      }
+      for (let s = 0; s < segs.length; s += 1) {
+        const mainText = formatAssSubtitleText(cueText, keywordSet, renderStyle, segs[s].idx);
+        const segOv = s === 0 ? ov.main : staticOv;
+        layers.push(`Dialogue: 2,${assTime(segs[s].start)},${assTime(segs[s].end)},Klimax,,0,0,0,,${segOv}${mainText}`);
+      }
+    } else {
+      const mainText = formatAssSubtitleText(cueText, keywordSet, renderStyle);
+      layers.push(`Dialogue: 2,${start},${end},Klimax,,0,0,0,,${ov.main}${mainText}`);
+    }
     return layers;
   });
 
@@ -2113,8 +2175,12 @@ const renderProject = async (db, project, sourceGroup) => {
           const triggerTime = safeNumber(moment.start, 0);
           const start = Math.max(0, triggerTime - 1.5);
           const duration = Math.max(0.1, safeNumber(moment.end, triggerTime + 4.8) - triggerTime);
-          return { start, end: start + duration };
-        })
+          // Clamp to the clip: an unbounded window (bad moment.end) would wrongly
+          // evict every late b-roll segment from the "logo owns the screen" filter.
+          const clipLen = safeNumber(clipTranscription?.duration, 0);
+          const end = clipLen > 0 ? Math.min(start + duration, clipLen) : start + duration;
+          return { start, end };
+        }).filter((w) => w.end - w.start > 0.05)
       : [];
     // Overlays the Klimax pop-up onto `inLabel`; the last overlay writes to
     // `finalLabel` when given (so the auto path can land directly on `vsub`).
@@ -2230,9 +2296,13 @@ const renderProject = async (db, project, sourceGroup) => {
           const shadowIn = inputIndex; inputIndex += 1;
           const p = `${clipIndex}_${bi}`;
           filterChains.push(`[${brIn}:v]scale=${S}:${S}:force_original_aspect_ratio=increase,crop=${S}:${S},setsar=1,fps=30${brollZoomFx(S, S, seg.segDur)},format=rgba[bsc${p}]`);
-          filterChains.push(`[${maskIn}:v]format=gray[bmask${p}]`);
+          // The mask/shadow PNGs are authored for a 720px square (mask 720x720,
+          // shadow 816x816 = 720 + 2*48 pad). alphamerge REQUIRES equal dimensions,
+          // so scale both to the CURRENT square size or the whole render fails
+          // (which silently downgraded variants to no-b-roll via the salvage path).
+          filterChains.push(`[${maskIn}:v]scale=${S}:${S},format=gray[bmask${p}]`);
           filterChains.push(`[bsc${p}][bmask${p}]alphamerge[bround${p}]`);
-          filterChains.push(`[${shadowIn}:v]format=rgba[bshad${p}]`);
+          filterChains.push(`[${shadowIn}:v]scale=${S + 2 * PAD}:${S + 2 * PAD},format=rgba[bshad${p}]`);
           filterChains.push(`[bshad${p}][bround${p}]overlay=${PAD}:${PAD}[bcomb${p}]`);
           filterChains.push(`[bcomb${p}]${anim ? anim.slice(1) + "," : ""}${shift}[${brTag}]`);
           filterChains.push(`[${currentVideo}][${brTag}]overlay=${ox}:${oy}:${enable}[${nextVideo}]`);
@@ -3126,7 +3196,9 @@ const genVariantHooks = async (introText, replyText, n) => {
     const system =
       "Tu es monteur de vidéos courtes virales. On te donne le TRANSCRIPT d'un clip et une BANQUE de hooks éprouvés (numérotés). " +
       '1) "fits" : les indices des hooks de la banque qui collent VRAIMENT au sujet du transcript, du plus au moins pertinent (exclus ceux qui ne collent pas). ' +
-      `2) "variants" : ${Math.max(1, nVariants)} NOUVEAUX hooks, variantes des hooks de la banque adaptées au transcript — EXACTEMENT le même style (court, percutant, ton cru assumé, max ~9 mots, terminé par UN emoji collant au sujet). ` +
+      (nVariants > 0
+        ? `2) "variants" : ${nVariants} NOUVEAUX hooks, variantes des hooks de la banque adaptées au transcript — EXACTEMENT le même style (court, percutant, ton cru assumé, max ~9 mots, terminé par UN emoji collant au sujet). `
+        : '2) "variants" : renvoie un tableau VIDE []. ') +
       "RÈGLE ABSOLUE pour les variants : le CONTEXTE du sujet doit être explicite dans le hook. Si le sujet est la performance sexuelle, mentionne \"au lit\" (ou équivalent clair). " +
       'CONTRE-EXEMPLE interdit : "3 exos pour finir en 7 minutes" (ambigu, on dirait du sport) → il faut "il finissait en 7 minutes au lit" ou "3 exos pour tenir au lit". Un hook sans son contexte est un hook raté. ' +
       'Réponds UNIQUEMENT en JSON : {"fits":[...], "variants":["..."]}.' +
@@ -3230,16 +3302,24 @@ const processAutoJob = async (job) => {
       if (!project) continue;
       const sourceGroup = getVideoGroups(db.assets).find((g) => g.id === project.sourceGroupId);
       if (!sourceGroup?.person1?.filePath || !sourceGroup?.person2?.filePath) continue;
-      const banks = {
+      const liveBanks = {
         speakers: db.assets.filter((a) => a.category === "speaker"),
         brolls: db.assets.filter((a) => a.category === "broll" && !a.broken),
         images: db.assets.filter((a) => a.category === "image"),
         music: db.assets.filter((a) => a.category === "music"),
+      };
+      // Prefer the PLANNING-TIME snapshots (see /api/auto/generate): a resumed job
+      // must reproduce the exact same variants even if the project or the banks
+      // changed since. Face detection still needs the live assets (file paths).
+      const snapBanks = (p.banksByProject || {})[pid];
+      const banks = {
+        ...(snapBanks || liveBanks),
         hooks: (job.hooksByProject || {})[pid] || [],
       };
-      const faceBoxes = await detectFacesForSources(sourceGroup, banks);
+      const faceBoxes = await detectFacesForSources(sourceGroup, liveBanks);
+      const snapBase = (p.baseByProject || {})[pid];
       const plan = planVideoVariants({
-        base: {
+        base: snapBase || {
           settings: project.settings || {},
           clips: project.clips || [],
           sourceNames: { person1: sourceGroup.person1?.title, person2: sourceGroup.person2?.title },
@@ -3286,6 +3366,9 @@ const processAutoJob = async (job) => {
             };
             const exported = await renderProject(db, salvageProject, sourceGroup);
             item.status = "ready"; item.url = exported.url; item.path = exported.path; item.error = null; item.salvaged = true;
+            // Decisions must reflect what ACTUALLY rendered: the salvage stripped the
+            // b-roll, so don't show one in the UI / feed one to the training loop.
+            if (item.decisions) item.decisions = { ...item.decisions, brollId: null, brollStyle: null };
             console.warn("[auto] variant salvaged without b-roll:", e.message);
           } catch (e2) {
             item.status = "failed"; item.error = String(e.message || e).slice(0, 300);
@@ -3381,6 +3464,12 @@ app.post("/api/auto/generate", async (req, res) => {
   const items = [];
   const hooksByProject = {};
   const achievablePerVideo = [];
+  // Snapshot the planning inputs PER PROJECT on the job: a resumed job must re-derive
+  // EXACTLY the same variants even if the base project's settings/clips or the asset
+  // banks changed in the meantime (deterministic RNG only guarantees identity for
+  // identical inputs). Banks are stored light (ids/titles) — picking only needs those.
+  const baseByProject = {};
+  const banksByProject = {};
   for (const pid of allProjectIds) {
     const project = db.projects.find((p) => p.id === pid);
     if (!project) continue;
@@ -3397,18 +3486,26 @@ app.post("/api/auto/generate", async (req, res) => {
     hooksByProject[pid] = hooks;
     const banks = {
       speakers: db.assets.filter((a) => a.category === "speaker"),
-      brolls: db.assets.filter((a) => a.category === "broll"),
+      brolls: db.assets.filter((a) => a.category === "broll" && !a.broken), // same filter as processAutoJob, else resume re-derives DIFFERENT variants
       images: db.assets.filter((a) => a.category === "image"),
       music: db.assets.filter((a) => a.category === "music"),
       hooks,
     };
     const faceBoxes = await detectFacesForSources(sourceGroup, banks);
+    const base = {
+      settings: project.settings || {},
+      clips: project.clips || [],
+      sourceNames: { person1: sourceGroup.person1?.title, person2: sourceGroup.person2?.title },
+    };
+    baseByProject[pid] = clone(base);
+    banksByProject[pid] = {
+      speakers: banks.speakers.map((a) => ({ id: a.id, title: a.title })),
+      brolls: banks.brolls.map((a) => ({ id: a.id, title: a.title })),
+      images: banks.images.map((a) => ({ id: a.id, title: a.title })),
+      music: banks.music.map((a) => ({ id: a.id, title: a.title })),
+    };
     const plan = planVideoVariants({
-      base: {
-        settings: project.settings || {},
-        clips: project.clips || [],
-        sourceNames: { person1: sourceGroup.person1?.title, person2: sourceGroup.person2?.title },
-      },
+      base,
       videoId: pid, requested: variantsPerVideo, varied, lockSplitScreen, banks, faceBoxes, overrides: plannerOverrides,
     });
     achievablePerVideo.push({ projectId: pid, source: project.title || pid, achievable: plan.variants.length, requested: variantsPerVideo });
@@ -3420,7 +3517,7 @@ app.post("/api/auto/generate", async (req, res) => {
 
   const job = {
     id: jobId, createdAt: new Date().toISOString(), finishedAt: null, total: items.length, done: 0,
-    params: { projectIds: allProjectIds, variantsPerVideo, varied, lockSplitScreen, plannerOverrides }, hooksByProject, items,
+    params: { projectIds: allProjectIds, variantsPerVideo, varied, lockSplitScreen, plannerOverrides, baseByProject, banksByProject }, hooksByProject, items,
   };
   autoJobs.set(jobId, job);
   await saveAutoJobs();

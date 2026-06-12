@@ -38,6 +38,9 @@ export const SUBTITLE_PRESETS = {
   cyanGlow: { stylePreset: "cyanGlow", fontFamily: "Montserrat", fontSize: 44, textColor: "#dffcff", strokeEnabled: true, strokeColor: "#001014", strokeWidth: 5, shadowEnabled: true, shadowColor: "#18e8ff", shadowOpacity: 0.9, shadowDistance: 4, shadowBlur: 28, animationPreset: "flicker", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 104, keywordHighlightEnabled: true, keywordColor: "#18e8ff", keywordSecondaryColor: "#ffffff", keywordTerms: "" },
   whiteBox: { stylePreset: "whiteBox", fontFamily: "Impact", fontSize: 42, textColor: "#000000", strokeEnabled: false, strokeColor: "#000000", strokeWidth: 0, shadowEnabled: true, shadowColor: "#ffffff", shadowOpacity: 0.65, shadowDistance: 3, shadowBlur: 14, animationPreset: "slide", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 102, keywordHighlightEnabled: true, keywordColor: "#ff7a00", keywordSecondaryColor: "#ffe14a", keywordTerms: "" },
   creatorClean: { stylePreset: "creatorClean", fontFamily: "Avenir Next Heavy", fontSize: 40, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#000000", strokeWidth: 4, shadowEnabled: true, shadowColor: "#000000", shadowOpacity: 0.72, shadowDistance: 5, shadowBlur: 18, animationPreset: "typewriter", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 102, keywordHighlightEnabled: true, keywordColor: "#45f08a", keywordSecondaryColor: "#ffe14a", keywordTerms: "" },
+  // Hormozi-style: heavy black sans, UPPERCASE, green/red keyword pops, yellow
+  // active-word karaoke — the look of the biggest talking-head creators.
+  hormozi: { stylePreset: "hormozi", fontFamily: "Archivo Black", fontSize: 42, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#000000", strokeWidth: 7, shadowEnabled: true, shadowColor: "#000000", shadowOpacity: 0.95, shadowDistance: 6, shadowBlur: 16, animationPreset: "pop", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 102, keywordHighlightEnabled: true, keywordColor: "#3df25e", keywordSecondaryColor: "#ff4040", keywordTerms: "", uppercase: true, activeWordColor: "#ffe14a" },
 };
 export const PRESET_KEYS = Object.keys(SUBTITLE_PRESETS);
 
@@ -426,9 +429,9 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
       const text = hooks[variantIndex % hooks.length];
       settings.hookText = text;
       if (intro) intro.hookText = text;
+      comboParts.push("hook varié"); // only claim variation when a hook was actually set
     }
     settings.hookStyle = { ...(settings.hookStyle || {}), bubbleColor: "#ffffff", textColor: "#000000" };
-    comboParts.push("hook varié");
   }
 
   // ---- B-ROLL (reply only) ----
