@@ -11,6 +11,7 @@ import {
   Layers,
   Loader2,
   Music,
+  Plus,
   Sparkles,
   Type,
   Users,
@@ -325,9 +326,20 @@ const AutomaticMode = () => {
             <p className="text-xs text-white/45">Génère des variantes uniques par lot, sans shadowban — même pipeline que le manuel</p>
           </div>
         </div>
-        <div className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 md:flex">
-          <Layers className="h-4 w-4 text-white/45" />
-          <span className="text-xs font-black uppercase tracking-[0.18em] text-white/60">{selectedCount} sél. · {variantsPerVideo} variantes</span>
+        <div className="flex items-center gap-3">
+          {/* Nouveau lot: vide l'affichage du lot courant pour reconfigurer/relancer
+              une génération. Le lot en cours N'EST PAS arrêté — il continue côté
+              backend et reste consultable dans « Anciens lots » à gauche. */}
+          <Button
+            onClick={() => { setJob(null); setSelectedIds(new Set()); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+            className="gap-2 rounded-full bg-white px-4 text-black hover:bg-white/90"
+          >
+            <Plus className="h-4 w-4" /> Nouveau lot
+          </Button>
+          <div className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 md:flex">
+            <Layers className="h-4 w-4 text-white/45" />
+            <span className="text-xs font-black uppercase tracking-[0.18em] text-white/60">{selectedCount} sél. · {variantsPerVideo} variantes</span>
+          </div>
         </div>
       </header>
 

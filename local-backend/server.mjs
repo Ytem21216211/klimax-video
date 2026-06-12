@@ -478,21 +478,31 @@ const resolveProject = (db, projectId) => {
   return { ...normalizeProject(project, { response: true }), sourceGroup };
 };
 
+// BOUNDED capture: ffmpeg can emit GIGABYTES of repeated warnings (e.g. "Invalid
+// NAL unit size" on a glitchy b-roll). Accumulating that unbounded blows past V8's
+// max string length and CRASHES the whole backend (RangeError: Invalid string
+// length). So cap stdout (generous — ffprobe JSON stays small) and keep only the
+// TAIL of stderr (the real error is at the end), discarding the flood.
+const RUNPROC_MAX_OUT = 24 * 1024 * 1024; // 24 MB
+const RUNPROC_MAX_ERR = 256 * 1024; // 256 KB tail
 const runProcess = (command, args) =>
   new Promise((resolve, reject) => {
     const child = spawn(command, args);
     let stdout = "";
     let stderr = "";
+    let outTruncated = false;
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+      if (stdout.length < RUNPROC_MAX_OUT) stdout += chunk.toString();
+      else outTruncated = true;
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
+      if (stderr.length > RUNPROC_MAX_ERR) stderr = stderr.slice(stderr.length - RUNPROC_MAX_ERR);
     });
     child.on("error", reject);
     child.on("close", (code) => {
-      if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(stderr || stdout || `${command} exited with code ${code}`));
+      if (code === 0) resolve({ stdout, stderr, outTruncated });
+      else reject(new Error((stderr || stdout || `${command} exited with code ${code}`).slice(-4000)));
     });
   });
 
@@ -1634,55 +1644,52 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindow
     ? 0
     : clamp(outline > 0 ? outline + 3 : renderStyle.shadowBlur / 4, 0, 10);
   const keywordSet = buildSubtitleKeywordSet(clipTranscription, renderStyle);
-  // Per-Y override pair (main + shadow). Normally the clip's subtitle Y; but while
-  // the Klimax logo is on screen (auto mode, see `logoWindows`) the subtitle is
-  // lifted to the TOP so it is NEVER over OR under the logo.
-  const overridesForY = (cy) => ({
-    main: subtitleAnimationOverride(renderStyle, x, cy, 0, { blur: 0 }),
-    shadow: subtitleAnimationOverride(renderStyle, x, cy, 0, { yOffset: shadowOffset, blur: renderStyle.shadowBlur }),
-  });
+  // Override builders. `preset` overrides the animation (null = the style's). Returns
+  // the main + shadow override strings for a given Y. While the Klimax logo is on
+  // screen (auto mode) the caption is lifted to the TOP so it's never over the logo.
+  const ovFor = (cy, preset) => {
+    const st = preset ? { ...renderStyle, animationPreset: preset } : renderStyle;
+    return {
+      main: subtitleAnimationOverride(st, x, cy, 0, { blur: 0 }),
+      shadow: subtitleAnimationOverride(st, x, cy, 0, { yOffset: shadowOffset, blur: renderStyle.shadowBlur }),
+    };
+  };
   const SUBTITLE_LOGO_TOP_Y = 280; // very top band, well clear of the centred logo card
   // Just above the centred square b-roll (square image top ≈ BROLL_SQUARE_Y = 1080).
   const SUBTITLE_ABOVE_SQUARE_Y = 990;
-  const baseOverrides = overridesForY(subtitleAboveSquare ? SUBTITLE_ABOVE_SQUARE_Y : y);
-  const topOverrides = logoWindows.length ? overridesForY(SUBTITLE_LOGO_TOP_Y) : baseOverrides;
+  const baseY = subtitleAboveSquare ? SUBTITLE_ABOVE_SQUARE_Y : y;
+  const baseAnim = ovFor(baseY);
+  const baseStill = ovFor(baseY, "none");
+  const topAnim = logoWindows.length ? ovFor(SUBTITLE_LOGO_TOP_Y) : baseAnim;
+  const topStill = logoWindows.length ? ovFor(SUBTITLE_LOGO_TOP_Y, "none") : baseStill;
   const inLogoWindow = (cue) =>
     logoWindows.some((w) => safeNumber(cue.start, 0) < w.end && safeNumber(cue.end, 0) > w.start);
   const cues = clipTranscription?.cues?.length
     ? clipTranscription.cues
     : [{ start: 0, end: 2, text: stripCaptionPunctuation(clip.subtitle || "Sous titres automatiques") }];
-  // KARAOKE (active-word highlight): the word being SPOKEN is recolored in real time
-  // (CapCut style). The main layer is split into one Dialogue event per word window
-  // (timings from Whisper's per-word timestamps; even split as fallback). Shadow and
-  // outline layers stay per-cue — the recolor never moves glyphs, so they align.
-  // The cue's entry animation plays once (first window); the following windows are
-  // static repositions so the text doesn't re-pop on every word.
+  // KARAOKE (active-word highlight, CapCut style): the spoken word is recolored in
+  // real time. To recolor mid-caption, ASS needs one Dialogue event per word window.
+  // CRUCIAL: ALL THREE layers (shadow, outline, main) are split on the SAME word
+  // boundaries, and the entry animation plays ONLY on the first segment of EACH layer.
+  // That keeps shadow/outline/main perfectly in lock-step — otherwise the shadow ran
+  // its animation across the whole cue while the text snapped to place per word (the
+  // "shadow lags the text" bug).
   const transcriptWords = Array.isArray(clipTranscription?.words) ? clipTranscription.words : [];
   const karaokeOn = renderStyle.activeWordEnabled !== false;
-  const staticForY = (cy) => subtitleAnimationOverride({ ...renderStyle, animationPreset: "none" }, x, cy, 0, { blur: 0 });
-  const baseStatic = staticForY(subtitleAboveSquare ? SUBTITLE_ABOVE_SQUARE_Y : y);
-  const topStatic = logoWindows.length ? staticForY(SUBTITLE_LOGO_TOP_Y) : baseStatic;
   const events = cues.flatMap((cue) => {
-    // Centred-logo variant: remove any caption that overlaps the pop-up window entirely.
-    if (hideInLogoWindow && inLogoWindow(cue)) return [];
+    if (hideInLogoWindow && inLogoWindow(cue)) return []; // centred-logo variant
     const cueStart = safeNumber(cue.start, 0);
     const cueEnd = Math.max(cueStart + 0.05, safeNumber(cue.end, cueStart + 0.05));
-    const start = assTime(cueStart);
-    const end = assTime(cueEnd);
     const cueText = renderStyle.uppercase === true ? String(cue.text || "").toUpperCase() : String(cue.text || "");
     const shadowText = assEscapePlain(cueText);
     const inLogo = inLogoWindow(cue);
-    const ov = inLogo ? topOverrides : baseOverrides;
-    const layers = [
-      `Dialogue: 0,${start},${end},KlimaxShadow,,0,0,0,,${ov.shadow}${shadowText}`,
-    ];
-    if (outline > 0) {
-      layers.push(`Dialogue: 1,${start},${end},KlimaxOutline,,0,0,0,,${ov.main}${shadowText}`);
-    }
+    const anim = inLogo ? topAnim : baseAnim;
+    const still = inLogo ? topStill : baseStill;
     const tokens = cueText.split(/\s+/).filter(Boolean);
+
+    // Build word segments (single segment = whole cue when karaoke is off / 1 word).
+    let segs;
     if (karaokeOn && tokens.length >= 2) {
-      // Word boundaries inside the cue: Whisper word starts when they match the
-      // token count, else an even split. Each word stays "active" until the next.
       const cueWords = transcriptWords.filter((w) => safeNumber(w.start, -1) < cueEnd && safeNumber(w.end, -1) > cueStart);
       const boundaries = [cueStart];
       if (cueWords.length === tokens.length) {
@@ -1692,25 +1699,26 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindow
         for (let k = 1; k < tokens.length; k += 1) boundaries.push(cueStart + k * step);
       }
       boundaries.push(cueEnd);
-      const staticOv = inLogo ? topStatic : baseStatic;
-      // Merge ultra-fast words into the previous segment (never leave a text gap).
-      const segs = [];
+      segs = [];
       for (let k = 0; k < tokens.length; k += 1) {
-        const segStart = boundaries[k];
-        const segEnd = boundaries[k + 1];
-        if (segs.length && segEnd - segStart < 0.03) { segs[segs.length - 1].end = segEnd; continue; }
-        segs.push({ start: segStart, end: segEnd, idx: k });
-      }
-      for (let s = 0; s < segs.length; s += 1) {
-        const mainText = formatAssSubtitleText(cueText, keywordSet, renderStyle, segs[s].idx);
-        const segOv = s === 0 ? ov.main : staticOv;
-        layers.push(`Dialogue: 2,${assTime(segs[s].start)},${assTime(segs[s].end)},Klimax,,0,0,0,,${segOv}${mainText}`);
+        const s = boundaries[k], e = boundaries[k + 1];
+        if (segs.length && e - s < 0.03) { segs[segs.length - 1].end = e; continue; } // merge ultra-fast word
+        segs.push({ start: s, end: e, idx: k });
       }
     } else {
-      const mainText = formatAssSubtitleText(cueText, keywordSet, renderStyle);
-      layers.push(`Dialogue: 2,${start},${end},Klimax,,0,0,0,,${ov.main}${mainText}`);
+      segs = [{ start: cueStart, end: cueEnd, idx: null }];
     }
-    return layers;
+
+    const out = [];
+    for (let s = 0; s < segs.length; s += 1) {
+      const st = assTime(segs[s].start);
+      const en = assTime(segs[s].end);
+      const ov = s === 0 ? anim : still; // entry animation on the first window only
+      out.push(`Dialogue: 0,${st},${en},KlimaxShadow,,0,0,0,,${ov.shadow}${shadowText}`);
+      if (outline > 0) out.push(`Dialogue: 1,${st},${en},KlimaxOutline,,0,0,0,,${ov.main}${shadowText}`);
+      out.push(`Dialogue: 2,${st},${en},Klimax,,0,0,0,,${ov.main}${formatAssSubtitleText(cueText, keywordSet, renderStyle, segs[s].idx)}`);
+    }
+    return out;
   });
 
   const ass = [
@@ -1970,7 +1978,10 @@ const renderProject = async (db, project, sourceGroup) => {
     throw new Error("Ce projet n'a aucun segment exploitable.");
   }
 
-  const inputArgs = ["-y", "-hide_banner", "-nostats", "-loglevel", "warning"];
+  // -loglevel error (not warning): glitchy-but-usable b-rolls emit a CONTINUOUS flood
+  // of "Invalid NAL unit size" warnings during decode — at warning level that's GBs of
+  // stderr per render. error level keeps real failures, drops the decode-warning spam.
+  const inputArgs = ["-y", "-hide_banner", "-nostats", "-loglevel", "error"];
   const filterChains = [];
   const concatPieces = [];
   // Audio of each camera-flash transition (its own whoosh), to fold into the mix.
