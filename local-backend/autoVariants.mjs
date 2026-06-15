@@ -55,16 +55,40 @@ export const SUBTITLE_PRESETS = {
   invertBox: { stylePreset: "invertBox", fontFamily: "Impact", fontSize: 44, textColor: "#111111", strokeEnabled: false, strokeColor: "#111111", strokeWidth: 0, shadowEnabled: true, shadowColor: "#ffffff", shadowOpacity: 0.6, shadowDistance: 3, shadowBlur: 10, animationPreset: "slide", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 102, keywordHighlightEnabled: true, keywordColor: "#ff2d8f", keywordSecondaryColor: "#0a84ff", keywordTerms: "", uppercase: true, activeWordColor: "#ff2d8f" },
   // Purple neon glow, Montserrat, elastic — flashy nightlife look.
   purpleNeon: { stylePreset: "purpleNeon", fontFamily: "Montserrat", fontSize: 42, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#1a0033", strokeWidth: 4, shadowEnabled: true, shadowColor: "#a855f7", shadowOpacity: 0.85, shadowDistance: 4, shadowBlur: 26, animationPreset: "elastic", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 102, keywordHighlightEnabled: true, keywordColor: "#c084fc", keywordSecondaryColor: "#22d3ee", keywordTerms: "", activeWordColor: "#c084fc" },
+  // --- TikTok/CapCut pack (boxEnabled = ASS BorderStyle=4 background box) ---
+  // TikTok native caption: black text on a white box, spoken word in TikTok red.
+  tiktokWhite: { stylePreset: "tiktokWhite", fontFamily: "Helvetica", fontSize: 44, textColor: "#000000", strokeEnabled: false, strokeColor: "#000000", strokeWidth: 0, shadowEnabled: false, shadowColor: "#000000", shadowOpacity: 0, shadowDistance: 0, shadowBlur: 0, animationPreset: "none", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: false, keywordColor: "#fe2c55", keywordSecondaryColor: "#25f4ee", keywordTerms: "", activeWordColor: "#fe2c55", boxEnabled: true, boxColor: "#ffffff", boxOpacity: 1, boxPadding: 18 },
+  // Inverted: white text on a translucent black box, TikTok cyan/red keywords.
+  tiktokBlack: { stylePreset: "tiktokBlack", fontFamily: "Helvetica", fontSize: 44, textColor: "#ffffff", strokeEnabled: false, strokeColor: "#000000", strokeWidth: 0, shadowEnabled: false, shadowColor: "#000000", shadowOpacity: 0, shadowDistance: 0, shadowBlur: 0, animationPreset: "fade", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: true, keywordColor: "#25f4ee", keywordSecondaryColor: "#fe2c55", keywordTerms: "", activeWordColor: "#25f4ee", boxEnabled: true, boxColor: "#000000", boxOpacity: 0.78, boxPadding: 18 },
+  // Sticker style: UPPERCASE white on TikTok red box.
+  tiktokRed: { stylePreset: "tiktokRed", fontFamily: "Arial Black", fontSize: 42, textColor: "#ffffff", strokeEnabled: false, strokeColor: "#000000", strokeWidth: 0, shadowEnabled: false, shadowColor: "#000000", shadowOpacity: 0, shadowDistance: 0, shadowBlur: 0, animationPreset: "pop", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: false, keywordColor: "#ffe14a", keywordSecondaryColor: "#ffffff", keywordTerms: "", uppercase: true, activeWordColor: "#ffe14a", boxEnabled: true, boxColor: "#fe2c55", boxOpacity: 1, boxPadding: 16 },
+  // CapCut sticker: UPPERCASE dark text on a yellow box.
+  capcutYellow: { stylePreset: "capcutYellow", fontFamily: "Arial Black", fontSize: 42, textColor: "#111111", strokeEnabled: false, strokeColor: "#000000", strokeWidth: 0, shadowEnabled: false, shadowColor: "#000000", shadowOpacity: 0, shadowDistance: 0, shadowBlur: 0, animationPreset: "pop", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: false, keywordColor: "#ffffff", keywordSecondaryColor: "#111111", keywordTerms: "", uppercase: true, activeWordColor: "#ffffff", boxEnabled: true, boxColor: "#ffe14a", boxOpacity: 1, boxPadding: 16 },
+  // CapCut auto-caption: bold white + heavy stroke, spoken word flips yellow.
+  capcutKaraoke: { stylePreset: "capcutKaraoke", fontFamily: "Arial Black", fontSize: 46, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#000000", strokeWidth: 8, shadowEnabled: true, shadowColor: "#000000", shadowOpacity: 0.9, shadowDistance: 5, shadowBlur: 14, animationPreset: "pop", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 102, keywordHighlightEnabled: false, keywordColor: "#ffd400", keywordSecondaryColor: "#ffffff", keywordTerms: "", activeWordColor: "#ffd400" },
+  // Static UPPERCASE text, only the spoken word turns green — very TikTok.
+  karaokeGreen: { stylePreset: "karaokeGreen", fontFamily: "Archivo Black", fontSize: 44, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#000000", strokeWidth: 7, shadowEnabled: true, shadowColor: "#000000", shadowOpacity: 0.9, shadowDistance: 5, shadowBlur: 14, animationPreset: "none", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: false, keywordColor: "#39e55f", keywordSecondaryColor: "#ffffff", keywordTerms: "", uppercase: true, activeWordColor: "#39e55f" },
+  // Thick outline, no shadow halo — crisp TikTok red/cyan keyword pops.
+  tiktokOutline: { stylePreset: "tiktokOutline", fontFamily: "Montserrat", fontSize: 46, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#000000", strokeWidth: 10, shadowEnabled: false, shadowColor: "#000000", shadowOpacity: 0, shadowDistance: 0, shadowBlur: 0, animationPreset: "pop", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: true, keywordColor: "#fe2c55", keywordSecondaryColor: "#25f4ee", keywordTerms: "", activeWordColor: "#ffe14a" },
+  // Bebas tall caps, editorial, spoken word in TikTok red.
+  bebasCaps: { stylePreset: "bebasCaps", fontFamily: "Bebas Neue", fontSize: 54, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#000000", strokeWidth: 6, shadowEnabled: true, shadowColor: "#000000", shadowOpacity: 0.85, shadowDistance: 4, shadowBlur: 12, animationPreset: "rise", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: false, keywordColor: "#fe2c55", keywordSecondaryColor: "#ffffff", keywordTerms: "", uppercase: true, activeWordColor: "#fe2c55" },
 };
 export const PRESET_KEYS = Object.keys(SUBTITLE_PRESETS);
 
 // Hook bubble look (same fonts/colors manual mode allows).
 const HOOK_FONTS = ["Arial Black", "Anton", "Impact", "Montserrat", "Arial Bold"];
+// The hook bubble colour varies per render again (was forced white): white/black,
+// black/white, yellow/black, red/white …
 const HOOK_BUBBLES = [
-  { bubbleColor: "#ffffff", textColor: "#000000" },
-  { bubbleColor: "#000000", textColor: "#ffffff" },
-  { bubbleColor: "#ffe14a", textColor: "#000000" },
+  { bubbleColor: "#ffffff", textColor: "#000000" }, // blanc / noir
+  { bubbleColor: "#000000", textColor: "#ffffff" }, // noir / blanc
+  { bubbleColor: "#ffe14a", textColor: "#000000" }, // jaune / noir
+  { bubbleColor: "#ff3b3b", textColor: "#ffffff" }, // rouge / blanc
 ];
+// Subtitle entry animations (valid mergeProjectSettings presets, "none" excluded so
+// there's always motion). Picked INDEPENDENTLY of the style preset so the animation
+// changes every render, not just the colour/font preset.
+const SUBTITLE_ANIMS = ["pop", "bounce", "rise", "fade", "zoom", "slide", "shake", "typewriter", "flicker", "elastic"];
 // Small/medium only — strong zooms push off-centre faces out of frame.
 const ZOOM_INTENSITIES = [
   { autoZoomBoostPercent: 12, autoZoomDurationSeconds: 1.5 }, // léger
@@ -183,31 +207,173 @@ function isTwoSpeaker(variantIndex, ratio) {
 }
 
 // ---------------------------------------------------------------------------
-// Hook position — x always 540; if split on, centered on the split line (capped
-// height + ±margin clamp); if split off, in the safe band between head and subs.
+// SAFE-ZONE LAYOUT — hook + subtitles are placed inside zones computed from what
+// the variant already knows: the on-screen face rects (after crop/zoom), the split
+// line, the hook bubble rect and the estimated subtitle block height. A SMALL
+// bounded rng jitter keeps anti-shadowban variety WITHOUT ever overlapping.
+// NB: the Klimax logo needs no geometric handling here — the renderer resolves
+// logo conflicts temporally (subtitles are lifted to the top or hidden while the
+// logo is on screen, see buildAssSubtitleFile logoWindows in server.mjs).
+// All Y values are vertical CENTRES in the 1080×1920 canvas.
 // ---------------------------------------------------------------------------
-export function computeHookPosition({ dualSpeakerEnabled, splitRatio, hookHeight, rng, margin = 150, maxHeight = 200 }) {
-  const x = 540;
-  if (dualSpeakerEnabled) {
-    const h = Math.min(hookHeight, maxHeight);
-    const line = splitRatio * 1920;
-    let y = line - h / 2;
-    y = clamp(y, line - margin, line + margin);
-    y = clamp(y, 0, 1920 - h);
-    return { x, y: Math.round(y), height: h };
+
+// Vertical screen interval {y0,y1} of the face in a SOLO clip — inverts the render's
+// cover-fit: hflip? -> scale 1080s×1920s (increase) -> crop 1080×1920 at
+// (Sw-1080)/2 + tx. Mirror only moves X, so the vertical interval ignores it.
+const faceIntervalSolo = (face, transform) => {
+  if (!face?.srcW || !face?.srcH) return null;
+  const s = clamp((Number(transform?.scale) || 100) / 100, 0.5, 3);
+  const k = Math.max((1080 * s) / face.srcW, (1920 * s) / face.srcH);
+  const Sh = face.srcH * k;
+  const cropY = clamp((Sh - 1920) / 2 + (Number(transform?.y) || 0), 0, Math.max(0, Sh - 1920));
+  const cy = face.cy * Sh - cropY;
+  const fh = (face.h || 0.2) * Sh;
+  // Inflate: hairline above, chin + margin below so text never sits on the mouth.
+  return { y0: cy - 1.15 * fh, y1: cy + 1.45 * fh };
+};
+
+// Same for a split BAND of height bandH whose top sits at y0Band on the canvas —
+// inverts the faceToBandCrop geometry (fy = 0.5 + cropY/960 fraction of overscan).
+const faceIntervalBand = (face, { bandH, y0Band, zoom, cropY }) => {
+  if (!face?.srcW || !face?.srcH || !bandH) return null;
+  const As = face.srcW / face.srcH;
+  const Ab = 1080 / bandH;
+  const z = clamp(zoom || 1, 1, 3);
+  const Sy = (As >= Ab ? bandH : 1080 / As) * z;
+  const fy = clamp(0.5 + (Number(cropY) || 0) / 960, 0, 1);
+  const cy = face.cy * Sy - (Sy - bandH) * fy;
+  const fh = (face.h || 0.2) * Sy;
+  const y0 = y0Band + clamp(cy - 1.15 * fh, 0, bandH);
+  const y1 = y0Band + clamp(cy + 1.45 * fh, 0, bandH);
+  return y1 > y0 + 1 ? { y0, y1 } : null;
+};
+
+// TikTok/Shorts UI reserves: nothing readable in the very top or bottom strips.
+const SAFE_TOP = 140;
+const SAFE_BOTTOM = 1750;
+
+// Complement of the blocked intervals inside [SAFE_TOP, SAFE_BOTTOM] -> [[lo,hi],…]
+const freeIntervals = (blocked) => {
+  const bs = (blocked || [])
+    .filter(Boolean)
+    .map((b) => [Math.max(SAFE_TOP, b.y0), Math.min(SAFE_BOTTOM, b.y1)])
+    .filter(([a, b]) => b > a)
+    .sort((a, b) => a[0] - b[0]);
+  const out = [];
+  let cur = SAFE_TOP;
+  for (const [a, b] of bs) {
+    if (a > cur) out.push([cur, a]);
+    cur = Math.max(cur, b);
   }
-  // Solo speaker: the hook sits BELOW the face — its centre varies in the measured
-  // 1159–1322 px band (hookPosition.y is the bubble's CENTRE).
-  const y = Math.round(1159 + (rng ? rng() : 0.5) * (1322 - 1159));
-  return { x, y, height: hookHeight };
+  if (cur < SAFE_BOTTOM) out.push([cur, SAFE_BOTTOM]);
+  return out;
+};
+
+// Real on-screen height of the hook bubble PNG (render_hook_bubble.py wraps at
+// maxWidth ≈ 784 px / HOOK_SCALE 0.8 — ≈38 chars per line at ~42 px Helvetica).
+export const estimateHookHeight = (text, layoutHeight = 120) => {
+  const len = String(text || "").trim().length;
+  const minH = Math.max(96, Math.round(layoutHeight * 0.8));
+  if (!len) return minH;
+  const lines = Math.max(1, Math.ceil(len / 38));
+  return Math.max(minH, 48 + lines * 55);
+};
+
+// On-screen height of one caption line (wordsPerLine is forced to 2 -> single line):
+// render font = clamp(round(size*1.08), 38, 96), glyph block ≈ 1.5×, + shadow drop.
+export const estimateSubtitleBlockHeight = (fontSizePx, shadowDistance = 6) =>
+  Math.round(clamp(Math.round((Number(fontSizePx) || 53) * 1.08), 38, 96) * 1.5) + (Number(shadowDistance) || 0);
+
+// ---------------------------------------------------------------------------
+// Hook position — x always 540. Split: stays on the split line (it hides the seam)
+// but slides ±margin to clear both faces. Solo: free zone below the face.
+// ALWAYS consumes exactly ONE rng draw whatever the branch (planning ↔ rendering
+// lock-step must not depend on faceBoxes availability).
+// ---------------------------------------------------------------------------
+export function computeHookPosition({ dualSpeakerEnabled, splitRatio, hookHeight, hookHeightEst = 0, rng, margin = 150, maxHeight = 200, faces = [] }) {
+  const x = 540;
+  const r = rng ? rng() : 0.5; // the single draw — consumed up-front in BOTH branches
+  if (dualSpeakerEnabled) {
+    const h = Math.min(hookHeight, maxHeight); // layout height (legacy semantics)
+    const hg = Math.max(h, hookHeightEst);     // REAL bubble height, for collisions
+    const line = splitRatio * 1920;
+    // Candidate centres on/around the split line, scored by face overlap; pick with
+    // bounded jitter among the (near-)optimal ones. hookPosition.y is the CENTRE.
+    const cands = [];
+    for (let d = -margin; d <= margin; d += 30) cands.push(clamp(line + d, hg / 2, 1920 - hg / 2));
+    const overlap = (y) =>
+      faces.reduce((acc, f) => acc + Math.max(0, Math.min(y + hg / 2, f.y1) - Math.max(y - hg / 2, f.y0)), 0);
+    let best = Infinity;
+    for (const y of cands) best = Math.min(best, overlap(y));
+    const good = cands.filter((y) => overlap(y) <= best + 20);
+    const y = good.length ? good[Math.floor(r * good.length) % good.length] : clamp(line, hg / 2, 1920 - hg / 2);
+    return { x, y: Math.round(y), height: h, geomHeight: hg };
+  }
+  // Solo: place the bubble in a face-free zone, preferring the classic band BELOW
+  // the face (1050–1450). No face info -> degrades to ≈ the legacy 1159–1322 band.
+  const hg = Math.max(hookHeight, hookHeightEst);
+  const feasible = freeIntervals(faces)
+    .map(([a, b]) => [a + hg / 2, b - hg / 2])
+    .filter(([lo, hi]) => hi >= lo);
+  let lo = 1159, hi = 1322; // legacy fallback (everything blocked)
+  const inBand = feasible.filter(([a, b]) => Math.min(b, 1450) >= Math.max(a, 1050));
+  if (inBand.length) {
+    const z = inBand[inBand.length - 1]; // the LOWEST such zone = below the face
+    lo = Math.max(z[0], 1050);
+    hi = Math.min(z[1], 1450);
+  } else if (feasible.length) {
+    const z = feasible.reduce((m, c) => (c[1] - c[0] > m[1] - m[0] ? c : m));
+    lo = z[0];
+    hi = z[1];
+  }
+  // Bounded jitter: at most ±100 px around the zone midpoint.
+  const mid = (lo + hi) / 2;
+  lo = Math.max(lo, mid - 100);
+  hi = Math.min(hi, mid + 100);
+  return { x, y: Math.round(lo + r * (hi - lo)), height: hookHeight, geomHeight: hg };
 }
 
-// Subtitles never overlap the hook: usually right below it, sometimes above.
-export function computeSubtitlePosition({ hookY, hookHeight, rng }) {
-  const below = (rng ? rng() : 0) < 0.75;
-  const gap = 150 + Math.round((rng ? rng() : 0.5) * 40); // hook edge -> sub centre
-  const y = below ? hookY + hookHeight / 2 + gap : hookY - hookHeight / 2 - gap;
-  return { x: 540, y: Math.round(clamp(y, 900, 1600)) };
+// ---------------------------------------------------------------------------
+// Subtitle position — the captions sit a CLEAR GAP below (or above) the hook and
+// NEVER on top of it. Faces don't block the hook-relative placement: a caption over
+// a torso is normal for short-form, and far better than the previous bug that parked
+// the subtitle exactly ON the hook when faces+reserves left no "free zone".
+// `hookY = null` on clips without a hook (reply) -> lower third, dodging the face.
+// ALWAYS consumes exactly TWO rng draws (planning ↔ rendering lock-step).
+// ---------------------------------------------------------------------------
+export function computeSubtitlePosition({ hookY = null, hookHeight = 0, rng, faces = [], blockH = 120 }) {
+  const r1 = rng ? rng() : 0;   // below/above choice (hook case)
+  const r2 = rng ? rng() : 0.5; // bounded jitter / zone offset
+  const half = blockH / 2;
+  const GAP = 56; // generous clearance between the hook edge and the caption block
+  const loBound = SAFE_TOP + half;
+  const hiBound = SAFE_BOTTOM - half;
+
+  if (hookY != null) {
+    const hookBot = hookY + hookHeight / 2;
+    const hookTop = hookY - hookHeight / 2;
+    const belowY = hookBot + GAP + half;
+    const aboveY = hookTop - GAP - half;
+    const belowFits = belowY <= hiBound;
+    const aboveFits = aboveY >= loBound;
+    let y;
+    if (belowFits && (r1 < 0.75 || !aboveFits)) y = Math.min(belowY + r2 * 36, hiBound); // a touch lower
+    else if (aboveFits) y = Math.max(aboveY - r2 * 36, loBound);                          // a touch higher
+    else y = clamp(belowY, loBound, hiBound);
+    return { x: 540, y: Math.round(clamp(y, loBound, hiBound)) };
+  }
+
+  // No hook (reply): lower third, dodging the speaker's face when there's room.
+  const free = freeIntervals(faces)
+    .map(([a, b]) => [a + half, b - half])
+    .filter(([lo, hi]) => hi >= lo);
+  const lowerPref = free.filter(([lo, hi]) => hi >= 1150 && lo <= 1700);
+  const zone = lowerPref.length ? lowerPref[lowerPref.length - 1] : free.length ? free[free.length - 1] : null;
+  if (!zone) return { x: 540, y: Math.round(clamp(1240 + (r2 - 0.5) * 120, loBound, hiBound)) };
+  const lo = Math.max(zone[0], 1150);
+  const hi = Math.min(zone[1], 1680);
+  const y = lo <= hi ? lo + (0.35 + r2 * 0.5) * (hi - lo) : (zone[0] + zone[1]) / 2;
+  return { x: 540, y: Math.round(clamp(y, loBound, hiBound)) };
 }
 
 // stable stringify for the uniqueness hash
@@ -228,7 +394,7 @@ function signatureOf(settings, clips) {
     hk: s.hookText, hf: s.hookStyle?.fontFamily, hb: s.hookStyle?.bubbleColor,
     mu: s.musicId, mv: s.musicVolumeDb, vv: s.videoVolumeDb,
     zm: s.autoZoomMode, zb: s.autoZoomBoostPercent, zoi: s.introZoomOutEnabled, zor: s.replyZoomOutEnabled,
-    tr: s.clipTransitionType, bs: s.brollStyle, mi: s.mirrorEnabled,
+    tr: s.clipTransitionType, bs: s.brollStyle, bsq: s.brollSquareScale, mi: s.mirrorEnabled,
     clips: clips.map((c) => ({
       st: c.stage, ds: !!c.dualSpeakerEnabled, dp: c.dualSpeakerPosition, drr: c.dualSpeakerSplitRatio,
       dsrc: c.dualSpeakerSource, dmz: c.dualSpeakerMainZoom, daz: c.dualSpeakerAddedZoom,
@@ -253,11 +419,23 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
     // override wins over both default and the caller's config
     ...(typeof ov.twoSpeakerRatio === "number" ? { twoSpeakerRatio: ov.twoSpeakerRatio } : {}),
   };
+  // Per-project editable RANGES (exposed in the Studio project editor). Each reads an
+  // override pair with a sane default; the engine still ALWAYS consumes the same rng
+  // draws, so only the values shift, never the lock-step. `rangePick` keeps draw order.
+  const num = (v, d) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+  const range = (loKey, hiKey, dLo, dHi) => {
+    let lo = num(ov[loKey], dLo);
+    let hi = num(ov[hiKey], dHi);
+    if (lo > hi) [lo, hi] = [hi, lo];
+    return [lo, hi];
+  };
   const rng = makeRng(`${videoId}:${variantIndex}:${attempt}`);
   const settings = clone(base.settings || {});
   const clips = clone(base.clips || []);
   const intro = clips.find((c) => c.stage === "intro") || clips[0];
-  const reply = clips.find((c) => c.stage === "reply") || clips[1] || clips[0];
+  // null on a SINGLE-clip project (a "rush simple") -> all reply ops below are guarded
+  // and skipped, so the rush renders as one solo clip (no doubled second segment).
+  const reply = clips.find((c) => c.stage === "reply") || clips[1] || null;
   const comboParts = [];
 
   // ---- MIRROR — decided FIRST because every framing computation below must know it:
@@ -268,12 +446,12 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
   const mirrored = settings.mirrorEnabled === true;
 
   // ---- SPLIT-SCREEN (primary lever, FIRST CLIP ONLY) — varies unless locked ----
-  let introSplit = !!intro?.dualSpeakerEnabled;
   let introRatio = intro?.dualSpeakerSplitRatio ?? 0.5;
   if (!lockSplitScreen) {
     const speakers = banks.speakers || [];
-    const two = speakers.length > 0 && isTwoSpeaker(variantIndex, cfg.twoSpeakerRatio);
-    introSplit = two;
+    // A "rush simple" (solo project, no reply clip) is rendered as JUST that one rush —
+    // never split with a reaction speaker. Split is a podcast-only lever.
+    const two = !!reply && speakers.length > 0 && isTwoSpeaker(variantIndex, cfg.twoSpeakerRatio);
     // The 2nd speaker (reaction) is the bank clip that is NOT the same person as the
     // intro's main speaker — so a "julien" intro gets "shelly", a "shelly" intro gets
     // "other version". Never the same person twice. We match the speaker's name token
@@ -298,7 +476,10 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
         intro.dualSpeakerPosition = (rng() < 0.75 ? baseTop : !baseTop) ? "top" : "bottom";
         // RÉPARTITION: plage élargie 25–75 %, pas de 1 % → beaucoup plus de valeurs
         // distinctes (le hook reste centré sur la ligne quel que soit le ratio).
-        intro.dualSpeakerSplitRatio = q(0.25 + rng() * 0.50, 0.01);
+        {
+          const [sLo, sHi] = range("splitRatioMin", "splitRatioMax", 0.25, 0.75);
+          intro.dualSpeakerSplitRatio = q(clamp(sLo + rng() * (sHi - sLo), 0.2, 0.8), 0.01);
+        }
         // 6 rng draws below, ALWAYS consumed in this fixed order so planning ↔ rendering
         // stay in lock-step whatever branch each band takes.
         // 6 rng draws below, ALWAYS consumed in this fixed order so planning ↔ rendering
@@ -368,21 +549,10 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
     comboParts.push(two ? `split ${Math.round(introRatio * 100)}%` : "solo");
   }
 
-  // ---- HOOK + SUBTITLE POSITION — recomputed for THIS variant's intro split ----
-  if (intro) {
-    intro.hookSize = intro.hookSize || { width: 980, height: 120 };
-    const hp = computeHookPosition({
-      dualSpeakerEnabled: introSplit, splitRatio: introRatio,
-      hookHeight: intro.hookSize.height, rng, margin: cfg.hookMargin, maxHeight: cfg.hookMaxHeight,
-    });
-    intro.hookPosition = { x: hp.x, y: hp.y };
-    intro.hookSize = { ...intro.hookSize, height: hp.height };
-    // Subtitles track the hook (below it most of the time, sometimes above) so
-    // they never overlap whatever band the hook landed in.
-    intro.subtitlePosition = computeSubtitlePosition({ hookY: hp.y, hookHeight: hp.height, rng });
-  }
+  // (hook + subtitle positions are computed in the SAFE-ZONE LAYOUT block below,
+  //  AFTER framing/hook-text so face rects and the real hook height are known)
 
-  // ---- SUBTITLES (+ filter) — size varies 65–90 px whatever the preset ----
+  // ---- SUBTITLES (+ filter) — size is ALWAYS randomized (62–94 px) ----
   if (varied.subtitles) {
     // learned overrides: whitelist presets, cap size, deny some filters
     const presetPool = (Array.isArray(ov.allowedSubtitlePresets) && ov.allowedSubtitlePresets.length)
@@ -392,18 +562,24 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
       ? FILTER_KEYS.filter((k) => !ov.filterDenylist.includes(k))
       : FILTER_KEYS;
     const presetKey = pickUnused(presetPool.length ? presetPool : PRESET_KEYS, rng, used.presets, prev.stylePreset);
-    // Subtitle SIZE: if the user gave a px (base.settings.subtitleSize), keep the text
-    // NEAR it (gentle ±7 jitter for anti-shadowban variety) instead of the engine's old
-    // free 65–90 random that ignored the user's value entirely. No size given -> 65–90.
-    const userSize = Number(base.settings?.subtitleSize);
-    let subtitleSize = userSize >= 30
-      ? q(clamp(userSize - 7 + rng() * 14, 40, 120), 1)
-      : q(65 + rng() * 25, 1);
-    if (typeof ov.subtitleSizeMax === "number") subtitleSize = Math.min(subtitleSize, ov.subtitleSizeMax);
+    // Subtitle SIZE: fully RANDOM per variant (no manual px control) — the whole point
+    // of auto mode is that this varies. 62–94 px on the 1080-wide canvas. A learned
+    // "subtitleSizeMax" override can still cap it; ov.subtitleSizeFixed pins it if a
+    // training rule ever needs a constant.
+    const [szLo, szHi] = range("subtitleSizeMin", "subtitleSizeMax", 62, 94);
+    let subtitleSize = q(clamp(szLo + rng() * (szHi - szLo), 30, 120), 1);
+    if (typeof ov.subtitleSizeFixed === "number") subtitleSize = clamp(ov.subtitleSizeFixed, 40, 120);
     settings.subtitleStyle = { ...SUBTITLE_PRESETS[presetKey], fontSize: subtitleSize };
+    // ANIMATION varies independently of the preset's built-in look so the entry
+    // animation changes EVERY render (not just the preset colour/font).
+    settings.subtitleStyle.animationPreset = pickAvoid(SUBTITLE_ANIMS, rng, prev.subtitleAnim);
     settings.subtitleSize = subtitleSize;
     settings.videoFilterKey = pickUnused(filterPool.length ? filterPool : FILTER_KEYS, rng, used.filters, prev.filter);
-    comboParts.push(`sous-titres ${presetKey} ${subtitleSize}px`, `filtre ${settings.videoFilterKey}`);
+    // POSITION is computed in the SAFE-ZONE LAYOUT block below (face-aware, both
+    // clips). When a square b-roll is present the renderer pulls the caption just
+    // above the square (subtitleAboveSquare), and while the logo pops up it's lifted
+    // to the top — both handled in server.mjs.
+    comboParts.push(`sous-titres ${presetKey} ${subtitleSize}px ${settings.subtitleStyle.animationPreset}`, `filtre ${settings.videoFilterKey}`);
   }
 
   // ---- SOLO CLIP FRAMING — face-anchored base crop (1 speaker) ----
@@ -451,7 +627,67 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
       if (intro) intro.hookText = text;
       comboParts.push("hook varié"); // only claim variation when a hook was actually set
     }
-    settings.hookStyle = { ...(settings.hookStyle || {}), bubbleColor: "#ffffff", textColor: "#000000" };
+    // Hook COLOUR varies again (white / black / yellow / red …) instead of being
+    // forced to white — avoid repeating the previous variant's bubble colour.
+    const bubble = pickAvoid(HOOK_BUBBLES, rng, HOOK_BUBBLES.find((b) => b.bubbleColor === prev.hookBubble));
+    settings.hookStyle = { ...(settings.hookStyle || {}), bubbleColor: bubble.bubbleColor, textColor: bubble.textColor };
+    comboParts.push(`hook ${bubble.bubbleColor}`);
+  }
+
+  // ---- SAFE-ZONE LAYOUT (hook + subtitle positions) ----
+  // Runs AFTER split/framing/hook-text so every input is known: the face intervals
+  // for THIS variant's crop/zoom/split, the real hook text (height estimate) and the
+  // chosen subtitle size. Draw counts are FIXED (hook 1, subtitles 2 per clip)
+  // whatever faceBoxes contains, so planning ↔ rendering stay in lock-step even if
+  // face detection results change between the two.
+  {
+    const subStyle = settings.subtitleStyle || {};
+    const blockH = estimateSubtitleBlockHeight(settings.subtitleSize ?? subStyle.fontSize, subStyle.shadowDistance);
+    if (intro) {
+      const introFaces = [];
+      if (intro.dualSpeakerEnabled) {
+        const ratio = intro.dualSpeakerSplitRatio ?? 0.5;
+        const topBand = Math.round(1920 * ratio);
+        const addedOnTop = intro.dualSpeakerPosition === "top";
+        const main = faceIntervalBand(faceBoxes[intro.sourceVideoId], {
+          bandH: addedOnTop ? 1920 - topBand : topBand,
+          y0Band: addedOnTop ? topBand : 0,
+          zoom: (Number(intro.dualSpeakerMainZoom) || 100) / 100,
+          cropY: intro.dualSpeakerMainCropY,
+        });
+        const added = faceIntervalBand(faceBoxes[intro.dualSpeakerSource], {
+          bandH: addedOnTop ? topBand : 1920 - topBand,
+          y0Band: addedOnTop ? 0 : topBand,
+          zoom: (Number(intro.dualSpeakerAddedZoom) || 100) / 100,
+          cropY: intro.dualSpeakerAddedCropY,
+        });
+        if (main) introFaces.push(main);
+        if (added) introFaces.push(added);
+      } else {
+        const f = faceIntervalSolo(faceBoxes[intro.sourceVideoId], intro.videoTransform);
+        if (f) introFaces.push(f);
+      }
+      intro.hookSize = intro.hookSize || { width: 980, height: 120 };
+      const hookText = intro.hookText || settings.hookText || "";
+      const hp = computeHookPosition({
+        dualSpeakerEnabled: !!intro.dualSpeakerEnabled,
+        splitRatio: intro.dualSpeakerSplitRatio ?? introRatio,
+        hookHeight: intro.hookSize.height,
+        hookHeightEst: estimateHookHeight(hookText, intro.hookSize.height),
+        rng, margin: cfg.hookMargin, maxHeight: cfg.hookMaxHeight, faces: introFaces,
+      });
+      intro.hookPosition = { x: hp.x, y: hp.y };
+      intro.hookSize = { ...intro.hookSize, height: hp.height };
+      intro.subtitlePosition = computeSubtitlePosition({
+        hookY: hp.y, hookHeight: hp.geomHeight, rng, faces: introFaces, blockH,
+      });
+    }
+    if (reply && reply !== intro) {
+      const replyFaces = [];
+      const f = faceIntervalSolo(faceBoxes[reply.sourceVideoId], reply.videoTransform);
+      if (f) replyFaces.push(f);
+      reply.subtitlePosition = computeSubtitlePosition({ hookY: null, rng, faces: replyFaces, blockH });
+    }
   }
 
   // ---- B-ROLL (reply only) ----
@@ -462,12 +698,12 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
       reply.imageId = null;
     }
     settings.brollStyle = pick(BROLL_STYLES, rng);
-    reply.imageTransform = {
-      scale: q(90 + rng() * 40, 2),     // 90–130 %
-      x: q((rng() - 0.5) * 160, 10),    // ±80
-      y: q((rng() - 0.5) * 160, 10),
-    };
-    comboParts.push(`b-roll ${settings.brollStyle}`);
+    // B-roll stays at its FIXED on-screen spot (no position jitter). Only the SQUARE
+    // b-roll may shrink (0.70–1.00 of the reference size) — the 9:16 fullscreen b-roll
+    // always fills the frame and is never resized.
+    settings.brollSquareScale = q(0.7 + rng() * 0.3, 0.05); // 0.70–1.00
+    reply.imageTransform = { scale: 100, x: 0, y: 0 };
+    comboParts.push(`b-roll ${settings.brollStyle} sq${settings.brollSquareScale}`);
   }
 
   // ---- MUSIC (+ levels) ----
@@ -527,7 +763,8 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
   // half the time it pops dead-centre of the frame (same size, in front) — and when it's
   // centred the renderer drops the subtitle during the pop-up so nothing sits behind it.
   settings.autoMode = true;
-  const logoSize = q(850 + rng() * 70, 2); // 850–920 px, varied per variant
+  const [lgLo, lgHi] = range("logoSizeMin", "logoSizeMax", 850, 920);
+  const logoSize = q(clamp(lgLo + rng() * (lgHi - lgLo), 200, 1080), 2); // varied per variant
   const logoCenter = rng() < 0.5;
   for (const clip of clips) { clip.logoSize = logoSize; clip.logoCenter = logoCenter; }
   comboParts.push(`logo ${logoSize}px${logoCenter ? " centré" : ""}`);
@@ -536,7 +773,7 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
     settings, clips,
     signature: signatureOf(settings, clips),
     combo: comboParts.join(" · ") || "variante",
-    picks: { stylePreset: settings.subtitleStyle?.stylePreset, filter: settings.videoFilterKey, musicId: settings.musicId },
+    picks: { stylePreset: settings.subtitleStyle?.stylePreset, filter: settings.videoFilterKey, musicId: settings.musicId, subtitleAnim: settings.subtitleStyle?.animationPreset, hookBubble: settings.hookStyle?.bubbleColor },
     // Human-readable snapshot of what the engine chose — shown in training mode
     // and fed to Claude as context when distilling feedback.
     decisions: {

@@ -436,6 +436,25 @@ const SUBTITLE_PRESETS: Record<string, LocalSubtitleStyleSettings> = {
     keywordSecondaryColor: "#ffe14a",
     keywordTerms: "",
   },
+  // The entries below are mirrored VERBATIM (one preset per line) from
+  // local-backend/autoVariants.mjs SUBTITLE_PRESETS — keep the two maps 1:1.
+  hormozi: { stylePreset: "hormozi", fontFamily: "Archivo Black", fontSize: 42, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#000000", strokeWidth: 7, shadowEnabled: true, shadowColor: "#000000", shadowOpacity: 0.95, shadowDistance: 6, shadowBlur: 16, animationPreset: "pop", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 102, keywordHighlightEnabled: true, keywordColor: "#3df25e", keywordSecondaryColor: "#ff4040", keywordTerms: "", uppercase: true, activeWordColor: "#ffe14a" },
+  bebasGold: { stylePreset: "bebasGold", fontFamily: "Bebas Neue", fontSize: 56, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#000000", strokeWidth: 5, shadowEnabled: true, shadowColor: "#000000", shadowOpacity: 0.9, shadowDistance: 5, shadowBlur: 14, animationPreset: "rise", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: true, keywordColor: "#ffcf33", keywordSecondaryColor: "#ffffff", keywordTerms: "", uppercase: true, activeWordColor: "#ffcf33" },
+  iceBlue: { stylePreset: "iceBlue", fontFamily: "Montserrat", fontSize: 42, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#0a2540", strokeWidth: 4, shadowEnabled: true, shadowColor: "#0a2540", shadowOpacity: 0.7, shadowDistance: 4, shadowBlur: 20, animationPreset: "rise", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 102, keywordHighlightEnabled: true, keywordColor: "#37c6ff", keywordSecondaryColor: "#ffffff", keywordTerms: "", activeWordColor: "#37c6ff" },
+  redAlert: { stylePreset: "redAlert", fontFamily: "Anton", fontSize: 50, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#000000", strokeWidth: 7, shadowEnabled: true, shadowColor: "#b00000", shadowOpacity: 0.8, shadowDistance: 6, shadowBlur: 18, animationPreset: "shake", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 104, keywordHighlightEnabled: true, keywordColor: "#ff3b3b", keywordSecondaryColor: "#ffe14a", keywordTerms: "", uppercase: true, activeWordColor: "#ff3b3b" },
+  mintBounce: { stylePreset: "mintBounce", fontFamily: "Arial Black", fontSize: 44, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#06281f", strokeWidth: 5, shadowEnabled: true, shadowColor: "#000000", shadowOpacity: 0.85, shadowDistance: 5, shadowBlur: 14, animationPreset: "bounce", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 103, keywordHighlightEnabled: true, keywordColor: "#36f1a6", keywordSecondaryColor: "#ffffff", keywordTerms: "", activeWordColor: "#36f1a6" },
+  cleanMinimal: { stylePreset: "cleanMinimal", fontFamily: "Helvetica", fontSize: 40, textColor: "#ffffff", strokeEnabled: false, strokeColor: "#000000", strokeWidth: 0, shadowEnabled: true, shadowColor: "#000000", shadowOpacity: 0.55, shadowDistance: 3, shadowBlur: 12, animationPreset: "fade", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: false, keywordColor: "#ffffff", keywordSecondaryColor: "#ffffff", keywordTerms: "", activeWordColor: "#ffe14a" },
+  invertBox: { stylePreset: "invertBox", fontFamily: "Impact", fontSize: 44, textColor: "#111111", strokeEnabled: false, strokeColor: "#111111", strokeWidth: 0, shadowEnabled: true, shadowColor: "#ffffff", shadowOpacity: 0.6, shadowDistance: 3, shadowBlur: 10, animationPreset: "slide", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 102, keywordHighlightEnabled: true, keywordColor: "#ff2d8f", keywordSecondaryColor: "#0a84ff", keywordTerms: "", uppercase: true, activeWordColor: "#ff2d8f" },
+  purpleNeon: { stylePreset: "purpleNeon", fontFamily: "Montserrat", fontSize: 42, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#1a0033", strokeWidth: 4, shadowEnabled: true, shadowColor: "#a855f7", shadowOpacity: 0.85, shadowDistance: 4, shadowBlur: 26, animationPreset: "elastic", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 102, keywordHighlightEnabled: true, keywordColor: "#c084fc", keywordSecondaryColor: "#22d3ee", keywordTerms: "", activeWordColor: "#c084fc" },
+  // --- TikTok/CapCut pack (boxEnabled = background box, ASS BorderStyle=4) ---
+  tiktokWhite: { stylePreset: "tiktokWhite", fontFamily: "Helvetica", fontSize: 44, textColor: "#000000", strokeEnabled: false, strokeColor: "#000000", strokeWidth: 0, shadowEnabled: false, shadowColor: "#000000", shadowOpacity: 0, shadowDistance: 0, shadowBlur: 0, animationPreset: "none", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: false, keywordColor: "#fe2c55", keywordSecondaryColor: "#25f4ee", keywordTerms: "", activeWordColor: "#fe2c55", boxEnabled: true, boxColor: "#ffffff", boxOpacity: 1, boxPadding: 18 },
+  tiktokBlack: { stylePreset: "tiktokBlack", fontFamily: "Helvetica", fontSize: 44, textColor: "#ffffff", strokeEnabled: false, strokeColor: "#000000", strokeWidth: 0, shadowEnabled: false, shadowColor: "#000000", shadowOpacity: 0, shadowDistance: 0, shadowBlur: 0, animationPreset: "fade", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: true, keywordColor: "#25f4ee", keywordSecondaryColor: "#fe2c55", keywordTerms: "", activeWordColor: "#25f4ee", boxEnabled: true, boxColor: "#000000", boxOpacity: 0.78, boxPadding: 18 },
+  tiktokRed: { stylePreset: "tiktokRed", fontFamily: "Arial Black", fontSize: 42, textColor: "#ffffff", strokeEnabled: false, strokeColor: "#000000", strokeWidth: 0, shadowEnabled: false, shadowColor: "#000000", shadowOpacity: 0, shadowDistance: 0, shadowBlur: 0, animationPreset: "pop", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: false, keywordColor: "#ffe14a", keywordSecondaryColor: "#ffffff", keywordTerms: "", uppercase: true, activeWordColor: "#ffe14a", boxEnabled: true, boxColor: "#fe2c55", boxOpacity: 1, boxPadding: 16 },
+  capcutYellow: { stylePreset: "capcutYellow", fontFamily: "Arial Black", fontSize: 42, textColor: "#111111", strokeEnabled: false, strokeColor: "#000000", strokeWidth: 0, shadowEnabled: false, shadowColor: "#000000", shadowOpacity: 0, shadowDistance: 0, shadowBlur: 0, animationPreset: "pop", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: false, keywordColor: "#ffffff", keywordSecondaryColor: "#111111", keywordTerms: "", uppercase: true, activeWordColor: "#ffffff", boxEnabled: true, boxColor: "#ffe14a", boxOpacity: 1, boxPadding: 16 },
+  capcutKaraoke: { stylePreset: "capcutKaraoke", fontFamily: "Arial Black", fontSize: 46, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#000000", strokeWidth: 8, shadowEnabled: true, shadowColor: "#000000", shadowOpacity: 0.9, shadowDistance: 5, shadowBlur: 14, animationPreset: "pop", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 102, keywordHighlightEnabled: false, keywordColor: "#ffd400", keywordSecondaryColor: "#ffffff", keywordTerms: "", activeWordColor: "#ffd400" },
+  karaokeGreen: { stylePreset: "karaokeGreen", fontFamily: "Archivo Black", fontSize: 44, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#000000", strokeWidth: 7, shadowEnabled: true, shadowColor: "#000000", shadowOpacity: 0.9, shadowDistance: 5, shadowBlur: 14, animationPreset: "none", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: false, keywordColor: "#39e55f", keywordSecondaryColor: "#ffffff", keywordTerms: "", uppercase: true, activeWordColor: "#39e55f" },
+  tiktokOutline: { stylePreset: "tiktokOutline", fontFamily: "Montserrat", fontSize: 46, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#000000", strokeWidth: 10, shadowEnabled: false, shadowColor: "#000000", shadowOpacity: 0, shadowDistance: 0, shadowBlur: 0, animationPreset: "pop", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: true, keywordColor: "#fe2c55", keywordSecondaryColor: "#25f4ee", keywordTerms: "", activeWordColor: "#ffe14a" },
+  bebasCaps: { stylePreset: "bebasCaps", fontFamily: "Bebas Neue", fontSize: 54, textColor: "#ffffff", strokeEnabled: true, strokeColor: "#000000", strokeWidth: 6, shadowEnabled: true, shadowColor: "#000000", shadowOpacity: 0.85, shadowDistance: 4, shadowBlur: 12, animationPreset: "rise", wordsPerLine: 2, introVerticalPosition: "lower", replyVerticalPosition: "middle", fontWeight: 900, fontScaleX: 100, keywordHighlightEnabled: false, keywordColor: "#fe2c55", keywordSecondaryColor: "#ffffff", keywordTerms: "", uppercase: true, activeWordColor: "#fe2c55" },
 };
 
 const DEFAULT_SUBTITLE_STYLE = SUBTITLE_PRESETS.impact;
@@ -448,6 +467,16 @@ const VISUAL_SUBTITLE_PRESETS = [
   { key: "cyanGlow", label: "Cyan glow", sample: "viral", badge: null },
   { key: "whiteBox", label: "White box", sample: "FACT", badge: null },
   { key: "creatorClean", label: "Creator clean", sample: "clean", badge: null },
+  { key: "tiktokWhite", label: "TikTok box", sample: "comme ça", badge: "TIKTOK" },
+  { key: "tiktokBlack", label: "TikTok dark", sample: "la vérité", badge: "TIKTOK" },
+  { key: "tiktokRed", label: "TikTok rouge", sample: "STOP", badge: "TIKTOK" },
+  { key: "capcutYellow", label: "CapCut jaune", sample: "ATTENDS", badge: null },
+  { key: "capcutKaraoke", label: "Karaoké", sample: "MOT À MOT", badge: null },
+  { key: "karaokeGreen", label: "Karaoké vert", sample: "ÉCOUTE", badge: null },
+  { key: "tiktokOutline", label: "Contour épais", sample: "direct", badge: null },
+  { key: "bebasCaps", label: "Bebas caps", sample: "GRAND", badge: null },
+  { key: "hormozi", label: "Hormozi", sample: "MONEY", badge: null },
+  { key: "redAlert", label: "Red alert", sample: "ALERTE", badge: null },
 ] as const;
 const SUBTITLE_ANIMATION_PRESETS: { key: NonNullable<LocalSubtitleStyleSettings["animationPreset"]>; label: string; sample: string }[] = [
   { key: "pop", label: "Pop-up", sample: "POP" },
@@ -655,20 +684,36 @@ const buildSubtitleTextPreviewStyle = (
   const transformPrefix = options.centerY ? "translateY(-50%) " : "";
 
   const previewFont = resolvePreviewFont(style.fontFamily);
+  // TikTok-style background box: solid box behind the line, no stroke/shadow halo
+  // (mirrors the ASS BorderStyle=4 render — see buildAssSubtitleFile in server.mjs).
+  const boxOn = style.boxEnabled === true;
+  const boxAlpha = Math.round(clampValue(style.boxOpacity ?? 1, 0, 1) * 255)
+    .toString(16)
+    .padStart(2, "0");
   return {
     fontSize,
     color: style.textColor || "#ffffff",
     fontFamily: previewFont.family,
     fontWeight: previewFont.weight,
     WebkitTextStroke: "0 transparent",
-    textShadow: buildOuterSubtitleShadow(
-      previewStrokeWidth,
-      style.strokeColor || "#000000",
-      previewShadowDistance,
-      previewShadowBlur,
-      style.shadowColor || "#000000",
-      previewShadowOpacity
-    ),
+    textShadow: boxOn
+      ? "none"
+      : buildOuterSubtitleShadow(
+          previewStrokeWidth,
+          style.strokeColor || "#000000",
+          previewShadowDistance,
+          previewShadowBlur,
+          style.shadowColor || "#000000",
+          previewShadowOpacity
+        ),
+    ...(boxOn
+      ? {
+          backgroundColor: `${style.boxColor || "#ffffff"}${boxAlpha}`,
+          padding: "0.12em 0.4em",
+          borderRadius: "0.16em",
+        }
+      : {}),
+    textTransform: style.uppercase === true ? ("uppercase" as const) : undefined,
     transform: `${transformPrefix}scaleX(${(style.fontScaleX || 104) / 100})`,
     animation: subtitleAnimationCss(options.animationPreset ?? style.animationPreset, options.loopAnimation),
   };

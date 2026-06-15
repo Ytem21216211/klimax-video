@@ -25,6 +25,13 @@ export type LocalSubtitleStyleSettings = {
   keywordColor?: string;
   keywordSecondaryColor?: string;
   keywordTerms?: string;
+  uppercase?: boolean;
+  activeWordColor?: string;
+  // TikTok-style background box (rendered as ASS BorderStyle=4 by the local backend)
+  boxEnabled?: boolean;
+  boxColor?: string;
+  boxOpacity?: number;
+  boxPadding?: number;
 };
 
 export type LocalHookStyleSettings = {
@@ -146,8 +153,20 @@ export const localKlimaxApi = {
     formData.append("person1", person1);
     formData.append("person2", person2);
     formData.append("note", note);
-    return parseResponse<{ assets: KlimaxBankAsset[]; videoGroups: KlimaxVideoGroup[] }>(
+    return parseResponse<{ added?: KlimaxBankAsset[]; assets: KlimaxBankAsset[]; videoGroups: KlimaxVideoGroup[] }>(
       await fetch(`${LOCAL_KLIMAX_API}/api/assets/video-pair`, {
+        method: "POST",
+        body: formData,
+      })
+    );
+  },
+
+  async uploadSingleRush(rush: File, note = "") {
+    const formData = new FormData();
+    formData.append("person1", rush);
+    formData.append("note", note);
+    return parseResponse<{ added?: KlimaxBankAsset[]; assets: KlimaxBankAsset[]; videoGroups: KlimaxVideoGroup[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/assets/single-rush`, {
         method: "POST",
         body: formData,
       })
@@ -296,6 +315,62 @@ export const localKlimaxApi = {
   },
   autoJobDownloadUrl(jobId: string) {
     return `${LOCAL_KLIMAX_API}/api/auto/jobs/${jobId}/download`;
+  },
+  // Plan-only (mode paramètre): same deterministic planning as startAutoBatch but
+  // renders nothing — returns full per-variant settings/clips + source URLs.
+  async planAutoBatch(payload: {
+    projectIds?: string[];
+    videoGroupIds?: string[];
+    variantsPerVideo: number;
+    varied: Record<string, boolean>;
+    lockSplitScreen?: boolean;
+    subtitleSizePx?: number;
+  }) {
+    return parseResponse<{ projects: AutoPlanProject[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/auto/plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+    );
+  },
+
+  // Studio projects (reusable per-podcast config profiles)
+  async listStudioProjects() {
+    return parseResponse<{ projects: StudioProject[] }>(await fetch(`${LOCAL_KLIMAX_API}/api/studio/projects`));
+  },
+  async saveStudioProject(project: Partial<StudioProject> & { name: string }) {
+    return parseResponse<{ project: StudioProject; projects: StudioProject[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/studio/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(project),
+      })
+    );
+  },
+  async deleteStudioProject(id: string) {
+    return parseResponse<{ projects: StudioProject[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/studio/projects/${id}`, { method: "DELETE" })
+    );
+  },
+  async runStudioProject(id: string, variantsPerVideo?: number) {
+    return parseResponse<{ jobId: string; total: number; items: LocalAutoItem[]; achievablePerVideo: LocalAutoAchievable[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/studio/projects/${id}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ variantsPerVideo }),
+      })
+    );
+  },
+  // Mode vidéo AI: a plain-language request -> Claude maps it to a batch -> generates.
+  async aiVideoRequest(payload: { prompt: string; studioProjectId?: string | null; videoGroupIds?: string[]; variantsPerVideo?: number }) {
+    return parseResponse<{ jobId: string; total: number; items: LocalAutoItem[]; summary?: string; config?: unknown }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/auto/ai-request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+    );
   },
 
   // Auto-mode batch presets (config + planification quotidienne)
@@ -446,6 +521,101 @@ export type LocalAutoItem = {
   status: "queued" | "rendering" | "ready" | "failed";
   url: string | null;
   error?: string;
+};
+
+// "Mode paramètre" (plan-only, no render): the full per-variant data so the frontend
+// can draw a parametric preview and let the user inspect/edit every random value.
+export type AutoPlanSource = { id: string; title: string; fileUrl: string };
+export type AutoPlanSources = {
+  person1: AutoPlanSource | null;
+  person2: AutoPlanSource | null;
+  speakers: AutoPlanSource[];
+};
+export type AutoPlanClip = {
+  id?: string;
+  stage: "intro" | "reply";
+  sourceVideoId?: string | null;
+  videoTransform?: { x: number; y: number; scale: number };
+  dualSpeakerEnabled?: boolean;
+  dualSpeakerSource?: string | null;
+  dualSpeakerPosition?: "top" | "bottom";
+  dualSpeakerSplitRatio?: number;
+  dualSpeakerMainZoom?: number;
+  dualSpeakerMainCropX?: number;
+  dualSpeakerMainCropY?: number;
+  dualSpeakerAddedZoom?: number;
+  dualSpeakerAddedCropX?: number;
+  dualSpeakerAddedCropY?: number;
+  hookText?: string;
+  hookPosition?: { x: number; y: number };
+  hookSize?: { width: number; height: number };
+  subtitlePosition?: { x: number; y: number };
+  brollId?: string | null;
+  logoSize?: number;
+  logoCenter?: boolean;
+};
+export type AutoPlanSettings = {
+  mirrorEnabled?: boolean;
+  videoFilterKey?: string;
+  subtitleSize?: number;
+  subtitleStyle?: LocalSubtitleStyleSettings;
+  hookText?: string;
+  hookStyle?: LocalHookStyleSettings;
+  autoZoomMode?: string;
+  autoZoomBoostPercent?: number;
+  brollStyle?: string;
+  musicId?: string | null;
+  musicVolumeDb?: number;
+  [key: string]: unknown;
+};
+export type AutoPlanVariant = {
+  index: number;
+  combo: string;
+  decisions?: LocalAutoDecisions;
+  settings: AutoPlanSettings;
+  clips: AutoPlanClip[];
+};
+export type AutoPlanProject = {
+  projectId: string;
+  source: string;
+  sources: AutoPlanSources;
+  subtitleSamples: { intro: string; reply: string };
+  variants: AutoPlanVariant[];
+};
+
+// Studio projects — reusable, fully-configurable per-podcast project profiles.
+export type StudioOverrides = {
+  twoSpeakerRatio?: number;
+  splitRatioMin?: number;
+  splitRatioMax?: number;
+  subtitleSizeMin?: number;
+  subtitleSizeMax?: number;
+  logoSizeMin?: number;
+  logoSizeMax?: number;
+  zoomMaxBoostPercent?: number;
+  musicVolumeMaxDb?: number;
+  allowedSubtitlePresets?: string[];
+  filterDenylist?: string[];
+};
+export type StudioAssetPools = {
+  brollIds: string[] | null;
+  imageIds: string[] | null;
+  musicIds: string[] | null;
+  speakerIds: string[] | null;
+};
+export type StudioProject = {
+  id: string;
+  name: string;
+  description: string;
+  videoGroupIds: string[];
+  variantsPerVideo: number;
+  varied: Record<string, boolean>;
+  lockSplitScreen: boolean;
+  overrides: StudioOverrides;
+  assetPools: StudioAssetPools;
+  hookBank: string[];
+  createdAt: string;
+  updatedAt: string;
 };
 
 // Training mode (learned-rules feedback loop)

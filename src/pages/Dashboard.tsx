@@ -7,7 +7,8 @@ import {
   Plus, Video, LogOut, Upload, ScrollText,
   BarChart3, Brain, Eye, Zap, ArrowRight, Library,
   ArrowDown, LayoutGrid, Settings,
-  MessageSquare, Sparkles, ChevronRight, AudioLines, Clock
+  MessageSquare, Sparkles, ChevronRight, AudioLines, Clock,
+  Wand2, Loader2, FolderCog
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDevAssistantContext } from "@/components/devAssistant";
@@ -23,6 +24,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { KLIMAX_LEGACY_TITLE_RE } from "@/lib/klimax";
 import { localKlimaxApi, type LocalKlimaxProject } from "@/lib/localKlimaxApi";
+import AiVideoDialog from "@/components/AiVideoDialog";
 import {
   getKlimaxVideoGroups,
   loadKlimaxBankAssets,
@@ -259,6 +261,10 @@ const Dashboard = () => {
   const [isTyping, setIsTyping] = useState(false);
   const uploadedVideoGroups = getKlimaxVideoGroups(bankAssets).filter((group) => group.person1 && group.person2);
 
+  // Mode vidéo AI (shared dialog). The Accueil (/projets) is the primary entry, but
+  // it's also reachable here for convenience.
+  const [aiOpen, setAiOpen] = useState(false);
+
   const handleSendChat = () => {
     if (!prompt.trim()) return;
     const currentPrompt = prompt;
@@ -462,7 +468,10 @@ const Dashboard = () => {
             <div>
               <p className="px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">Tableau de bord</p>
               <div className="space-y-1">
+                <SidebarItem icon={<LayoutGrid className="w-4 h-4" />} text="Accueil (projets)" onClick={() => navigate("/projets")} active={false} />
                 <SidebarItem icon={<Plus className="w-4 h-4" />} text="Nouveau projet" onClick={() => setNewProjectOpen(true)} active={false} />
+                <SidebarItem icon={<Wand2 className="w-4 h-4" />} text="Mode vidéo AI" onClick={() => { setAiOpen(true); }} active={false} />
+                <SidebarItem icon={<FolderCog className="w-4 h-4" />} text="Projets Studio" onClick={() => navigate("/studio")} active={window.location.pathname === "/studio"} />
                 <SidebarItem icon={<Zap className="w-4 h-4" />} text="Mode automatique" onClick={() => navigate("/automatic-mode")} active={window.location.pathname === "/automatic-mode"} />
                 <SidebarItem icon={<Brain className="w-4 h-4" />} text="Mode entraînement" onClick={() => navigate("/training-mode")} active={window.location.pathname === "/training-mode"} />
               </div>
@@ -596,7 +605,19 @@ const Dashboard = () => {
                   <span className="px-5 py-2 rounded-full bg-white/5 border border-white/10 text-xs font-medium cursor-pointer hover:bg-white/10 transition-all">Moteur IA</span>
                 </div>
 
-                <div className="mt-10 grid w-full gap-4 text-left sm:grid-cols-2 xl:grid-cols-4">
+                <div className="mt-10 grid w-full gap-4 text-left sm:grid-cols-2 xl:grid-cols-3">
+                  <DashboardShortcutCard
+                    label="Mode vidéo AI"
+                    description="Décris la vidéo que tu veux : l'IA règle tout (hooks, b-roll, sous-titres, cadrage) et génère — depuis un projet ou tes vidéos."
+                    icon={<Wand2 className="h-5 w-5" />}
+                    onClick={() => { setAiOpen(true); }}
+                  />
+                  <DashboardShortcutCard
+                    label="Projets Studio"
+                    description="Crée des projets réutilisables par podcast : pools d'assets, dimensions aléatoires, plages, presets… tout est paramétrable."
+                    icon={<FolderCog className="h-5 w-5" />}
+                    onClick={() => navigate("/studio")}
+                  />
                   <DashboardShortcutCard
                     label="Banque"
                     description="Musiques, B-rolls, images, SFX. La source de tout ce que tu insères dans un montage."
@@ -733,6 +754,9 @@ const Dashboard = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* MODE VIDÉO AI — shared dialog (also the hero on the Accueil /projets). */}
+      <AiVideoDialog open={aiOpen} onOpenChange={setAiOpen} />
 
       <style dangerouslySetInnerHTML={{
         __html: `

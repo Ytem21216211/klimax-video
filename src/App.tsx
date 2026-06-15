@@ -38,6 +38,9 @@ const SlateLanding = lazy(() => import("./pages/SlateLanding"));
 const AfterAI = lazy(() => import("./pages/AfterAI"));
 const Parametres = lazy(() => import("./pages/Parametres"));
 const AutomaticMode = lazy(() => import("./pages/AutomaticMode"));
+const AutoParamMode = lazy(() => import("./pages/AutoParamMode"));
+const StudioProjects = lazy(() => import("./pages/StudioProjects"));
+const ProjectsHome = lazy(() => import("./pages/ProjectsHome"));
 const TrainingMode = lazy(() => import("./pages/TrainingMode"));
 
 const queryClient = new QueryClient({
@@ -105,6 +108,9 @@ const App = () => (
                 <Route path="/afterai" element={<ProtectedRoute><AfterAI /></ProtectedRoute>} />
                 <Route path="/parametres" element={<ProtectedRoute><Parametres /></ProtectedRoute>} />
                 <Route path="/automatic-mode" element={<ProtectedRoute><AutomaticMode /></ProtectedRoute>} />
+                <Route path="/auto-param-mode" element={<ProtectedRoute><AutoParamMode /></ProtectedRoute>} />
+                <Route path="/studio" element={<ProtectedRoute><StudioProjects /></ProtectedRoute>} />
+                <Route path="/projets" element={<ProtectedRoute><ProjectsHome /></ProtectedRoute>} />
                 <Route path="/training-mode" element={<ProtectedRoute><TrainingMode /></ProtectedRoute>} />
 
                 {/* Catch-all */}

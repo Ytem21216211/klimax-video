@@ -1036,13 +1036,17 @@ const buildVideoSfxPlan = (clipMeta, poolKeys) => {
   }
 
   chosen.sort((a, b) => a.globalTime - b.globalTime);
-  let lastKey = null;
-  const plan = chosen.map((cand) => {
-    let key = poolKeys[Math.floor(Math.random() * poolKeys.length)];
-    if (poolKeys.length > 1 && key === lastKey) {
-      key = poolKeys[(poolKeys.indexOf(key) + 1) % poolKeys.length];
-    }
-    lastKey = key;
+  // Assign a DISTINCT sound to each beat — no duplicates in the same video while the
+  // pool is large enough. Shuffle the pool (Fisher–Yates) and walk it; only wrap (and
+  // thus repeat) if there are more beats than distinct sounds. This kills the old bug
+  // where the same effect could land twice (it only avoided back-to-back repeats).
+  const shuffled = [...poolKeys];
+  for (let i = shuffled.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  const plan = chosen.map((cand, i) => {
+    const key = shuffled[i % shuffled.length];
     const volumeDb = key === SFX_FAHH_KEY ? SFX_FAHH_VOLUME_DB : SFX_EFFECT_VOLUME_DB;
     return { clipIndex: cand.clipIndex, time: cand.time, key, volumeDb, word: cand.word };
   });
@@ -1497,7 +1501,9 @@ const formatAssSubtitleText = (text, keywordSet, subtitleStyle, activeIndex = nu
   if (!hasKeywords && activeIndex === null) return assEscapePlain(text);
 
   const primary = hexToAssOverrideColor(subtitleStyle.textColor, "#ffffff");
-  const outline = hexToAssOverrideColor(subtitleStyle.strokeColor, "#000000");
+  // In box mode (BorderStyle=4) the "outline" colour IS the box fill — never override
+  // it inline or the keyword/active tags would recolor the box itself.
+  const outlineTag = subtitleStyle.boxEnabled === true ? "" : `\\3c${hexToAssOverrideColor(subtitleStyle.strokeColor, "#000000")}`;
   const palette = [
     hexToAssOverrideColor(subtitleStyle.keywordColor, defaultSubtitleStyle.keywordColor),
     hexToAssOverrideColor(subtitleStyle.keywordSecondaryColor, defaultSubtitleStyle.keywordSecondaryColor),
@@ -1520,10 +1526,10 @@ const formatAssSubtitleText = (text, keywordSet, subtitleStyle, activeIndex = nu
         // Active word: if it's a keyword already shown in the active color, flip to
         // the secondary so the karaoke step stays visible.
         const color = keywordColor === activeColor ? palette[1] : activeColor;
-        return `{\\c${color}\\3c${outline}\\b1}${escaped}{\\c${primary}\\3c${outline}\\b1}`;
+        return `{\\c${color}${outlineTag}\\b1}${escaped}{\\c${primary}${outlineTag}\\b1}`;
       }
       if (!isKeyword) return escaped;
-      return `{\\c${keywordColor}\\3c${outline}\\b1}${escaped}{\\c${primary}\\3c${outline}\\b1}`;
+      return `{\\c${keywordColor}${outlineTag}\\b1}${escaped}{\\c${primary}${outlineTag}\\b1}`;
     })
     .join("");
 };
@@ -1555,6 +1561,11 @@ const resolveSubtitleRenderStyle = (subtitleStyle = defaultSubtitleStyle) => {
     strokeColor: subtitleStyle.strokeColor || "#000000",
     shadowColor: subtitleStyle.shadowColor || "#000000",
     textColor: subtitleStyle.textColor || "#ffffff",
+    // TikTok-style background box (ASS BorderStyle=4 — one box behind the line).
+    boxEnabled: subtitleStyle.boxEnabled === true,
+    boxColor: /^#[0-9a-fA-F]{6}$/.test(String(subtitleStyle.boxColor || "")) ? subtitleStyle.boxColor : "#ffffff",
+    boxOpacity: clamp(safeNumber(subtitleStyle.boxOpacity, 1), 0, 1),
+    boxPadding: clamp(safeNumber(subtitleStyle.boxPadding, 16), 8, 28),
   };
 };
 
@@ -1666,6 +1677,13 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindow
   const shadowOutline = renderStyle.shadowEnabled === false
     ? 0
     : clamp(outline > 0 ? outline + 3 : renderStyle.shadowBlur / 4, 0, 10);
+  // BOX mode (TikTok native caption look): the main style draws ONE box behind the
+  // line (BorderStyle=4, fill=BackColour, padding=Outline — verified supported by the
+  // bundled libass). Shadow/outline layers are SKIPPED (they would draw a second,
+  // offset box) and \blur stays 0 so the box edges remain crisp.
+  const boxOn = renderStyle.boxEnabled === true;
+  const boxColor = hexToAssColor(renderStyle.boxColor, Math.round((1 - renderStyle.boxOpacity) * 255));
+  const boxPadding = Math.round(renderStyle.boxPadding);
   const keywordSet = buildSubtitleKeywordSet(clipTranscription, renderStyle);
   // Override builders. `preset` overrides the animation (null = the style's). Returns
   // the main + shadow override strings for a given Y. While the Klimax logo is on
@@ -1737,8 +1755,10 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindow
       const st = assTime(segs[s].start);
       const en = assTime(segs[s].end);
       const ov = s === 0 ? anim : still; // entry animation on the first window only
-      out.push(`Dialogue: 0,${st},${en},KlimaxShadow,,0,0,0,,${ov.shadow}${shadowText}`);
-      if (outline > 0) out.push(`Dialogue: 1,${st},${en},KlimaxOutline,,0,0,0,,${ov.main}${shadowText}`);
+      if (!boxOn) {
+        out.push(`Dialogue: 0,${st},${en},KlimaxShadow,,0,0,0,,${ov.shadow}${shadowText}`);
+        if (outline > 0) out.push(`Dialogue: 1,${st},${en},KlimaxOutline,,0,0,0,,${ov.main}${shadowText}`);
+      }
       out.push(`Dialogue: 2,${st},${en},Klimax,,0,0,0,,${ov.main}${formatAssSubtitleText(cueText, keywordSet, renderStyle, segs[s].idx)}`);
     }
     return out;
@@ -1754,7 +1774,9 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindow
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     `Style: KlimaxShadow,${font.assName},${fontSize},${shadowColor},${shadowColor},${shadowColor},${shadowColor},${fontWeight},0,0,0,${renderStyle.fontScaleX},100,0,0,1,${shadowOutline},0,5,0,0,0,1`,
     `Style: KlimaxOutline,${font.assName},${fontSize},${outlineColor},${outlineColor},${outlineColor},${outlineColor},${fontWeight},0,0,0,${renderStyle.fontScaleX},100,0,0,1,${outline},0,5,0,0,0,1`,
-    `Style: Klimax,${font.assName},${fontSize},${primary},${primary},${primary},${shadowColor},${fontWeight},0,0,0,${renderStyle.fontScaleX},100,0,0,1,0,0,5,0,0,0,1`,
+    boxOn
+      ? `Style: Klimax,${font.assName},${fontSize},${primary},${primary},${boxColor},${boxColor},${fontWeight},0,0,0,${renderStyle.fontScaleX},100,0,0,4,${boxPadding},0,5,0,0,0,1`
+      : `Style: Klimax,${font.assName},${fontSize},${primary},${primary},${primary},${shadowColor},${fontWeight},0,0,0,${renderStyle.fontScaleX},100,0,0,1,0,0,5,0,0,0,1`,
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -1987,8 +2009,9 @@ const buildBrollPlan = async (db, project, clipMeta) => {
 const renderProject = async (db, project, sourceGroup) => {
   const { getSfxPath, listAutoSfxKeys, RISER_KEY } = await import("./sfx.mjs");
   if (!ffmpegPath) throw new Error("FFmpeg local indisponible.");
-  if (!sourceGroup?.person1?.filePath || !sourceGroup?.person2?.filePath) {
-    throw new Error("Ce projet n'a pas ses deux vidéos source.");
+  // person2 is OPTIONAL — a "rush simple" (solo) project has person1 only.
+  if (!sourceGroup?.person1?.filePath) {
+    throw new Error("Ce projet n'a pas de vidéo source.");
   }
 
   await ensureDir(renderRoot);
@@ -2320,7 +2343,11 @@ const renderProject = async (db, project, sourceGroup) => {
           // Cover-fit a fixed centred square below the text, with ROUNDED corners
           // (alpha mask) and a DROP SHADOW (pre-blurred PNG behind). Cover-fit keeps
           // the source ratio — a 1:1 source fills exactly, any other ratio is cropped.
-          const S = BROLL_SQUARE_SIZE;
+          // Auto mode may shrink the square (brollSquareScale, 0.5–1.0) while keeping
+          // its TOP anchored at BROLL_SQUARE_Y, so it stays at the SAME spot — only the
+          // 9:16 fullscreen b-roll is never resized. Even px keeps scale/crop happy.
+          const squareScale = clamp(safeNumber(project.settings?.brollSquareScale, 1), 0.5, 1);
+          const S = Math.round(BROLL_SQUARE_SIZE * squareScale / 2) * 2;
           const PAD = BROLL_SQUARE_PAD;
           const ox = Math.round((1080 - S) / 2) - PAD; // combined layer carries the shadow margin
           const oy = BROLL_SQUARE_Y - PAD;
@@ -2342,11 +2369,14 @@ const renderProject = async (db, project, sourceGroup) => {
           filterChains.push(`[${currentVideo}][${brTag}]overlay=${ox}:${oy}:${enable}[${nextVideo}]`);
         } else {
           // "fullscreen" fills the 9:16 frame (or a plain square fallback if the
-          // rounded/shadow assets are missing).
+          // rounded/shadow assets are missing). The square fallback honours the same
+          // auto-mode shrink (top-anchored); fullscreen 9:16 is never resized.
           const isSquare = seg.placement === "square";
-          const W = isSquare ? BROLL_SQUARE_SIZE : 1080;
-          const H = isSquare ? BROLL_SQUARE_SIZE : 1920;
-          const ox = isSquare ? Math.round((1080 - BROLL_SQUARE_SIZE) / 2) : 0;
+          const squareScale = clamp(safeNumber(project.settings?.brollSquareScale, 1), 0.5, 1);
+          const sqSize = Math.round(BROLL_SQUARE_SIZE * squareScale / 2) * 2;
+          const W = isSquare ? sqSize : 1080;
+          const H = isSquare ? sqSize : 1920;
+          const ox = isSquare ? Math.round((1080 - sqSize) / 2) : 0;
           const oy = isSquare ? BROLL_SQUARE_Y : 0;
           filterChains.push(
             `[${brIn}:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,fps=30${brollZoomFx(W, H, seg.segDur)},format=rgba${anim},${shift}[${brTag}]`
@@ -2670,6 +2700,22 @@ app.post(
     res.json({ added: assets, assets: db.assets, videoGroups: getVideoGroups(db.assets) });
   }
 );
+
+// RUSH SIMPLE — a single video (1 person). Creates a solo group (person1 only); the
+// auto pipeline then builds a single-clip project from it. Field name "person1" so it
+// lands in the videos dir like a pair half.
+app.post("/api/assets/single-rush", upload.single("person1"), async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: "Ajoute une vidéo." });
+  const db = await readDb();
+  const groupId = id("video-group");
+  const groupTitle = req.body?.note || file.originalname.replace(/\.[^/.]+$/, "");
+  const note = req.body?.note || "Rush simple (1 vidéo)";
+  const asset = assetFromFile({ file, category: "video", groupId, groupTitle, videoPart: "person1", note });
+  db.assets.unshift(asset);
+  await writeDb(db);
+  res.json({ added: [asset], assets: db.assets, videoGroups: getVideoGroups(db.assets) });
+});
 
 app.post("/api/assets/:category", upload.single("file"), async (req, res) => {
   const category = req.params.category;
@@ -3278,21 +3324,22 @@ const genVariantHooks = async (introText, replyText, n) => {
 // assemble one exactly like manual mode (intro = personne 1, reply = personne 2).
 const ensureAutoProject = async (db, groupId) => {
   const sourceGroup = getVideoGroups(db.assets).find((g) => g.id === groupId);
-  if (!sourceGroup?.person1?.filePath || !sourceGroup?.person2?.filePath) return null;
+  if (!sourceGroup?.person1?.filePath) return null; // person2 OPTIONAL (rush simple = solo)
   const existing = db.projects.find((p) => p.sourceGroupId === groupId);
   if (existing) return existing;
   const now = new Date().toISOString();
   const settings = defaultProjectSettings();
+  // A "rush simple" group has no person2 -> a single-clip (intro only) project.
+  const solo = !sourceGroup.person2?.filePath;
+  const introClip = { id: id("intro"), stage: "intro", sourceVideoId: sourceGroup.person1?.id || null, title: "Personne 1 - segment 1", hookText: settings.hookText, subtitle: "Transcription en attente", musicId: null, brollId: null, imageId: null, ...defaultClipLayout("intro"), imageTransform: { scale: 100, x: 0, y: 0 } };
+  const replyClip = { id: id("reply"), stage: "reply", sourceVideoId: sourceGroup.person2?.id || null, title: "Personne 2 - segment 2", hookText: "La suite arrive maintenant", subtitle: "Transcription en attente", musicId: null, brollId: null, imageId: null, ...defaultClipLayout("reply"), imageTransform: { scale: 100, x: 0, y: 0 } };
   const project = normalizeProject({
     id: id("project"),
     title: `Auto ${sourceGroup.title}`,
     description: sourceGroup.note || "Projet auto Klimax",
     status: "draft", render_progress: 0, created_at: now, updated_at: now,
     sourceGroupId: sourceGroup.id, settings,
-    clips: [
-      { id: id("intro"), stage: "intro", sourceVideoId: sourceGroup.person1?.id || null, title: "Personne 1 - segment 1", hookText: settings.hookText, subtitle: "Transcription en attente", musicId: null, brollId: null, imageId: null, ...defaultClipLayout("intro"), imageTransform: { scale: 100, x: 0, y: 0 } },
-      { id: id("reply"), stage: "reply", sourceVideoId: sourceGroup.person2?.id || null, title: "Personne 2 - segment 2", hookText: "La suite arrive maintenant", subtitle: "Transcription en attente", musicId: null, brollId: null, imageId: null, ...defaultClipLayout("reply"), imageTransform: { scale: 100, x: 0, y: 0 } },
-    ],
+    clips: solo ? [introClip] : [introClip, replyClip],
   });
   db.projects.unshift(project);
   await writeDb(db);
@@ -3317,10 +3364,24 @@ const releaseRenderSlot = () => {
   if (next) next();
   else renderSlotsInUse = Math.max(0, renderSlotsInUse - 1);
 };
+// Bumped whenever buildVariant's rng draw ORDER changes (e.g. safe-zone layout v2):
+// a job planned under another version would re-derive DIFFERENT variants on resume,
+// silently mismatching its stored combo/decisions — refuse to resume it instead.
+const AUTO_ENGINE_VERSION = 3;
+
 const processAutoJob = async (job) => {
   if (job._running) return;
   job._running = true;
   try {
+    if ((job.engineVersion || 1) !== AUTO_ENGINE_VERSION) {
+      console.warn(`[auto] job ${job.id}: moteur v${job.engineVersion || 1} ≠ v${AUTO_ENGINE_VERSION} — reprise refusée, relance un nouveau batch.`);
+      for (const it of job.items) {
+        if (it.status !== "ready") { it.status = "failed"; it.error = "Moteur auto mis à jour — relance un nouveau batch."; }
+      }
+      job.done = jobDoneCount(job);
+      job.finishedAt = job.finishedAt || new Date().toISOString();
+      return;
+    }
     const { planVideoVariants } = await import("./autoVariants.mjs");
 
     // 0) Clean/quarantine every b-roll once (globally serialised), THEN read fresh db
@@ -3335,7 +3396,7 @@ const processAutoJob = async (job) => {
       const project = db.projects.find((x) => x.id === pid);
       if (!project) continue;
       const sourceGroup = getVideoGroups(db.assets).find((g) => g.id === project.sourceGroupId);
-      if (!sourceGroup?.person1?.filePath || !sourceGroup?.person2?.filePath) continue;
+      if (!sourceGroup?.person1?.filePath) continue; // person2 optional (rush simple = solo)
       const liveBanks = {
         speakers: db.assets.filter((a) => a.category === "speaker"),
         brolls: db.assets.filter((a) => a.category === "broll" && !a.broken),
@@ -3463,34 +3524,29 @@ const resumeAutoJobs = async () => {
   await saveAutoJobs();
 };
 
-app.post("/api/auto/generate", async (req, res) => {
-  const { planVideoVariants } = await import("./autoVariants.mjs");
-  await loadAutoJobs();
-  const db = await readDb();
-  const videoGroupIds = Array.isArray(req.body?.videoGroupIds) ? req.body.videoGroupIds : [];
-  const projectIds = Array.isArray(req.body?.projectIds) ? req.body.projectIds : [];
-  const variantsPerVideo = clamp(Math.round(safeNumber(req.body?.variantsPerVideo, 6)), 1, 20);
-  const varied = req.body?.varied || { broll: true, subtitles: true, hook: true, sfx: false, zooms: false, music: true };
-  const lockSplitScreen = req.body?.lockSplitScreen === true;
-  // Subtitle SIZE in px chosen by the user for THIS batch (0/absent = keep the engine
-  // default). Applied to each project's base so the planner honours it: exact when the
-  // subtitle dimension is locked, ±7px jitter when varied. See autoVariants.buildVariant.
-  const subtitleSizePx = req.body?.subtitleSizePx != null
-    ? clamp(Math.round(safeNumber(req.body.subtitleSizePx, 0)), 30, 120)
-    : 0;
-  // Training mode: learned overrides narrow the deterministic picks. Snapshot them
-  // ON the job so a resumed/re-derived job reproduces the exact same variants even
-  // if rules change later.
-  const plannerOverrides = await getPlannerOverrides();
+// Shared planning core for /api/auto/generate AND /api/auto/plan — ONE deterministic
+// path so the preview ("mode paramètre") shows EXACTLY what generate would render.
+// Ensures auto-projects + transcription, then plans variants per project. Returns a
+// per-project array with the full plan + the light bank snapshot generate persists.
+// Does NOT create a job or render. `genHooks` can be disabled (preview re-runs) — the
+// hooks bank only feeds the hook TEXT, so without it variants fall back to style-only.
+const parseAutoBatchParams = (body) => ({
+  videoGroupIds: Array.isArray(body?.videoGroupIds) ? body.videoGroupIds : [],
+  projectIds: Array.isArray(body?.projectIds) ? body.projectIds : [],
+  variantsPerVideo: clamp(Math.round(safeNumber(body?.variantsPerVideo, 6)), 1, 20),
+  varied: body?.varied || { broll: true, subtitles: true, hook: true, sfx: false, zooms: false, music: true },
+  lockSplitScreen: body?.lockSplitScreen === true,
+  subtitleSizePx: body?.subtitleSizePx != null ? clamp(Math.round(safeNumber(body.subtitleSizePx, 0)), 30, 120) : 0,
+});
 
-  // Auto mode takes VIDEO PAIRS from the bank (video 1 + video 2): assemble/reuse a
-  // project per pair and transcribe it (whisper) — full A→Z, separate from manual.
+const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, subtitleSizePx, plannerOverrides, genHooks = true, assetPools = null, hookBank = null }) => {
+  const { planVideoVariants } = await import("./autoVariants.mjs");
+  // Assemble/reuse a project per video pair and transcribe it (whisper) — A→Z.
   const allProjectIds = [...projectIds];
   for (const gid of videoGroupIds) {
     const proj = await ensureAutoProject(db, gid);
     if (proj && !allProjectIds.includes(proj.id)) allProjectIds.push(proj.id);
   }
-  if (!allProjectIds.length) return res.status(400).json({ error: "Aucune vidéo sélectionnée." });
   for (const pid of allProjectIds) {
     const project = db.projects.find((p) => p.id === pid);
     const sg = project && getVideoGroups(db.assets).find((g) => g.id === project.sourceGroupId);
@@ -3500,35 +3556,35 @@ app.post("/api/auto/generate", async (req, res) => {
   }
   await writeDb(db);
 
-  const jobId = `auto-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const items = [];
-  const hooksByProject = {};
-  const achievablePerVideo = [];
-  // Snapshot the planning inputs PER PROJECT on the job: a resumed job must re-derive
-  // EXACTLY the same variants even if the base project's settings/clips or the asset
-  // banks changed in the meantime (deterministic RNG only guarantees identity for
-  // identical inputs). Banks are stored light (ids/titles) — picking only needs those.
-  const baseByProject = {};
-  const banksByProject = {};
+  const out = [];
   for (const pid of allProjectIds) {
     const project = db.projects.find((p) => p.id === pid);
     if (!project) continue;
     const sourceGroup = getVideoGroups(db.assets).find((g) => g.id === project.sourceGroupId);
-    if (!sourceGroup?.person1?.filePath || !sourceGroup?.person2?.filePath) continue;
+    if (!sourceGroup?.person1?.filePath) continue; // person2 optional (rush simple = solo)
 
+    const tc = project.transcription?.clips || [];
+    const introCues = tc.find((c) => c.stage === "intro")?.cues || [];
+    const replyCues = tc.find((c) => c.stage === "reply")?.cues || [];
+    // A studio project's custom hook bank wins; otherwise generate hooks from the
+    // transcript (when the hook dimension is varied).
+    const customHooks = Array.isArray(hookBank) ? hookBank.map((h) => String(h || "").trim()).filter(Boolean) : [];
     let hooks = [];
-    if (varied.hook && project.transcription?.status === "completed") {
-      const tc = project.transcription.clips || [];
-      const introText = (tc.find((c) => c.stage === "intro")?.cues || []).map((c) => c.text).join(" ");
-      const replyText = (tc.find((c) => c.stage === "reply")?.cues || []).map((c) => c.text).join(" ");
+    if (customHooks.length) {
+      hooks = customHooks;
+    } else if (genHooks && varied.hook && project.transcription?.status === "completed") {
+      const introText = introCues.map((c) => c.text).join(" ");
+      const replyText = replyCues.map((c) => c.text).join(" ");
       hooks = await genVariantHooks(introText, replyText, variantsPerVideo); // [] -> style-only fallback (C)
     }
-    hooksByProject[pid] = hooks;
+    // A studio project can RESTRICT each pool to a chosen set of asset ids (null/absent
+    // = the whole bank). The 2nd-speaker bank is never empty-filtered to nothing.
+    const inPool = (ids) => (Array.isArray(ids) && ids.length ? (a) => ids.includes(a.id) : () => true);
     const banks = {
-      speakers: db.assets.filter((a) => a.category === "speaker"),
-      brolls: db.assets.filter((a) => a.category === "broll" && !a.broken), // same filter as processAutoJob, else resume re-derives DIFFERENT variants
-      images: db.assets.filter((a) => a.category === "image"),
-      music: db.assets.filter((a) => a.category === "music"),
+      speakers: db.assets.filter((a) => a.category === "speaker").filter(inPool(assetPools?.speakerIds)),
+      brolls: db.assets.filter((a) => a.category === "broll" && !a.broken).filter(inPool(assetPools?.brollIds)),
+      images: db.assets.filter((a) => a.category === "image").filter(inPool(assetPools?.imageIds)),
+      music: db.assets.filter((a) => a.category === "music").filter(inPool(assetPools?.musicIds)),
       hooks,
     };
     const faceBoxes = await detectFacesForSources(sourceGroup, banks);
@@ -3544,17 +3600,53 @@ app.post("/api/auto/generate", async (req, res) => {
       clips: project.clips || [],
       sourceNames: { person1: sourceGroup.person1?.title, person2: sourceGroup.person2?.title },
     };
-    baseByProject[pid] = clone(base);
-    banksByProject[pid] = {
+    const banksLight = {
       speakers: banks.speakers.map((a) => ({ id: a.id, title: a.title })),
       brolls: banks.brolls.map((a) => ({ id: a.id, title: a.title })),
       images: banks.images.map((a) => ({ id: a.id, title: a.title })),
       music: banks.music.map((a) => ({ id: a.id, title: a.title })),
     };
     const plan = planVideoVariants({
-      base,
-      videoId: pid, requested: variantsPerVideo, varied, lockSplitScreen, banks, faceBoxes, overrides: plannerOverrides,
+      base, videoId: pid, requested: variantsPerVideo, varied, lockSplitScreen, banks, faceBoxes, overrides: plannerOverrides,
     });
+    // First ~3 caption cues per stage = a representative subtitle sample for the preview.
+    const sampleOf = (cues) => cues.slice(0, 3).map((c) => c.text).join(" ").trim();
+    out.push({
+      pid, project, sourceGroup, hooks, base, banksLight, plan,
+      subtitleSamples: { intro: sampleOf(introCues), reply: sampleOf(replyCues) },
+    });
+  }
+  return { allProjectIds, perProject: out };
+};
+
+app.post("/api/auto/generate", async (req, res) => {
+  await loadAutoJobs();
+  const db = await readDb();
+  const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
+  // Training mode: learned overrides narrow the deterministic picks. A studio project's
+  // overrides fold on top. Snapshot the MERGED set on the job so a resumed/re-derived
+  // job reproduces the exact same variants even if rules/projects change later.
+  const plannerOverrides = { ...(await getPlannerOverrides()), ...(overrides || {}) };
+
+  if (!videoGroupIds.length && !projectIds.length) return res.status(400).json({ error: "Aucune vidéo sélectionnée." });
+  const { allProjectIds, perProject } = await buildAutoPlan(db, {
+    videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, subtitleSizePx, plannerOverrides, assetPools, hookBank,
+  });
+
+  const jobId = `auto-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const items = [];
+  const hooksByProject = {};
+  const achievablePerVideo = [];
+  // Snapshot the planning inputs PER PROJECT on the job: a resumed job must re-derive
+  // EXACTLY the same variants even if the base project's settings/clips or the asset
+  // banks changed in the meantime (deterministic RNG only guarantees identity for
+  // identical inputs). Banks are stored light (ids/titles) — picking only needs those.
+  const baseByProject = {};
+  const banksByProject = {};
+  for (const { pid, project, hooks, base, banksLight, plan } of perProject) {
+    hooksByProject[pid] = hooks;
+    baseByProject[pid] = clone(base);
+    banksByProject[pid] = banksLight;
     achievablePerVideo.push({ projectId: pid, source: project.title || pid, achievable: plan.variants.length, requested: variantsPerVideo });
     for (const v of plan.variants) {
       items.push({ id: `${jobId}-${pid}-${v.index}`, projectId: pid, source: project.title || pid, index: v.index, combo: v.combo, decisions: v.decisions, status: "queued", url: null });
@@ -3564,6 +3656,7 @@ app.post("/api/auto/generate", async (req, res) => {
 
   const job = {
     id: jobId, createdAt: new Date().toISOString(), finishedAt: null, total: items.length, done: 0,
+    engineVersion: AUTO_ENGINE_VERSION,
     params: { projectIds: allProjectIds, variantsPerVideo, varied, lockSplitScreen, plannerOverrides, baseByProject, banksByProject }, hooksByProject, items,
   };
   autoJobs.set(jobId, job);
@@ -3571,6 +3664,38 @@ app.post("/api/auto/generate", async (req, res) => {
   processAutoJob(job).catch((e) => console.error("[auto] job failed:", e.message)); // background
 
   res.json({ jobId, total: job.total, items: job.items, achievablePerVideo });
+});
+
+// PLAN ONLY (mode paramètre / testing): same deterministic planning as /generate but
+// renders NOTHING — returns each variant's full { settings, clips, decisions, combo }
+// plus the source video URLs so the frontend can draw a parametric preview and let the
+// user inspect/edit every random value (per-clip x/y/zoom, logo, subtitles, mirror…).
+app.post("/api/auto/plan", async (req, res) => {
+  try {
+    const db = await readDb();
+    const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
+    if (!videoGroupIds.length && !projectIds.length) return res.status(400).json({ error: "Aucune vidéo sélectionnée." });
+    const plannerOverrides = { ...(await getPlannerOverrides()), ...(overrides || {}) };
+    const { perProject } = await buildAutoPlan(db, {
+      videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, subtitleSizePx, plannerOverrides, assetPools, hookBank,
+    });
+    const lite = (asset) => (asset ? { id: asset.id, title: asset.title, fileUrl: asset.fileUrl } : null);
+    const speakers = db.assets.filter((a) => a.category === "speaker").map(lite);
+    const projects = perProject.map(({ pid, project, sourceGroup, plan, subtitleSamples }) => ({
+      projectId: pid,
+      source: project.title || pid,
+      sources: { person1: lite(sourceGroup.person1), person2: lite(sourceGroup.person2), speakers },
+      subtitleSamples,
+      variants: plan.variants.map((v) => ({
+        index: v.index, combo: v.combo, decisions: v.decisions, settings: v.settings, clips: v.clips,
+      })),
+    }));
+    if (!projects.length) return res.status(400).json({ error: "Aucune variante planifiable (vérifie sources + transcription)." });
+    res.json({ projects });
+  } catch (e) {
+    console.error("[auto] plan failed:", e.message);
+    res.status(500).json({ error: String(e.message || e) });
+  }
 });
 
 app.get("/api/auto/jobs", async (_req, res) => {
@@ -3675,6 +3800,167 @@ app.post("/api/auto/presets/:id/run", async (req, res) => {
   if (!preset) return res.status(404).json({ error: "Preset introuvable." });
   try {
     res.json(await runAutoPreset(preset));
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e).slice(0, 200) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// STUDIO PROJECTS — a reusable, fully-configurable "project" per podcast: its
+// source video pair(s), which asset pools it draws from, the dimensions that vary,
+// and ALL the random RANGES (subtitle size, split %, zoom, logo, allowed presets,
+// excluded filters, hook bank). Generation reads it via studioProjectId so the whole
+// pipeline can be driven from the SaaS without touching code.
+// ---------------------------------------------------------------------------
+const studioProjectsFile = path.join(dataRoot, "studio-projects.json");
+const readStudioProjects = async () => {
+  try { return JSON.parse(await fs.readFile(studioProjectsFile, "utf8")).projects || []; }
+  catch { return []; }
+};
+const writeStudioProjects = async (projects) =>
+  fs.writeFile(studioProjectsFile, JSON.stringify({ projects }, null, 2));
+
+const sanitizeStudioOverrides = (raw = {}) => {
+  const ov = {};
+  const numKeys = ["twoSpeakerRatio", "splitRatioMin", "splitRatioMax", "subtitleSizeMin", "subtitleSizeMax", "logoSizeMin", "logoSizeMax", "zoomMaxBoostPercent", "musicVolumeMaxDb"];
+  for (const k of numKeys) if (typeof raw[k] === "number" && Number.isFinite(raw[k])) ov[k] = raw[k];
+  if (Array.isArray(raw.allowedSubtitlePresets)) ov.allowedSubtitlePresets = raw.allowedSubtitlePresets.filter((x) => typeof x === "string");
+  if (Array.isArray(raw.filterDenylist)) ov.filterDenylist = raw.filterDenylist.filter((x) => typeof x === "string");
+  return ov;
+};
+const sanitizeStudioPools = (raw = {}) => {
+  const out = {};
+  for (const k of ["brollIds", "imageIds", "musicIds", "speakerIds"]) {
+    out[k] = Array.isArray(raw[k]) ? raw[k].filter((x) => typeof x === "string") : null;
+  }
+  return out;
+};
+const normalizeStudioProject = (body, existing) => {
+  const now = new Date().toISOString();
+  return {
+    id: body.id || existing?.id || `studio-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+    name: String(body.name ?? existing?.name ?? "Projet").slice(0, 80),
+    description: String(body.description ?? existing?.description ?? "").slice(0, 400),
+    videoGroupIds: Array.isArray(body.videoGroupIds) ? body.videoGroupIds : existing?.videoGroupIds || [],
+    variantsPerVideo: clamp(Math.round(safeNumber(body.variantsPerVideo, existing?.variantsPerVideo ?? 6)), 1, 20),
+    varied: body.varied || existing?.varied || { broll: true, subtitles: true, hook: true, sfx: true, zooms: true, music: true },
+    lockSplitScreen: body.lockSplitScreen != null ? body.lockSplitScreen === true : existing?.lockSplitScreen === true,
+    overrides: sanitizeStudioOverrides(body.overrides || existing?.overrides || {}),
+    assetPools: sanitizeStudioPools(body.assetPools || existing?.assetPools || {}),
+    hookBank: Array.isArray(body.hookBank)
+      ? body.hookBank.map((h) => String(h || "").trim()).filter(Boolean).slice(0, 40)
+      : existing?.hookBank || [],
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  };
+};
+
+app.get("/api/studio/projects", async (_req, res) => {
+  res.json({ projects: await readStudioProjects() });
+});
+app.post("/api/studio/projects", async (req, res) => {
+  const projects = await readStudioProjects();
+  const existing = req.body?.id ? projects.find((p) => p.id === req.body.id) : null;
+  const project = normalizeStudioProject(req.body || {}, existing);
+  const idx = projects.findIndex((p) => p.id === project.id);
+  if (idx >= 0) projects[idx] = project;
+  else projects.push(project);
+  await writeStudioProjects(projects);
+  res.json({ project, projects });
+});
+app.delete("/api/studio/projects/:id", async (req, res) => {
+  const projects = (await readStudioProjects()).filter((p) => p.id !== req.params.id);
+  await writeStudioProjects(projects);
+  res.json({ projects });
+});
+app.post("/api/studio/projects/:id/run", async (req, res) => {
+  const project = (await readStudioProjects()).find((p) => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Projet introuvable." });
+  try {
+    const resp = await fetch(`http://127.0.0.1:${port}/api/auto/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ studioProjectId: project.id, variantsPerVideo: req.body?.variantsPerVideo }),
+    });
+    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).error || `HTTP ${resp.status}`);
+    res.json(await resp.json());
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e).slice(0, 200) });
+  }
+});
+
+// Resolve a batch request body into full planning inputs, merging a studio project
+// (if studioProjectId is given) under any explicit body fields, and folding the
+// studio's overrides into the learned-rule planner overrides.
+const resolveBatchInputs = async (body) => {
+  const base = parseAutoBatchParams(body);
+  let overrides = {};
+  let assetPools = null;
+  let hookBank = null;
+  if (body?.studioProjectId) {
+    const studio = (await readStudioProjects()).find((p) => p.id === body.studioProjectId);
+    if (studio) {
+      if (body.videoGroupIds == null) base.videoGroupIds = studio.videoGroupIds || [];
+      if (body.variantsPerVideo == null) base.variantsPerVideo = clamp(Math.round(safeNumber(studio.variantsPerVideo, 6)), 1, 20);
+      if (body.varied == null) base.varied = studio.varied || base.varied;
+      if (body.lockSplitScreen == null) base.lockSplitScreen = studio.lockSplitScreen === true;
+      overrides = { ...studio.overrides };
+      assetPools = studio.assetPools || null;
+      hookBank = studio.hookBank || null;
+    }
+  }
+  if (body?.overrides) overrides = { ...overrides, ...sanitizeStudioOverrides(body.overrides) };
+  if (body?.assetPools) assetPools = sanitizeStudioPools(body.assetPools);
+  if (Array.isArray(body?.hookBank)) hookBank = body.hookBank;
+  return { ...base, overrides, assetPools, hookBank };
+};
+
+// MODE VIDÉO AI (dashboard home): the user describes in plain language what they want;
+// Claude maps it to a batch config (which dimensions vary, how many videos, and the
+// random RANGES), then we launch generation — optionally bound to a studio project.
+app.post("/api/auto/ai-request", async (req, res) => {
+  const prompt = String(req.body?.prompt || "").trim();
+  if (!prompt) return res.status(400).json({ error: "Décris ce que tu veux." });
+  const studioProjectId = req.body?.studioProjectId || null;
+  const videoGroupIds = Array.isArray(req.body?.videoGroupIds) ? req.body.videoGroupIds : null;
+  // An explicit "nombre de vidéos" from the UI wins over whatever Claude infers.
+  const forcedCount = req.body?.variantsPerVideo != null ? clamp(Math.round(safeNumber(req.body.variantsPerVideo, 6)), 1, 20) : null;
+  const presetKeys = ["impact", "clean", "highlight", "capcut", "punch", "neon", "hormozi", "bebasGold", "iceBlue", "redAlert", "cleanMinimal", "tiktokWhite", "tiktokBlack", "tiktokRed", "capcutYellow", "capcutKaraoke", "karaokeGreen", "tiktokOutline", "bebasCaps"];
+  const system =
+    "Tu configures un générateur de vidéos courtes (podcast → shorts verticaux). À partir de la DEMANDE en langage naturel, produis la config du lot. " +
+    'Réponds UNIQUEMENT en JSON: {"variantsPerVideo":<1-20>,"varied":{"broll":bool,"subtitles":bool,"hook":bool,"sfx":bool,"zooms":bool,"music":bool},"overrides":{...},"summary":"<1 phrase FR>"}. ' +
+    "overrides (tous optionnels): twoSpeakerRatio (0-1, fréquence du split 2 speakers), splitRatioMin/splitRatioMax (0.2-0.8), subtitleSizeMin/subtitleSizeMax (40-110), zoomMaxBoostPercent (0-30), logoSizeMin/logoSizeMax (400-1000), musicVolumeMaxDb (-30 à -8), allowedSubtitlePresets (sous-ensemble de: " +
+    presetKeys.join(", ") +
+    "), filterDenylist (filtres couleur à exclure). N'inclus que les overrides pertinents à la demande. Si la demande veut un nombre précis de vidéos, mets-le dans variantsPerVideo. summary = ce que tu as réglé.";
+  let cfg = { variantsPerVideo: 6, varied: { broll: true, subtitles: true, hook: true, sfx: true, zooms: true, music: true }, overrides: {}, summary: "" };
+  try {
+    const raw = await runClaude(`DEMANDE:\n${prompt.slice(0, 1200)}`, system);
+    const m = String(raw).match(/\{[\s\S]*\}/);
+    if (m) {
+      const parsed = JSON.parse(m[0]);
+      if (parsed.variantsPerVideo) cfg.variantsPerVideo = clamp(Math.round(safeNumber(parsed.variantsPerVideo, 6)), 1, 20);
+      if (parsed.varied && typeof parsed.varied === "object") {
+        for (const k of ["broll", "subtitles", "hook", "sfx", "zooms", "music"]) if (typeof parsed.varied[k] === "boolean") cfg.varied[k] = parsed.varied[k];
+      }
+      cfg.overrides = sanitizeStudioOverrides(parsed.overrides || {});
+      cfg.summary = String(parsed.summary || "").slice(0, 240);
+    }
+  } catch (e) {
+    console.warn("[auto] ai-request mapping failed, using defaults:", e.message);
+  }
+  if (forcedCount != null) cfg.variantsPerVideo = forcedCount;
+  // Launch generation through the normal pipeline (studio defaults + AI config on top).
+  try {
+    const genBody = { studioProjectId, variantsPerVideo: cfg.variantsPerVideo, varied: cfg.varied, overrides: cfg.overrides };
+    if (videoGroupIds) genBody.videoGroupIds = videoGroupIds;
+    const resp = await fetch(`http://127.0.0.1:${port}/api/auto/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(genBody),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) return res.status(resp.status).json({ error: data.error || `HTTP ${resp.status}` });
+    res.json({ ...data, summary: cfg.summary, config: cfg });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e).slice(0, 200) });
   }
