@@ -2283,6 +2283,24 @@ const pruneRenders = async () => {
   }
 };
 
+// Hardware H.264 encoder (Apple Silicon / Mac media engine): far faster than libx264
+// and barely uses the CPU, so big batches won't choke the machine. Detected once via
+// `ffmpeg -encoders`; falls back to libx264 when absent or when KLIMAX_FORCE_X264=1
+// (set that to get the exact old software output back). videotoolbox is bitrate-based
+// (no CRF) — target a high bitrate so quality stays close to the old crf 20.
+const VIDEOTOOLBOX_BITRATE = process.env.KLIMAX_VT_BITRATE || "12M";
+let _vtoolboxAvail = null;
+const hasVideotoolbox = async () => {
+  if (process.env.KLIMAX_FORCE_X264 === "1") return false;
+  if (_vtoolboxAvail !== null) return _vtoolboxAvail;
+  try {
+    const { stdout } = await runProcess(ffmpegPath, ["-hide_banner", "-encoders"], { timeoutMs: 8000 });
+    _vtoolboxAvail = /h264_videotoolbox/.test(stdout);
+  } catch { _vtoolboxAvail = false; }
+  console.log(`[render] video encoder: ${_vtoolboxAvail ? "h264_videotoolbox (hardware)" : "libx264 (software)"}`);
+  return _vtoolboxAvail;
+};
+
 const renderProject = async (db, project, sourceGroup) => {
   const { getSfxPath, listAutoSfxKeys, RISER_KEY } = await import("./sfx.mjs");
   if (!ffmpegPath) throw new Error("FFmpeg local indisponible.");
@@ -2956,6 +2974,11 @@ const renderProject = async (db, project, sourceGroup) => {
     filterChains.push(`[${voiceTag}]anull[aout]`);
   }
 
+  // Hardware encode on Mac (videotoolbox) when available, else software libx264.
+  const useHwEncoder = await hasVideotoolbox();
+  const videoCodecArgs = useHwEncoder
+    ? ["-c:v", "h264_videotoolbox", "-b:v", VIDEOTOOLBOX_BITRATE, "-maxrate", VIDEOTOOLBOX_BITRATE, "-bufsize", "24M", "-allow_sw", "1", "-pix_fmt", "yuv420p"]
+    : ["-c:v", "libx264", "-preset", "superfast", "-threads", "0", "-crf", "20", "-pix_fmt", "yuv420p"];
   const args = [
     ...inputArgs,
     "-filter_complex",
@@ -2964,16 +2987,7 @@ const renderProject = async (db, project, sourceGroup) => {
     "[vcat]",
     "-map",
     "[aout]",
-    "-c:v",
-    "libx264",
-    "-preset",
-    "superfast",
-    "-threads",
-    "0",
-    "-crf",
-    "20",
-    "-pix_fmt",
-    "yuv420p",
+    ...videoCodecArgs,
     "-c:a",
     "aac",
     "-movflags",
