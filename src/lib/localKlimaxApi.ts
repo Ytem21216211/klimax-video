@@ -243,6 +243,18 @@ export const localKlimaxApi = {
     );
   },
 
+  // Per-rush viral hook: used as the hook text when this rush is the hook clip (clip 1).
+  // Empty string clears it (back to auto/AI hook).
+  async setAssetCustomHook(assetId: string, customHook: string) {
+    return parseResponse<{ ok: boolean; asset: KlimaxBankAsset; assets: KlimaxBankAsset[]; videoGroups: KlimaxVideoGroup[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/assets/${assetId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customHook }),
+      })
+    );
+  },
+
   // Edit the b-roll's note (its description used by the placement brain).
   async updateAssetNote(assetId: string, note: string) {
     return parseResponse<{ ok: boolean; asset: KlimaxBankAsset; assets: KlimaxBankAsset[]; videoGroups: KlimaxVideoGroup[] }>(

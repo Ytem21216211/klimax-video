@@ -20,6 +20,9 @@ export type KlimaxBankAsset = {
   placement?: "fullscreen" | "square";
   // Transcript computed at upload and reused by every render; user-editable in the bank.
   transcript?: KlimaxAssetTranscript;
+  // Per-rush viral hook: when this rush is the hook clip (clip 1), this exact text is
+  // used as the hook (overrides the auto/AI hook). Set in the bank.
+  customHook?: string;
 };
 
 export type KlimaxAssetTranscript = {

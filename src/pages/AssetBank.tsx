@@ -119,6 +119,57 @@ function RushTranscript({ assetId, label }: { assetId: string; label?: string })
   );
 }
 
+// Per-rush VIRAL HOOK: shown under the clip-1 rush. When this rush is the hook clip,
+// this exact text is used (overrides the auto/AI hook). Empty clears it.
+function RushHook({ asset }: { asset: KlimaxBankAsset }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [val, setVal] = useState(asset.customHook || "");
+  const [busy, setBusy] = useState(false);
+  const dirty = val.trim() !== (asset.customHook || "").trim();
+  const save = async () => {
+    setBusy(true);
+    try {
+      await localKlimaxApi.setAssetCustomHook(asset.id, val.trim());
+      asset.customHook = val.trim() || undefined;
+      toast({ title: val.trim() ? "Hook viral enregistré" : "Hook retiré", description: val.trim() ? "Utilisé quand ce rush est le clip 1." : undefined });
+    } catch {
+      toast({ title: "Échec de l'enregistrement", variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center gap-1.5 rounded-full border border-white/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.15em] text-amber-200/70 transition hover:bg-white/5 hover:text-amber-200"
+      >
+        <Sparkles className="h-3 w-3" /> Hook viral{asset.customHook ? " ✓" : ""}
+        {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+      </button>
+      {open && (
+        <div className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] p-2">
+          <Textarea
+            value={val}
+            onChange={(e) => setVal(e.target.value)}
+            rows={2}
+            placeholder="ex: il a 18 ans il tient 4h au lit 🍆"
+            className="min-h-[44px] text-xs"
+          />
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Button size="sm" onClick={save} disabled={busy || !dirty} className="h-7 rounded-full px-3 text-[11px] font-black">
+              {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />} Enregistrer
+            </Button>
+            <span className="text-[10px] text-white/35">utilisé quand ce rush est le clip 1 (hook) — sinon l'IA génère</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const categoryMeta: Record<KlimaxAssetCategory, { label: string; description: string; icon: React.ReactNode }> = {
   music: { label: "Musique", description: "Sons et ambiances", icon: <Music className="h-4 w-4" /> },
   broll: { label: "B-roll", description: "Plans d'illustration", icon: <Film className="h-4 w-4" /> },
@@ -645,6 +696,7 @@ const AssetBank = () => {
                                     onSave={(next) => renameAsset(group.person1!.id, next)}
                                   />
                                   <RushTranscript assetId={group.person1.id} />
+                                  <RushHook asset={group.person1} />
                                 </div>
                               ) : (
                                 <p className="mt-1 font-bold text-white">A ajouter</p>

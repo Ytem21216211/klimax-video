@@ -2482,6 +2482,10 @@ const renderProject = async (db, project, sourceGroup) => {
     currentVideo = zoomedVideo;
 
     if (clip.stage === "intro") {
+      // Per-rush VIRAL HOOK override: if the hook clip's source rush has a custom hook
+      // set in the bank, it wins over the auto/AI/rotation hook (manual AND auto mode).
+      const introAsset = sourceAssetForClip(sourceGroup, clip, db.assets);
+      if (introAsset?.customHook) clip.hookText = introAsset.customHook;
       const hookOverlayPath = await createHookBubbleOverlay(project, clip);
       inputArgs.push("-i", hookOverlayPath);
       const hookInput = inputIndex;
@@ -3085,12 +3089,16 @@ app.patch("/api/assets/:id", async (req, res) => {
   const nextNote = typeof req.body?.note === "string" ? req.body.note.trim() : null;
   // "fullscreen" | "square" — how this b-roll is composited (manual, per b-roll).
   const nextPlacement = ["fullscreen", "square"].includes(req.body?.placement) ? req.body.placement : null;
+  // Per-rush VIRAL HOOK: when this rush is the hook clip (clip 1), this exact text is
+  // used as the hook — the auto/AI hook is NOT generated for it. "" clears it.
+  const nextCustomHook = typeof req.body?.customHook === "string" ? req.body.customHook.trim() : null;
   // The note is the b-roll's description used by the placement brain — editable
   // from the bank so the user can refine what each b-roll "means".
   if (nextNote !== null) target.note = nextNote;
   if (nextTitle) target.title = nextTitle;
   if (nextPlacement) target.placement = nextPlacement;
-  if (nextNote === null && !nextTitle && !nextPlacement) return res.status(400).json({ error: "Rien à mettre à jour." });
+  if (nextCustomHook !== null) target.customHook = nextCustomHook || undefined; // "" clears
+  if (nextNote === null && !nextTitle && !nextPlacement && nextCustomHook === null) return res.status(400).json({ error: "Rien à mettre à jour." });
   await writeDb(db);
   res.json({ ok: true, asset: target, assets: db.assets, videoGroups: getVideoGroups(db.assets) });
 });
