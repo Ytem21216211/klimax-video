@@ -2,7 +2,7 @@ import * as React from "react";
 const { useEffect, useState } = React;
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { Plus, Wand2, FolderCog, Play, Settings2, Library, Sparkles, LogOut, Loader2 } from "lucide-react";
+import { Plus, Wand2, FolderCog, Play, Settings2, Library, Sparkles, LogOut, Loader2, Trash2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { localKlimaxApi, type StudioProject } from "@/lib/localKlimaxApi";
@@ -14,6 +14,22 @@ const ProjectsHome = () => {
   const [loading, setLoading] = useState(true);
   const [aiOpen, setAiOpen] = useState(false);
   const [hub, setHub] = useState<StudioProject | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  // Delete a project (config only — its bank clips/assets are NOT touched).
+  const deleteProject = async (p: StudioProject) => {
+    if (!window.confirm(`Supprimer le projet « ${p.name} » ?\n\nLa banque (clips, b-roll…) n'est PAS touchée — seul le projet/config est retiré.`)) return;
+    setDeleting(true);
+    try {
+      await localKlimaxApi.deleteStudioProject(p.id);
+      setProjects((xs) => xs.filter((x) => x.id !== p.id));
+      setHub(null);
+    } catch (e) {
+      window.alert("Échec de la suppression.");
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => { if (!session) navigate("/auth"); });
@@ -65,14 +81,23 @@ const ProjectsHome = () => {
             <div className="col-span-full grid place-items-center py-10 text-white/40"><Loader2 className="h-5 w-5 animate-spin" /></div>
           ) : (
             projects.map((p) => (
-              <button key={p.id} onClick={() => setHub(p)} className="flex min-h-[150px] flex-col justify-between rounded-[24px] border border-white/10 bg-white/[0.03] p-6 text-left transition hover:border-white/30 hover:bg-white/[0.07]">
-                <div>
-                  <div className="mb-3 grid h-11 w-11 place-items-center rounded-2xl border border-white/10 bg-white/5"><FolderCog className="h-5 w-5" /></div>
-                  <h4 className="truncate text-lg font-black">{p.name}</h4>
-                  {p.description ? <p className="mt-1 line-clamp-2 text-xs text-white/45">{p.description}</p> : null}
-                </div>
-                <p className="mt-3 text-[10px] font-black uppercase tracking-wide text-white/35">{p.videoGroupIds.length} paire(s) · {p.variantsPerVideo} variantes</p>
-              </button>
+              <div key={p.id} className="group relative flex min-h-[150px] flex-col justify-between rounded-[24px] border border-white/10 bg-white/[0.03] p-6 text-left transition hover:border-white/30 hover:bg-white/[0.07]">
+                <button onClick={() => setHub(p)} className="flex flex-1 flex-col justify-between text-left">
+                  <div>
+                    <div className="mb-3 grid h-11 w-11 place-items-center rounded-2xl border border-white/10 bg-white/5"><FolderCog className="h-5 w-5" /></div>
+                    <h4 className="truncate text-lg font-black">{p.name}</h4>
+                    {p.description ? <p className="mt-1 line-clamp-2 text-xs text-white/45">{p.description}</p> : null}
+                  </div>
+                  <p className="mt-3 text-[10px] font-black uppercase tracking-wide text-white/35">{p.videoGroupIds.length} paire(s) · {p.variantsPerVideo} variantes</p>
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); deleteProject(p); }}
+                  title="Supprimer le projet (la banque n'est pas touchée)"
+                  className="absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-black/40 text-white/40 opacity-0 transition hover:border-red-400/40 hover:bg-red-400/15 hover:text-red-300 group-hover:opacity-100"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
             ))
           )}
         </div>
@@ -101,6 +126,9 @@ const ProjectsHome = () => {
           </div>
           <button onClick={() => { setHub(null); setAiOpen(true); }} className={cn("mt-1 flex items-center justify-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-4 py-2.5 text-xs font-black uppercase tracking-[0.14em] text-white/70 transition hover:bg-white hover:text-black")}>
             <Wand2 className="h-4 w-4" /> Générer avec l'IA sur ce projet
+          </button>
+          <button onClick={() => hub && deleteProject(hub)} disabled={deleting} className="flex items-center justify-center gap-2 rounded-full border border-red-400/20 bg-red-400/5 px-4 py-2.5 text-xs font-black uppercase tracking-[0.14em] text-red-300 transition hover:bg-red-400/15 disabled:opacity-40">
+            {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} Supprimer le projet
           </button>
         </DialogContent>
       </Dialog>

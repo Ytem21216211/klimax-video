@@ -18,6 +18,19 @@ export type KlimaxBankAsset = {
   // B-roll compositing: "fullscreen" (fills 9:16) or "square" (centred square
   // below the text). Manual per b-roll for now; auto can set it later.
   placement?: "fullscreen" | "square";
+  // Transcript computed at upload and reused by every render; user-editable in the bank.
+  transcript?: KlimaxAssetTranscript;
+};
+
+export type KlimaxAssetTranscript = {
+  status: "idle" | "completed" | "failed";
+  language?: string;
+  duration?: number;
+  words?: { start: number; end: number; word: string }[];
+  text?: string;
+  edited?: boolean;
+  error?: string;
+  updatedAt?: string;
 };
 
 export type KlimaxVideoGroup = {
@@ -226,6 +239,9 @@ export const getKlimaxVideoGroups = (assets: KlimaxBankAsset[]): KlimaxVideoGrou
 
   assets
     .filter((asset) => asset.category === "video")
+    // Montage "extra" clips (3rd+) belong to a group but are NOT person1/person2 —
+    // skip them here (they'd otherwise clobber person1). They're listed separately.
+    .filter((asset) => asset.videoPart !== "extra")
     .forEach((asset) => {
       const groupId = asset.groupId || asset.id;
       const current = groups.get(groupId) || {

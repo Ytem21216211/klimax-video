@@ -1,4 +1,4 @@
-import type { KlimaxBankAsset, KlimaxProjectClip, KlimaxVideoGroup } from "@/lib/klimaxStorage";
+import type { KlimaxAssetTranscript, KlimaxBankAsset, KlimaxProjectClip, KlimaxVideoGroup } from "@/lib/klimaxStorage";
 
 export const LOCAL_KLIMAX_API = import.meta.env.VITE_LOCAL_KLIMAX_API || "http://127.0.0.1:8787";
 
@@ -161,6 +161,18 @@ export const localKlimaxApi = {
     );
   },
 
+  // Multi-rush: upload N ordered rush videos -> assembles an N-clip project (P1/P2…).
+  // If studioProjectId is given, the montage is attached to that studio project.
+  async uploadMultirushProject(files: File[], name = "Multi-rush", studioProjectId?: string) {
+    const formData = new FormData();
+    files.forEach((f) => formData.append("rushes", f));
+    formData.append("name", name);
+    if (studioProjectId) formData.append("studioProjectId", studioProjectId);
+    return parseResponse<{ projectId: string; sourceGroupId: string; clipCount: number; stages: string[]; studioProjectId?: string }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/projects/multirush-upload`, { method: "POST", body: formData })
+    );
+  },
+
   async uploadSingleRush(rush: File, note = "") {
     const formData = new FormData();
     formData.append("person1", rush);
@@ -188,6 +200,36 @@ export const localKlimaxApi = {
   async deleteAsset(assetOrGroupId: string) {
     return parseResponse<{ ok: boolean; assets: KlimaxBankAsset[]; videoGroups: KlimaxVideoGroup[] }>(
       await fetch(`${LOCAL_KLIMAX_API}/api/assets/${assetOrGroupId}`, { method: "DELETE" })
+    );
+  },
+
+  // Per-asset transcript (computed at upload, reused by renders, user-editable).
+  async getAssetTranscript(assetId: string) {
+    return parseResponse<{ transcript: KlimaxAssetTranscript }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/assets/${assetId}/transcript`)
+    );
+  },
+
+  async transcribeAsset(assetId: string) {
+    return parseResponse<{ transcript: KlimaxAssetTranscript }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/assets/${assetId}/transcribe`, { method: "POST" })
+    );
+  },
+
+  async updateAssetTranscript(assetId: string, text: string) {
+    return parseResponse<{ transcript: KlimaxAssetTranscript }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/assets/${assetId}/transcript`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      })
+    );
+  },
+
+  // Delete a project RECORD (never its source assets).
+  async deleteProject(projectId: string) {
+    return parseResponse<{ ok: boolean }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/projects/${projectId}`, { method: "DELETE" })
     );
   },
 
@@ -363,7 +405,7 @@ export const localKlimaxApi = {
     );
   },
   // Mode vidéo AI: a plain-language request -> Claude maps it to a batch -> generates.
-  async aiVideoRequest(payload: { prompt: string; studioProjectId?: string | null; videoGroupIds?: string[]; variantsPerVideo?: number }) {
+  async aiVideoRequest(payload: { prompt: string; studioProjectId?: string | null; videoGroupIds?: string[]; projectIds?: string[]; variantsPerVideo?: number }) {
     return parseResponse<{ jobId: string; total: number; items: LocalAutoItem[]; summary?: string; config?: unknown }>(
       await fetch(`${LOCAL_KLIMAX_API}/api/auto/ai-request`, {
         method: "POST",
@@ -614,6 +656,8 @@ export type StudioProject = {
   overrides: StudioOverrides;
   assetPools: StudioAssetPools;
   hookBank: string[];
+  renderProjectId?: string | null;
+  renderClipStages?: string[];
   createdAt: string;
   updatedAt: string;
 };

@@ -259,7 +259,9 @@ export const AutoVariantCanvas: React.FC<AutoVariantCanvasProps> = ({ variant, s
       position: "absolute",
       width: `${(scaledWidth / BASE_CANVAS_WIDTH) * 100}%`,
       height: `${(scaledHeight / BASE_CANVAS_HEIGHT) * 100}%`,
-      left: `${50 - ((transform?.x ?? 0) / BASE_CANVAS_WIDTH) * 100}%`,
+      // X is stored natural; under mirror the renderer negates it so the speaker stays
+      // centred — mirror that here (negate X) so the preview matches the render.
+      left: `${50 - (((mirror ? -1 : 1) * (transform?.x ?? 0)) / BASE_CANVAS_WIDTH) * 100}%`,
       top: `${50 - ((transform?.y ?? 0) / BASE_CANVAS_HEIGHT) * 100}%`,
       transform: `translate(-50%, -50%)${mirror ? " scaleX(-1)" : ""}`,
       objectFit: "fill",

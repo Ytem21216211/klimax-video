@@ -766,12 +766,15 @@ async function initBuckets() {
 }
 
 async function start() {
+  // Postgres only backs the Supabase shim (auth/db/storage). If it's down we must NOT
+  // kill the whole process — the klimax video API (port 4588) is file-based and works
+  // without it. Degrade gracefully: log, skip the shim, let the backend keep serving.
   try {
     await pool.query("SELECT 1");
     console.log(`[supabase-shim] Connected to Postgres db=${DB_NAME} user=${DB_USER}`);
   } catch (e) {
-    console.error("[supabase-shim] FATAL: cannot reach Postgres:", e.message);
-    process.exit(1);
+    console.error(`[supabase-shim] Postgres indisponible (${e.message}) — shim désactivé, l'API klimax (4588) reste opérationnelle. Relance Postgres puis le backend pour réactiver l'auth/Supabase.`);
+    return; // do NOT process.exit — the video pipeline doesn't need Postgres
   }
   await initBuckets();
   app.listen(PORT, "127.0.0.1", () => {

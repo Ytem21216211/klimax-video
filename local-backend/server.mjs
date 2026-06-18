@@ -442,8 +442,47 @@ const readDb = async () => {
 // Atomic + serialized writes: temp file + rename so a concurrent reader never sees
 // torn JSON, and a promise chain so two writers can't interleave.
 let dbWriteChain = Promise.resolve();
+// Heavy transcription (clips/cues/words/logoMoments) lives in its OWN per-project file
+// so db.json stays small and isn't fully re-serialised on every unrelated mutation
+// (~23% of db.json was transcription). db.json keeps only a light stub for the
+// cache-hit check; the full object is loaded on demand and is also reconstructable
+// from the per-asset transcripts (so a missing file is never data loss).
+const transcriptsDir = path.join(dataRoot, "transcripts");
+const transcriptFile = (projectId) => path.join(transcriptsDir, `${String(projectId).replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+const transcriptStub = (t) => (t && typeof t === "object")
+  ? { status: t.status || "idle", sourceFingerprint: t.sourceFingerprint || null, language: t.language, clipCount: Array.isArray(t.clips) ? t.clips.length : safeNumber(t.clipCount, 0) }
+  : t;
+const loadTranscript = async (projectId) => {
+  try { return JSON.parse(await fs.readFile(transcriptFile(projectId), "utf8")); } catch { return null; }
+};
+const saveTranscript = async (projectId, t) => {
+  if (!projectId || !t || !Array.isArray(t.clips) || !t.clips.length) return;
+  if (/-auto-\d|-salvage-/.test(String(projectId))) return; // synthetic per-variant id → don't persist
+  await ensureDir(transcriptsDir);
+  const tmp = `${transcriptFile(projectId)}.tmp-${process.pid}`;
+  await fs.writeFile(tmp, JSON.stringify(t));
+  await fs.rename(tmp, transcriptFile(projectId));
+};
+// Ensure project.transcription carries its full clips (load the file; rebuild from
+// per-asset transcripts if the file is missing). Used before rendering / in the editor.
+const hydrateTranscript = async (db, project, sourceGroup) => {
+  if (Array.isArray(project?.transcription?.clips) && project.transcription.clips.length) return project.transcription;
+  const fromFile = await loadTranscript(project.id);
+  if (fromFile?.clips?.length) { project.transcription = fromFile; return project.transcription; }
+  if (sourceGroup) { try { await ensureTranscription(project, sourceGroup, db.assets); } catch { /* leave as-is */ } }
+  return project.transcription;
+};
+
 const writeDb = (db) => {
-  const payload = JSON.stringify(normalizeDb(db), null, 2);
+  // Serialize a LEAN copy: per-project transcription reduced to its stub (the full
+  // clips are persisted separately by saveTranscript). The in-memory db is untouched.
+  const lean = {
+    ...db,
+    projects: Array.isArray(db.projects)
+      ? db.projects.map((p) => (p && p.transcription ? { ...p, transcription: transcriptStub(p.transcription) } : p))
+      : db.projects,
+  };
+  const payload = JSON.stringify(normalizeDb(lean), null, 2);
   dbWriteChain = dbWriteChain.then(async () => {
     await ensureDir(dataRoot);
     const tmp = `${dbPath}.tmp-${process.pid}`;
@@ -457,6 +496,23 @@ const compactDb = async () => {
   if (!fsSync.existsSync(dbPath)) return;
   const db = await readDb();
   await writeDb(db);
+};
+
+// One-time (idempotent) migration: move any transcription clips still INLINE in db.json
+// into per-project transcript files, then compact db.json (writeDb strips them to stubs).
+// Safe to run every startup — projects already migrated have no inline clips to move.
+const migrateTranscriptsOnce = async () => {
+  if (!fsSync.existsSync(dbPath)) return;
+  const db = await readDb();
+  let migrated = 0;
+  for (const p of db.projects || []) {
+    if (Array.isArray(p.transcription?.clips) && p.transcription.clips.length) {
+      await saveTranscript(p.id, p.transcription);
+      migrated += 1;
+    }
+  }
+  await writeDb(db); // strips inline transcriptions to stubs
+  if (migrated) console.log(`[klimax] transcripts: migrated ${migrated} project(s) to per-project files`);
 };
 
 const assetFromFile = ({ file, category, groupId, groupTitle, videoPart, note }) => ({
@@ -477,6 +533,9 @@ const assetFromFile = ({ file, category, groupId, groupTitle, videoPart, note })
 const getVideoGroups = (assets) => {
   const groups = new Map();
   for (const asset of assets.filter((item) => item.category === "video")) {
+    // Multi-rush "extra" clips (3rd+) belong to a montage, not to a bank pair — they
+    // share the montage group but must NOT appear as their own person/group card.
+    if (asset.videoPart === "extra") continue;
     const groupId = asset.groupId || asset.id;
     const current = groups.get(groupId) || {
       id: groupId,
@@ -508,12 +567,20 @@ const resolveProject = (db, projectId) => {
 // TAIL of stderr (the real error is at the end), discarding the flood.
 const RUNPROC_MAX_OUT = 24 * 1024 * 1024; // 24 MB
 const RUNPROC_MAX_ERR = 256 * 1024; // 256 KB tail
-const runProcess = (command, args) =>
+const runProcess = (command, args, { timeoutMs = 0 } = {}) =>
   new Promise((resolve, reject) => {
     const child = spawn(command, args);
     let stdout = "";
     let stderr = "";
     let outTruncated = false;
+    let timedOut = false;
+    // Wall-clock guard: a broken input (e.g. a 0-duration b-roll looped into a fixed
+    // segment) can make ffmpeg HANG forever — never erroring, never exiting — which
+    // would freeze a render slot and stall the whole batch. Kill it so the caller's
+    // catch/salvage path runs instead of waiting indefinitely.
+    const timer = timeoutMs > 0
+      ? setTimeout(() => { timedOut = true; try { child.kill("SIGKILL"); } catch {} }, timeoutMs)
+      : null;
     child.stdout.on("data", (chunk) => {
       if (stdout.length < RUNPROC_MAX_OUT) stdout += chunk.toString();
       else outTruncated = true;
@@ -522,8 +589,10 @@ const runProcess = (command, args) =>
       stderr += chunk.toString();
       if (stderr.length > RUNPROC_MAX_ERR) stderr = stderr.slice(stderr.length - RUNPROC_MAX_ERR);
     });
-    child.on("error", reject);
+    child.on("error", (e) => { if (timer) clearTimeout(timer); reject(e); });
     child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      if (timedOut) return reject(new Error(`process timed out after ${timeoutMs}ms: ${command}`));
       if (code === 0) resolve({ stdout, stderr, outTruncated });
       else reject(new Error((stderr || stdout || `${command} exited with code ${code}`).slice(-4000)));
     });
@@ -559,6 +628,38 @@ const probeMediaDurationSec = async (filePath) => {
   } catch { /* keep 0 */ }
   durationCache.set(key, duration);
   return duration;
+};
+
+// Detect black bars baked INTO a b-roll source (letterboxed/pillarboxed clips) and
+// return an ffmpeg "crop=W:H:X:Y," prefix that strips them, so the cover-fit below
+// fills the frame with real content instead of showing the bars. "" when the source
+// is already full-frame. Cached per file (mtime-aware) — runs at most once per b-roll.
+const brollCropCache = new Map();
+const probeBrollContentCrop = async (filePath) => {
+  const key = mediaCacheKey(filePath);
+  if (brollCropCache.has(key)) return brollCropCache.get(key);
+  let cropFilter = "";
+  try {
+    const { stderr } = await runProcess(ffmpegPath, [
+      "-hide_banner", "-nostats", "-ss", "0.4", "-t", "1.2", "-i", filePath,
+      "-vf", "fps=8,cropdetect=limit=24:round=2:reset=0", "-f", "null", "-",
+    ], { timeoutMs: 15000 });
+    const m = [...String(stderr).matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g)];
+    const last = m[m.length - 1];
+    if (last) {
+      const w = +last[1], h = +last[2], x = +last[3], y = +last[4];
+      const probe = await ffprobeJson(filePath);
+      const vs = (probe.streams || []).find((s) => s.codec_type === "video") || {};
+      const W = +vs.width || 0, H = +vs.height || 0;
+      // Crop only on a REAL bar (content noticeably smaller) and never below 40% of the
+      // frame (guards against cropdetect over-cropping a dark scene).
+      if (W > 0 && H > 0 && w > 0 && h > 0 && (w < W - 6 || h < H - 6) && w >= W * 0.4 && h >= H * 0.4) {
+        cropFilter = `crop=${w}:${h}:${x}:${y},`;
+      }
+    }
+  } catch { /* keep "" */ }
+  brollCropCache.set(key, cropFilter);
+  return cropFilter;
 };
 
 // B-roll robustness: some uploaded clips carry a cover-art / data stream or a
@@ -815,6 +916,10 @@ const ensureSystemAssets = async () => {
 };
 
 const seedTailleVideos = async () => {
+  // OFF by default. This used to re-inject the "taille" demo pair into the bank on
+  // every startup where the seed group was absent — so taille kept REAPPEARING after
+  // the user deleted it. Now opt-in only (KLIMAX_SEED_TAILLE=1).
+  if (process.env.KLIMAX_SEED_TAILLE !== "1") return;
   const sourceOne = path.join(publicSeedRoot, "taille-1.mp4");
   const sourceTwo = path.join(publicSeedRoot, "taille-2.mp4");
   if (!fsSync.existsSync(sourceOne) || !fsSync.existsSync(sourceTwo)) return;
@@ -864,10 +969,21 @@ const seedTailleVideos = async () => {
   await writeDb(db);
 };
 
-const sourceAssetForClip = (sourceGroup, clip) => {
+// Resolve a clip's source video. The pair's person1/person2 are tried first (keeps the
+// 2-clip behaviour identical). For multi-rush projects (3+ alternating clips) a clip can
+// reference ANY uploaded video asset by id, so we also resolve clip.sourceVideoId against
+// the full asset list when provided. Final fallback: stage-based (reply -> person2).
+const sourceAssetForClip = (sourceGroup, clip, assets = null) => {
+  const id = clip?.sourceVideoId;
+  if (id && sourceGroup) {
+    if (id === sourceGroup.person2?.id) return sourceGroup.person2;
+    if (id === sourceGroup.person1?.id) return sourceGroup.person1;
+  }
+  if (id && Array.isArray(assets)) {
+    const a = assets.find((x) => x.id === id && x.category === "video");
+    if (a?.filePath) return a;
+  }
   if (!sourceGroup) return null;
-  if (clip?.sourceVideoId === sourceGroup.person2?.id) return sourceGroup.person2;
-  if (clip?.sourceVideoId === sourceGroup.person1?.id) return sourceGroup.person1;
   return clip?.stage === "reply" ? sourceGroup.person2 || sourceGroup.person1 : sourceGroup.person1 || sourceGroup.person2;
 };
 
@@ -988,7 +1104,7 @@ const fallbackWordsFromCues = (clipTranscription) => {
 const SFX_EFFECT_VOLUME_DB = -13;
 const LOGO_VOLUME_DB = -4;        // Klimax logo pop-up sound — present but not overpowering
 const SFX_FAHH_KEY = "effect_fahhh";
-const SFX_FAHH_VOLUME_DB = -19;
+const SFX_FAHH_VOLUME_DB = -24; // was -19; lowered 5 dB — the "fahh" was too loud
 const SFX_PER_VIDEO = 3;          // target number of effects per video
 const SFX_MIN_GAP_SECONDS = 4;    // minimum spacing between two effects
 
@@ -1064,9 +1180,14 @@ const buildAutoZoomEvents = (clip, clipDuration, settings) => {
   const zoomDuration = clamp(safeNumber(settings.autoZoomDurationSeconds, 2), 0.6, 4);
   const zoomBoost = clamp(safeNumber(settings.autoZoomBoostPercent, 20), 5, 60) / 100;
 
+  // Auto-zoom beats fire on the REPLY and on every EXTRA clip (clip 3+ of a montage) —
+  // never on the intro/hook clip. Each clip's zoom is INDEPENDENT (its own filter), so a
+  // zoom on clip 2 never carries into clip 3 — clip 3 starts un-zoomed. availableEnd
+  // forces every zoom to FINISH ≥ 0.6 s before the clip ends, so no zoom is still moving
+  // within ~½ s of the next cut.
   if (
     settings.autoZoomEnabled !== false &&
-    clip?.stage === "reply" &&
+    (clip?.stage === "reply" || clip?.stage === "extra") &&
     duration >= zoomDuration + 2.2
   ) {
     const count = 2;
@@ -1145,21 +1266,24 @@ const applyVideoZoomEvents = (filterChains, inputTag, outputTag, events) => {
   // the clip's own framing. Default anchor 0.5 = true centre (both axes);
   // KLIMAX_ZOOM_VERTICAL_ANCHOR can bias it upward (0 = top) for talking heads.
   const vAnchor = clamp(safeNumber(process.env.KLIMAX_ZOOM_VERTICAL_ANCHOR, 0.5), 0, 0.5);
-  // Smooth, jitter-free zoom at 2x supersampling: scale the clip UP by the zoom
-  // expression (2160x3840 at zoom=1, larger as it zooms in), crop a FIXED
-  // 2160x3840 window centred on the clip, then downscale once to 1080x1920.
-  // A fixed-size crop keeps the filter chain stable — a per-frame-varying crop
-  // size makes ffmpeg fail ("reinitializing filters") — and the 2x resolution
-  // turns the per-frame integer crop offset into a sub-pixel move at output, so
-  // there's no stair-stepping/jitter. x is centred; y uses vAnchor (0.5 = centre).
-  // Clamp the scaled size to NEVER fall below the fixed 2160x3840 crop. If the zoom
-  // expression dips below 1.0 (a zoom-out beat), an unclamped scale makes the frame
-  // smaller than the crop → ffmpeg fails ("reinitializing filters") and emits an
-  // off-by-2 frame (1080x1918), which then breaks the concat. max() pins the floor.
+  // Oversample ONLY as much as the motion needs (output is ALWAYS 1080x1920):
+  //  - smooth / zoom-out beats move the centred crop every frame, so a fractional
+  //    crop offset must land sub-pixel → oversample 1.5x (1620x2880) then downscale
+  //    to 1080. (Was 2x/2160 — 1.5x is ~44% fewer pixels with no visible difference.)
+  //  - pure CUT beats hold a CONSTANT, centred zoom within their window (a step), so
+  //    the crop never moves sub-pixel → NO oversample needed: scale up by the zoom and
+  //    crop a fixed 1080x1920 centre directly. Much cheaper, identical look.
+  // A fixed-size crop keeps the filter chain stable (a per-frame-varying crop size
+  // makes ffmpeg fail "reinitializing filters"); max() pins the scale floor so a
+  // zoom-out dipping below 1.0 can't make the frame smaller than the crop.
+  const smoothMotion = events.some((e) => e.kind !== "cut");
+  const W = smoothMotion ? 1620 : 1080;
+  const H = smoothMotion ? 2880 : 1920;
+  const downscale = smoothMotion ? `scale=1080:1920:flags=lanczos,` : ``;
   filterChains.push(
-    `[${inputTag}]scale=w='max(2160,2160*(${escaped}))':h='max(3840,3840*(${escaped}))':eval=frame:flags=bicubic,` +
-      `crop=2160:3840:(in_w-2160)/2:(in_h-3840)*${vAnchor.toFixed(3)},` +
-      `scale=1080:1920:flags=lanczos,setsar=1[${outputTag}]`
+    `[${inputTag}]scale=w='max(${W},${W}*(${escaped}))':h='max(${H},${H}*(${escaped}))':eval=frame:flags=bicubic,` +
+      `crop=${W}:${H}:(in_w-${W})/2:(in_h-${H})*${vAnchor.toFixed(3)},` +
+      `${downscale}setsar=1[${outputTag}]`
   );
 };
 
@@ -1181,8 +1305,74 @@ const createSourceFingerprint = async (project, sourceGroup) => {
   return parts.join("|");
 };
 
-const ensureTranscription = async (project, sourceGroup) => {
+// Transcribe a SINGLE video asset and store the result ON THE ASSET (words + plain
+// text), so it's computed ONCE at bank-upload time, reused by every render, and
+// editable by the user. Mutates `asset` in place; caller persists with writeDb.
+const ensureAssetTranscript = async (asset, { force = false } = {}) => {
+  if (!asset?.filePath || asset.category !== "video") return asset;
+  if (!force && asset.transcript?.status === "completed" && Array.isArray(asset.transcript.words) && asset.transcript.words.length) {
+    return asset; // already transcribed (and possibly user-edited) — keep it
+  }
+  try {
+    const { transcribeFile } = await import("./whisper.mjs");
+    const { result: raw } = await transcribeFile(asset.filePath);
+    const words = buildWordsFromTranscription(raw);
+    asset.transcript = {
+      status: "completed",
+      language: raw.language || "unknown",
+      duration: safeNumber(raw.duration, 0),
+      words,
+      text: words.map((w) => w.word).join(" "),
+      edited: false,
+      updatedAt: new Date().toISOString(),
+    };
+  } catch (e) {
+    asset.transcript = { status: "failed", error: String(e?.message || e).slice(0, 200), words: [], text: "", updatedAt: new Date().toISOString() };
+  }
+  return asset;
+};
+
+// Re-tokenise edited transcript text and re-align word timings: keep the original
+// per-word timing when the word count is unchanged, else spread evenly across the
+// clip's duration. Returns the new words array.
+const realignTranscriptWords = (text, prevWords = [], duration = 0) => {
+  const tokens = String(text || "").trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return [];
+  if (prevWords.length === tokens.length) {
+    return tokens.map((w, i) => ({ start: prevWords[i].start, end: prevWords[i].end, word: w }));
+  }
+  const span = duration > 0 ? duration : (prevWords.length ? safeNumber(prevWords[prevWords.length - 1].end, tokens.length * 0.4) : tokens.length * 0.4);
+  const step = span / tokens.length;
+  return tokens.map((w, i) => ({ start: Number((i * step).toFixed(3)), end: Number(((i + 1) * step).toFixed(3)), word: w }));
+};
+
+// When an asset's transcript changes (re-transcribed or hand-edited), drop the cached
+// transcription of every project that uses it, so the next render rebuilds captions
+// from the new words instead of serving the stale cached cues.
+const invalidateProjectTranscriptsForAsset = async (db, assetId) => {
+  for (const p of db.projects) {
+    if ((p.clips || []).some((c) => c.sourceVideoId === assetId)) {
+      p.transcription = defaultTranscription();
+      // Drop the stale per-project transcript FILE too, so the next render rebuilds
+      // from the (edited) per-asset transcript instead of serving old cached cues.
+      await fs.unlink(transcriptFile(p.id)).catch(() => {});
+    }
+  }
+};
+
+const ensureTranscription = async (project, sourceGroup, assets = null) => {
   const fingerprint = await createSourceFingerprint(project, sourceGroup);
+  // The full clips now live in a per-project file (db.json keeps only a stub). If this
+  // project's clips aren't loaded but the stub says "completed", pull the file so the
+  // cache-hit check below can short-circuit instead of re-transcribing.
+  if (
+    project.transcription?.status === "completed" &&
+    !(Array.isArray(project.transcription?.clips) && project.transcription.clips.length) &&
+    project.id
+  ) {
+    const fromFile = await loadTranscript(project.id);
+    if (fromFile?.clips?.length) project.transcription = fromFile;
+  }
   if (
     project.transcription?.status === "completed" &&
     project.transcription?.sourceFingerprint === fingerprint &&
@@ -1196,26 +1386,51 @@ const ensureTranscription = async (project, sourceGroup) => {
   const subtitleStyle = project.settings?.subtitleStyle || defaultSubtitleStyle;
   const bySource = new Map();
 
-  for (const asset of [sourceGroup?.person1, sourceGroup?.person2].filter(Boolean)) {
-    const { result: raw } = await transcribeFile(asset.filePath);
-    const words = normalizeLogoWords(
-      buildWordsFromTranscription(raw),
-      project.settings?.logoTriggerWord || "klimax"
-    );
+  // Transcribe every DISTINCT source video referenced by the clips — person1/person2
+  // for a normal pair, plus any extra rush asset for a multi-rush (3+ clips) project.
+  const distinctSources = [];
+  const seenSrc = new Set();
+  for (const a of [sourceGroup?.person1, sourceGroup?.person2].filter(Boolean)) {
+    if (a.filePath && !seenSrc.has(a.id)) { seenSrc.add(a.id); distinctSources.push(a); }
+  }
+  for (const clip of project.clips) {
+    const a = sourceAssetForClip(sourceGroup, clip, assets);
+    if (a?.filePath && !seenSrc.has(a.id)) { seenSrc.add(a.id); distinctSources.push(a); }
+  }
+  const triggerWord = project.settings?.logoTriggerWord || "klimax";
+  for (const asset of distinctSources) {
+    let rawWords;
+    let duration;
+    let language;
+    let segments = null;
+    // PREFER the transcript already stored ON THE ASSET (computed at bank upload and
+    // user-editable) — no re-transcription, and the user's edits are honoured. Only
+    // fall back to Whisper for assets that never got a stored transcript.
+    if (asset.transcript?.status === "completed" && Array.isArray(asset.transcript.words) && asset.transcript.words.length) {
+      rawWords = asset.transcript.words;
+      duration = safeNumber(asset.transcript.duration, 0);
+      language = asset.transcript.language || "unknown";
+    } else {
+      const { result: raw } = await transcribeFile(asset.filePath);
+      rawWords = buildWordsFromTranscription(raw);
+      duration = safeNumber(raw.duration, 0);
+      language = raw.language || "unknown";
+      segments = raw.segments || null;
+    }
+    const words = normalizeLogoWords(rawWords, triggerWord);
     const cues = buildCaptionCues(words, subtitleStyle.wordsPerLine);
-    const duration = safeNumber(raw.duration, 0);
     bySource.set(asset.id, {
       sourceVideoId: asset.id,
-      language: raw.language || "unknown",
+      language,
       duration,
       cues,
       words,
-      logoMoments: buildLogoMoments(words, project.settings?.logoTriggerWord || "klimax", duration, raw.segments || cues),
+      logoMoments: buildLogoMoments(words, triggerWord, duration, segments || cues),
     });
   }
 
   const clips = project.clips.map((clip) => {
-    const asset = sourceAssetForClip(sourceGroup, clip);
+    const asset = sourceAssetForClip(sourceGroup, clip, assets);
     const sourceTranscript = asset ? bySource.get(asset.id) : null;
     return {
       clipId: clip.id,
@@ -1289,6 +1504,8 @@ const ensureTranscription = async (project, sourceGroup) => {
     sourceFingerprint: fingerprint,
     clips,
   };
+  // Persist the heavy clips to the per-project file (db.json keeps only the stub).
+  await saveTranscript(project.id, project.transcription);
 
   return project.transcription;
 };
@@ -1537,7 +1754,9 @@ const formatAssSubtitleText = (text, keywordSet, subtitleStyle, activeIndex = nu
 const subtitleYForStage = (stage, subtitleStyle) => {
   const introPosition = subtitleStyle.introVerticalPosition || "lower";
   const replyPosition = subtitleStyle.replyVerticalPosition || "middle";
-  if (stage === "reply") {
+  // extra clips (3+) share the reply-like lower-third position (the auto engine sets an
+  // explicit clip.subtitlePosition anyway; this is only the manual/fallback value).
+  if (stage === "reply" || stage === "extra") {
     return replyPosition === "lower" ? 1470 : 1240;
   }
   return introPosition === "middle" ? 1260 : 1450;
@@ -1907,14 +2126,25 @@ const buildBrollPlan = async (db, project, clipMeta) => {
     ? project.settings.brollStyle
     : "alternate";
   const variantOf = (b) => (b.placement === "square" ? "square" : "fullscreen");
-  const pool = brollStyle === "fullscreen"
+  let pool = brollStyle === "fullscreen"
     ? brolls.filter((b) => variantOf(b) === "fullscreen")
     : brolls;
   if (!pool.length) return plan;
 
   const { pickBrollMomentsForClip } = await import("./brollIntelligence.mjs");
+  // Probe ALL b-roll durations in PARALLEL (was sequential — up to ~40 ffprobe calls
+  // back-to-back on a cold cache). probeMediaDurationSec is cached + pure → identical
+  // values, just gathered faster.
   const durById = {};
-  for (const b of pool) durById[b.id] = await probeMediaDurationSec(b.filePath);
+  const brollDurs = await Promise.all(pool.map((b) => probeMediaDurationSec(b.filePath)));
+  pool.forEach((b, i) => { durById[b.id] = brollDurs[i]; });
+  // Drop VIDEO b-rolls whose probed duration is ~0: they're broken/empty and would
+  // make ffmpeg HANG when looped into a segment (root cause of the stalled auto batch
+  // — the "src 0.0" entries in the b-roll plan log). Images legitimately have no
+  // duration, so they're kept.
+  const isVideoBroll = (b) => String(b.mimeType || "").startsWith("video") || /\.(mp4|mov|webm|mkv|m4v)$/i.test(b.filePath || "");
+  pool = pool.filter((b) => !isVideoBroll(b) || safeNumber(durById[b.id], 0) > 0.15);
+  if (!pool.length) return plan;
   const brollPayload = pool.map((b) => ({ id: b.id, note: b.note, title: b.title }));
   // Never reuse the same b-roll in the whole video — recurring themes must use a
   // different variant (the LLM is told this too; we enforce it as a safety net).
@@ -2006,6 +2236,33 @@ const buildBrollPlan = async (db, project, clipMeta) => {
   return plan;
 };
 
+// Keep the renders/ folder bounded so it can never fill the disk again (the disk-full
+// bug corrupted renders). Keep the NEWEST files up to a count AND a total-size cap;
+// delete the rest. Override via env. Safe: renders are regenerable from the project.
+const MAX_RENDER_FILES = clamp(Math.round(safeNumber(process.env.KLIMAX_MAX_RENDER_FILES, 200)), 20, 2000);
+const MAX_RENDER_BYTES = clamp(safeNumber(process.env.KLIMAX_MAX_RENDER_GB, 5), 1, 100) * 1024 * 1024 * 1024;
+let prunePending = false;
+const pruneRenders = async () => {
+  if (prunePending) return;
+  prunePending = true;
+  try {
+    const names = (await fs.readdir(renderRoot).catch(() => [])).filter((n) => n.endsWith(".mp4"));
+    const stats = [];
+    for (const n of names) {
+      try { const st = await fs.stat(path.join(renderRoot, n)); stats.push({ n, m: st.mtimeMs, s: st.size }); } catch { /* skip */ }
+    }
+    stats.sort((a, b) => b.m - a.m); // newest first
+    let keptCount = 0, keptBytes = 0, removed = 0;
+    for (const f of stats) {
+      if (keptCount < MAX_RENDER_FILES && keptBytes + f.s <= MAX_RENDER_BYTES) { keptCount += 1; keptBytes += f.s; continue; }
+      try { await fs.unlink(path.join(renderRoot, f.n)); removed += 1; } catch { /* skip */ }
+    }
+    if (removed) console.log(`[renders] auto-pruned ${removed} old render(s) — keeping newest ${keptCount} (~${(keptBytes / 1e9).toFixed(1)}GB)`);
+  } catch { /* never block a render on prune */ } finally {
+    prunePending = false;
+  }
+};
+
 const renderProject = async (db, project, sourceGroup) => {
   const { getSfxPath, listAutoSfxKeys, RISER_KEY } = await import("./sfx.mjs");
   if (!ffmpegPath) throw new Error("FFmpeg local indisponible.");
@@ -2013,13 +2270,19 @@ const renderProject = async (db, project, sourceGroup) => {
   if (!sourceGroup?.person1?.filePath) {
     throw new Error("Ce projet n'a pas de vidéo source.");
   }
+  // Transcription clips now live in a per-project file (db.json keeps a stub). Make sure
+  // the full clips are present before rendering — load the file, else rebuild from the
+  // per-asset transcripts (no Whisper). Covers resumed auto variants (stub from db).
+  if (!(Array.isArray(project.transcription?.clips) && project.transcription.clips.length)) {
+    await hydrateTranscript(db, project, sourceGroup);
+  }
 
   await ensureDir(renderRoot);
   await ensureDir(tempRoot);
   await ensureDir(fontRoot);
   const outputPath = path.join(renderRoot, `${project.id}-${Date.now()}.mp4`);
 
-  const clipsToRender = project.clips.filter((clip) => sourceAssetForClip(sourceGroup, clip));
+  const clipsToRender = project.clips.filter((clip) => sourceAssetForClip(sourceGroup, clip, db.assets));
   if (!clipsToRender.length) {
     throw new Error("Ce projet n'a aucun segment exploitable.");
   }
@@ -2035,16 +2298,24 @@ const renderProject = async (db, project, sourceGroup) => {
   let inputIndex = 0;
   let totalDuration = 0;
 
+  // Lightweight phase profiler (KLIMAX_PERF=1). Measures where render time goes.
+  const _perf = process.env.KLIMAX_PERF === "1";
+  let _last = Date.now();
+  const _mark = (label) => { if (!_perf) return; const now = Date.now(); console.log(`[perf] ${label}: ${now - _last}ms`); _last = now; };
+
   // Voice loudness normalisation (EBU R128, TWO-PASS): measure each source's real
   // loudness first, then normalise every clip to the same target — so a quietly
   // recorded clip (e.g. personne 2) is brought up to match the louder one.
+  // Measure all DISTINCT sources in PARALLEL (was sequential ~7s each). measureLoudness
+  // is a pure, cached function so concurrent calls give identical results — output is
+  // byte-for-byte unchanged, just measured faster.
   const loudnessByPath = new Map();
-  for (const clip of clipsToRender) {
-    const asset = sourceAssetForClip(sourceGroup, clip);
-    if (asset?.filePath && !loudnessByPath.has(asset.filePath)) {
-      loudnessByPath.set(asset.filePath, await measureLoudness(asset.filePath));
-    }
-  }
+  const distinctLoudnessPaths = [...new Set(
+    clipsToRender.map((c) => sourceAssetForClip(sourceGroup, c, db.assets)?.filePath).filter(Boolean)
+  )];
+  const measuredLoudness = await Promise.all(distinctLoudnessPaths.map((p) => measureLoudness(p)));
+  distinctLoudnessPaths.forEach((p, i) => loudnessByPath.set(p, measuredLoudness[i]));
+  _mark("loudness");
 
   // Per-clip cut duration + transcription, in play order. Drives the whole-video
   // SFX plan (computed ONCE so the 2-3 effects span the entire video, not per clip)
@@ -2057,12 +2328,17 @@ const renderProject = async (db, project, sourceGroup) => {
     const duration = isDual ? dualSpeakerCutDuration(transcription, full) : full;
     return { clip, transcription, duration };
   });
+
+  // The Klimax logo card is WORD-TRIGGERED: it pops only when the brand word is spoken —
+  // "klimax" OR "climax" (+ klimaks/climaks variants; see logoTriggers in logoMoments.mjs).
+  // Clips that never say it get no card, on purpose (no forced fallback).
   const videoSfxPlan = project.settings?.autoSfxEnabled !== false
     ? buildVideoSfxPlan(clipMeta, listAutoSfxKeys())
     : [];
 
   // Moment-level b-roll timeline (which b-rolls play when, per clip).
   const brollPlan = await buildBrollPlan(db, project, clipMeta);
+  _mark("brollPlan");
   const brollShutterMode = project.settings?.brollShutterMode === true;
   const brollAnimIn = ["fade", "none"].includes(project.settings?.brollAnimIn) ? project.settings.brollAnimIn : "fade";
   const brollAnimOut = ["fade", "none"].includes(project.settings?.brollAnimOut) ? project.settings.brollAnimOut : "fade";
@@ -2070,10 +2346,16 @@ const renderProject = async (db, project, sourceGroup) => {
   // Smooth Ken-Burns zoom on a b-roll (scale-over-time + centre crop, no jitter).
   const brollZoomFx = (W, H, segDur) => {
     if (brollZoom === "none") return "";
-    const d = Math.max(0.2, segDur).toFixed(3);
-    const z = 0.07; // 7% travel over the b-roll
-    const f = brollZoom === "out" ? `(1+${z}-${z}*t/${d})` : `(1+${z}*t/${d})`;
-    return `,scale=w='ceil(${W}*${f}/2)*2':h='ceil(${H}*${f}/2)*2':eval=frame,crop=${W}:${H}`;
+    // Ken-Burns via ZOOMPAN (fixed W×H output). The old approach animated the scale's
+    // OUTPUT size per frame (scale=…:eval=frame), which re-inits the ffmpeg scaler on
+    // EVERY frame → ~18x slower renders. zoompan keeps a constant output size and zooms
+    // internally, so it's as fast as a static b-roll. Centred 7% travel over the segment.
+    const frames = Math.max(1, Math.round(Math.max(0.2, segDur) * 30));
+    const per = (0.07 / frames).toFixed(6);
+    const z = brollZoom === "out"
+      ? `max(1.07-${per}*on,1.0)`
+      : `min(1.0+${per}*on,1.07)`;
+    return `,zoompan=z='${z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=30`;
   };
   const hasShutter = fsSync.existsSync(shutterSoundPath);
   const hasSquareAssets = fsSync.existsSync(brollSquareMaskPath) && fsSync.existsSync(brollSquareShadowPath);
@@ -2084,7 +2366,7 @@ const renderProject = async (db, project, sourceGroup) => {
 
   for (let clipIndex = 0; clipIndex < clipsToRender.length; clipIndex += 1) {
     const clip = clipsToRender[clipIndex];
-    const sourceAsset = sourceAssetForClip(sourceGroup, clip);
+    const sourceAsset = sourceAssetForClip(sourceGroup, clip, db.assets);
     const clipTranscription = project.transcription?.clips?.find((entry) => entry.clipId === clip.id);
     const fullClipDuration = safeNumber(clipTranscription?.duration, 0);
     // The added speaker source (if dual-speaker is on). Resolved once and reused
@@ -2185,7 +2467,11 @@ const renderProject = async (db, project, sourceGroup) => {
       );
     } else {
       const baseScale = clamp(safeNumber(clipLayout.videoTransform.scale, 100), 40, 180) / 100;
-      const baseOffsetX = safeNumber(clipLayout.videoTransform.x, 0);
+      // mirrorFx (hflip) runs BEFORE the crop, so the speaker ends up on the OPPOSITE
+      // side. The X offset is stored in the natural orientation, so negate it under
+      // mirror to keep the same person centred (single source of truth for both auto
+      // and manual). Y is unaffected by a horizontal flip.
+      const baseOffsetX = (mirrorFx ? -1 : 1) * safeNumber(clipLayout.videoTransform.x, 0);
       const baseOffsetY = safeNumber(clipLayout.videoTransform.y, 0);
       filterChains.push(
         `[${sourceInput}:v]${mirrorFx}scale=1080*${baseScale}:1920*${baseScale}:force_original_aspect_ratio=increase,crop=1080:1920:min(max((in_w-1080)/2+${baseOffsetX}\\,0)\\,in_w-1080):min(max((in_h-1920)/2+${baseOffsetY}\\,0)\\,in_h-1920),setsar=1${videoFilterChain(project.settings?.videoFilterKey)},format=rgba[${currentVideo}]`
@@ -2212,7 +2498,7 @@ const renderProject = async (db, project, sourceGroup) => {
     // called LAST (after b-roll AND subtitles) so the logo stays on top and nothing
     // ever covers it — see the subtitles step below.
     const logoApplies =
-      clip.stage === "reply" &&
+      (clip.stage === "reply" || clip.stage === "extra") &&
       project.settings?.klimaxLogoEnabled &&
       fsSync.existsSync(logoAnimationPath) &&
       Boolean(clipTranscription?.logoMoments?.length);
@@ -2327,6 +2613,9 @@ const renderProject = async (db, project, sourceGroup) => {
         }
         const brIn = inputIndex;
         inputIndex += 1;
+        // Strip black bars baked into the source so the cover-fit fills with real
+        // content (no letterbox showing through). Videos only; cached per file.
+        const contentCrop = seg.isVideo ? await probeBrollContentCrop(seg.path) : "";
         const fadeOut = Math.max(0, seg.segDur - FADE).toFixed(3);
         // Animations are INDEPENDENT of shutter mode (you can have fade + zoom AND
         // the shutter click). fade=alpha multiplies the existing alpha (keeps rounded
@@ -2356,7 +2645,7 @@ const renderProject = async (db, project, sourceGroup) => {
           inputArgs.push("-i", brollSquareShadowPath);
           const shadowIn = inputIndex; inputIndex += 1;
           const p = `${clipIndex}_${bi}`;
-          filterChains.push(`[${brIn}:v]scale=${S}:${S}:force_original_aspect_ratio=increase,crop=${S}:${S},setsar=1,fps=30${brollZoomFx(S, S, seg.segDur)},format=rgba[bsc${p}]`);
+          filterChains.push(`[${brIn}:v]${contentCrop}scale=${S}:${S}:force_original_aspect_ratio=increase,crop=${S}:${S},setsar=1,fps=30${brollZoomFx(S, S, seg.segDur)},format=rgba[bsc${p}]`);
           // The mask/shadow PNGs are authored for a 720px square (mask 720x720,
           // shadow 816x816 = 720 + 2*48 pad). alphamerge REQUIRES equal dimensions,
           // so scale both to the CURRENT square size or the whole render fails
@@ -2379,7 +2668,7 @@ const renderProject = async (db, project, sourceGroup) => {
           const ox = isSquare ? Math.round((1080 - sqSize) / 2) : 0;
           const oy = isSquare ? BROLL_SQUARE_Y : 0;
           filterChains.push(
-            `[${brIn}:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,fps=30${brollZoomFx(W, H, seg.segDur)},format=rgba${anim},${shift}[${brTag}]`
+            `[${brIn}:v]${contentCrop}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,fps=30${brollZoomFx(W, H, seg.segDur)},format=rgba${anim},${shift}[${brTag}]`
           );
           filterChains.push(`[${currentVideo}][${brTag}]overlay=${ox}:${oy}:${enable}[${nextVideo}]`);
         }
@@ -2417,15 +2706,17 @@ const renderProject = async (db, project, sourceGroup) => {
     filterChains.push(`[${sourceInput}:a]${loudnormFilter},aformat=sample_rates=48000,volume=${videoVolumeDb}dB,aresample=async=1${clipAudioTrim}[acl${clipIndex}]`);
 
     // Sound effects: the 2-3 strongest keyword beats of the WHOLE video carry one
-    // effect each (effects at -13 dB, "fahh" at -19 dB — see buildVideoSfxPlan),
-    // plus the metallic riser landing exactly on the first clip's cut at -15 dB.
+    // effect each (effects at -13 dB, "fahh" at -24 dB — see buildVideoSfxPlan), but
+    // NEVER on the hook clip; plus the metallic riser on the first clip's cut at -15 dB.
     // Added automatically and only when "Sound effects" is enabled. Transitions
     // (zoom / cut) stay purely visual — no sound is attached to them.
     const sfxEvents = [];
     if (project.settings?.autoSfxEnabled !== false) {
-      sfxEvents.push(...videoSfxPlan.filter((event) => event.clipIndex === clipIndex));
+      // The HOOK (clip 0) gets NO keyword sound effects — only the base end-of-intro
+      // accent (fahh / riser) below. Keyword effects play on the reply/extra clips.
+      if (clipIndex !== 0) sfxEvents.push(...videoSfxPlan.filter((event) => event.clipIndex === clipIndex));
       // End-of-intro accent: varies between the metallic riser (-15 dB) and the
-      // "fahh" (quieter, -19 dB). Its tail is anchored to the first clip's cut and
+      // "fahh" (quieter, -24 dB). Its tail is anchored to the first clip's cut and
       // it starts earlier by its own length (sped up if the intro is too short, so
       // the climax always lands exactly on the cut).
       if (clipIndex === 0 && clipsToRender.length > 1 && clipDuration > 1.4) {
@@ -2451,6 +2742,13 @@ const renderProject = async (db, project, sourceGroup) => {
       for (const t of brollShutterTimes) {
         sfxEvents.push({ path: shutterSoundPath, time: t, volumeDb: -6, word: "shutter" });
       }
+    }
+
+    // Inter-clip shutter: when the project has MORE than 2 clips, a camera-shutter click
+    // marks the cut INTO each extra clip (3rd onward) — the back-and-forth between the
+    // alternating P1/P2 segments. Only the first cut (1->2) keeps a real transition.
+    if (project.settings?.clipShutterBetween !== false && clipsToRender.length > 2 && clipIndex >= 2 && hasShutter) {
+      sfxEvents.push({ path: shutterSoundPath, time: 0, volumeDb: -7, word: "clip-shutter" });
     }
 
     const sfxMixTags = [];
@@ -2511,49 +2809,49 @@ const renderProject = async (db, project, sourceGroup) => {
       const XFADE_SEC = 0.3;
       const flashAvailable = fsSync.existsSync(cameraFlashTransitionPath);
       const transitionType = project.settings?.clipTransitionType || "random";
-      // Decide each cut's transition ONCE — the audio chain below must mirror the
-      // video chain exactly, otherwise every opacity fade (which overlaps clips by
-      // XFADE_SEC) would leave the audio 0.3 s late (visible lip-sync drift).
-      const useFlashAtCut = [];
-      for (let i = 1; i < clipsToRender.length; i += 1) {
-        useFlashAtCut.push(flashAvailable && (
-          transitionType === "camera_flash" ||
-          (transitionType !== "opacity" && Math.random() < 0.5)
-        ));
-      }
+      // The transition is applied ONLY at the first cut (clip 1 -> clip 2). Every later
+      // cut is a HARD cut: the extra clips (3+) are a single continuous back-and-forth,
+      // so we don't fade/flash between them (a shutter click marks those cuts instead).
+      // Cut 1's kind is decided once so the audio chain mirrors the video exactly.
+      const firstCutFlash = flashAvailable && (
+        transitionType === "camera_flash" || (transitionType !== "opacity" && Math.random() < 0.5)
+      );
+      const cutKind = (i) => (i === 1 ? (firstCutFlash ? "flash" : "xfade") : "cut");
+
       const flashJobs = [];
       let prevTag = "vsub0";
       let lastTag = "vsub0";
       let timelineEnd = clipDurations[0]; // running end of the built chain (video timeline)
       for (let i = 1; i < clipsToRender.length; i += 1) {
-        const useFlash = useFlashAtCut[i - 1];
+        const kind = cutKind(i);
         const outTag = `vt${i}`;
-        if (useFlash) {
-          // Hard cut now; the flash is blended on top afterwards, peaking on the cut.
-          filterChains.push(`[${prevTag}][vsub${i}]concat=n=2:v=1:a=0[${outTag}]`);
-          flashJobs.push({ cutTime: timelineEnd });
-          timelineEnd += clipDurations[i];
-        } else {
+        if (kind === "xfade") {
           // Opacity cross-fade: the two clips overlap by XFADE_SEC.
           const offset = Math.max(0, timelineEnd - XFADE_SEC);
           filterChains.push(
             `[${prevTag}][vsub${i}]xfade=transition=fade:duration=${XFADE_SEC.toFixed(3)}:offset=${offset.toFixed(3)}[${outTag}]`
           );
           timelineEnd = timelineEnd + clipDurations[i] - XFADE_SEC;
+        } else {
+          // Hard cut (kind "flash": blend a flash on top peaking on the cut; kind "cut":
+          // plain back-to-back, used for every boundary between the extra clips).
+          filterChains.push(`[${prevTag}][vsub${i}]concat=n=2:v=1:a=0[${outTag}]`);
+          if (kind === "flash") flashJobs.push({ cutTime: timelineEnd });
+          timelineEnd += clipDurations[i];
         }
         prevTag = outTag;
         lastTag = outTag;
       }
 
-      // Audio mirrors the video: plain concat at flash cuts, acrossfade (same
-      // overlap) at opacity cuts — A/V stay in sync whatever the mix of cuts.
+      // Audio mirrors the video: acrossfade at the opacity cut, plain concat at every
+      // hard cut (flash or extra-clip) — A/V stay in sync whatever the mix of cuts.
       let prevAudio = "a0";
       for (let i = 1; i < clipsToRender.length; i += 1) {
         const outAudio = i === clipsToRender.length - 1 ? "acat" : `at${i}`;
-        if (useFlashAtCut[i - 1]) {
-          filterChains.push(`[${prevAudio}][a${i}]concat=n=2:v=0:a=1[${outAudio}]`);
-        } else {
+        if (cutKind(i) === "xfade") {
           filterChains.push(`[${prevAudio}][a${i}]acrossfade=d=${XFADE_SEC.toFixed(3)}[${outAudio}]`);
+        } else {
+          filterChains.push(`[${prevAudio}][a${i}]concat=n=2:v=0:a=1[${outAudio}]`);
         }
         prevAudio = outAudio;
       }
@@ -2644,8 +2942,15 @@ const renderProject = async (db, project, sourceGroup) => {
     outputPath,
   ];
 
-  const { stderr } = await runProcess(ffmpegPath, args);
+  // Wall-clock cap so a hung ffmpeg (e.g. a broken/0-duration b-roll looped into a
+  // segment) can't freeze the render slot forever and stall the whole auto batch.
+  // ~12 s of compute per second of output, floor 3 min, cap 8 min.
+  const renderTimeoutMs = Math.min(480000, Math.max(180000, Math.round((totalDuration || 30) * 12000)));
+  _mark("buildFilters+facedetect+hookPNG");
+  const { stderr } = await runProcess(ffmpegPath, args, { timeoutMs: renderTimeoutMs });
+  _mark("ffmpegEncode");
   const metadata = await exportMetadata(outputPath);
+  pruneRenders().catch(() => {}); // keep renders/ bounded (fire-and-forget, never blocks)
   return {
     status: "completed",
     path: outputPath,
@@ -2697,6 +3002,10 @@ app.post(
     ];
     db.assets.unshift(...assets);
     await writeDb(db);
+    // Transcribe each clip NOW (stored on the asset, reused by every render, editable
+    // in the bank). Persist assets first so a transcription hiccup can't lose them.
+    for (const a of assets) await ensureAssetTranscript(a);
+    await writeDb(db);
     res.json({ added: assets, assets: db.assets, videoGroups: getVideoGroups(db.assets) });
   }
 );
@@ -2714,6 +3023,8 @@ app.post("/api/assets/single-rush", upload.single("person1"), async (req, res) =
   const asset = assetFromFile({ file, category: "video", groupId, groupTitle, videoPart: "person1", note });
   db.assets.unshift(asset);
   await writeDb(db);
+  await ensureAssetTranscript(asset); // transcribe at upload, store on the asset
+  await writeDb(db);
   res.json({ added: [asset], assets: db.assets, videoGroups: getVideoGroups(db.assets) });
 });
 
@@ -2727,6 +3038,41 @@ app.post("/api/assets/:category", upload.single("file"), async (req, res) => {
   db.assets.unshift(asset);
   await writeDb(db);
   res.json({ asset, assets: db.assets });
+});
+
+// --- Per-asset transcript: read / (re)generate / edit. Stored ON the asset so it's
+// computed once at upload, reused by every render, and editable from the bank. ---
+app.get("/api/assets/:id/transcript", async (req, res) => {
+  const db = await readDb();
+  const asset = db.assets.find((a) => a.id === req.params.id);
+  if (!asset) return res.status(404).json({ error: "Asset introuvable." });
+  res.json({ transcript: asset.transcript || { status: "idle", words: [], text: "" } });
+});
+
+app.post("/api/assets/:id/transcribe", async (req, res) => {
+  const db = await readDb();
+  const asset = db.assets.find((a) => a.id === req.params.id);
+  if (!asset) return res.status(404).json({ error: "Asset introuvable." });
+  await ensureAssetTranscript(asset, { force: true });
+  await invalidateProjectTranscriptsForAsset(db, asset.id);
+  await writeDb(db);
+  res.json({ transcript: asset.transcript });
+});
+
+app.put("/api/assets/:id/transcript", async (req, res) => {
+  const db = await readDb();
+  const asset = db.assets.find((a) => a.id === req.params.id);
+  if (!asset) return res.status(404).json({ error: "Asset introuvable." });
+  const text = typeof req.body?.text === "string" ? req.body.text : "";
+  const prev = asset.transcript || {};
+  const words = realignTranscriptWords(text, prev.words || [], safeNumber(prev.duration, 0));
+  asset.transcript = {
+    ...prev, status: "completed", words, text: words.map((w) => w.word).join(" "),
+    edited: true, updatedAt: new Date().toISOString(),
+  };
+  await invalidateProjectTranscriptsForAsset(db, asset.id); // stale cached captions must rebuild
+  await writeDb(db);
+  res.json({ transcript: asset.transcript });
 });
 
 // Rename a single asset (a video part — personne 1 / personne 2 — or a 2e-speaker
@@ -2785,36 +3131,9 @@ app.post("/api/projects", async (req, res) => {
     updated_at: now,
     sourceGroupId: sourceGroup?.id || null,
     settings,
-    clips: sourceGroup
-      ? [
-          {
-            id: id("intro"),
-            stage: "intro",
-            sourceVideoId: sourceGroup.person1?.id || null,
-            title: "Personne 1 - segment 1",
-            hookText: settings.hookText,
-            subtitle: "Transcription en attente",
-            musicId: null,
-            brollId: null,
-            imageId: null,
-            ...defaultClipLayout("intro"),
-            imageTransform: { scale: 100, x: 0, y: 0 },
-          },
-          {
-            id: id("reply"),
-            stage: "reply",
-            sourceVideoId: sourceGroup.person2?.id || null,
-            title: "Personne 2 - segment 2",
-            hookText: "La suite arrive maintenant",
-            subtitle: "Transcription en attente",
-            musicId: null,
-            brollId: null,
-            imageId: null,
-            ...defaultClipLayout("reply"),
-            imageTransform: { scale: 100, x: 0, y: 0 },
-          },
-        ]
-      : [],
+    // Montage-aware: a group with "extra" assets (bank "Ajouter des clips" / multi-rush)
+    // yields ALL its clips (intro + reply + extras), never just the first 2.
+    clips: sourceGroup ? buildClipsForGroup(db, sourceGroup, settings) : [],
     transcription: defaultTranscription(),
     exports: [],
     export: null,
@@ -2829,6 +3148,12 @@ app.get("/api/projects/:id", async (req, res) => {
   const db = await readDb();
   const project = resolveProject(db, req.params.id);
   if (!project) return res.status(404).json({ error: "Projet introuvable." });
+  // The editor reads transcription.clips — db.json keeps only a stub, so load the full
+  // per-project transcript file into the response (no rebuild; just a file read).
+  if (!(project.transcription?.clips?.length)) {
+    const full = await loadTranscript(project.id);
+    if (full?.clips?.length) project.transcription = full;
+  }
   res.json({ project });
 });
 
@@ -2841,6 +3166,18 @@ app.patch("/api/projects/:id", async (req, res) => {
   project.updated_at = new Date().toISOString();
   await writeDb(db);
   res.json({ project: resolveProject(db, project.id) });
+});
+
+// Delete a project RECORD only — never its source assets/files (a montage group's
+// clips may be shared, and assets are precious; see the asset-loss pitfalls).
+app.delete("/api/projects/:id", async (req, res) => {
+  const db = await readDb();
+  const before = db.projects.length;
+  db.projects = db.projects.filter((item) => item.id !== req.params.id);
+  if (db.projects.length === before) return res.status(404).json({ error: "Projet introuvable." });
+  await writeDb(db);
+  await fs.unlink(transcriptFile(req.params.id)).catch(() => {}); // clean its transcript file
+  res.json({ ok: true, projects: db.projects.map((p) => resolveProject(db, p.id)).filter(Boolean) });
 });
 
 // Auto-centre the split-screen bands on each speaker's face. Detects the dominant
@@ -2927,7 +3264,7 @@ app.post("/api/projects/:id/transcribe", async (req, res) => {
   await writeDb(db);
 
   try {
-    await ensureTranscription(project, sourceGroup);
+    await ensureTranscription(project, sourceGroup, db.assets);
     const fresh = await mutateProjectFresh(project.id, (p) => {
       p.settings = project.settings;
       p.transcription = project.transcription;
@@ -2964,7 +3301,7 @@ app.post("/api/projects/:id/render", async (req, res) => {
   await writeDb(db);
 
   try {
-    await ensureTranscription(project, sourceGroup);
+    await ensureTranscription(project, sourceGroup, db.assets);
     await mutateProjectFresh(project.id, (p) => {
       p.transcription = project.transcription;
       p.clips = project.clips;
@@ -3168,7 +3505,7 @@ app.post("/api/projects/:id/auto-brolls", async (req, res) => {
 
   // Make sure we have a fresh transcription so the AI can read the words.
   try {
-    await ensureTranscription(project, sourceGroup);
+    await ensureTranscription(project, sourceGroup, db.assets);
   } catch (err) {
     return res.status(500).json({ error: `Transcription impossible: ${err.message}` });
   }
@@ -3224,6 +3561,13 @@ const loadAutoJobs = async () => {
 // Atomic + serialized (two parallel render workers save concurrently).
 let autoJobsWriteChain = Promise.resolve();
 const saveAutoJobs = () => {
+  // Keep only the last 30 jobs in MEMORY too (not just on disk) so a long-running
+  // session can't grow auto-jobs unbounded. Running jobs are always among the newest.
+  if (autoJobs.size > 40) {
+    const keep = [...autoJobs.values()].slice(-30);
+    autoJobs.clear();
+    for (const j of keep) autoJobs.set(j.id, j);
+  }
   const jobs = [...autoJobs.values()].slice(-30).map(({ _running, ...j }) => j); // keep last 30, drop transient flag
   const payload = JSON.stringify({ jobs }, null, 2);
   autoJobsWriteChain = autoJobsWriteChain.then(async () => {
@@ -3322,24 +3666,67 @@ const genVariantHooks = async (introText, replyText, n) => {
 // Auto mode picks VIDEO PAIRS from the bank (not pre-made projects). For a pair we
 // reuse an existing project if one exists (keeps its cached transcription), else we
 // assemble one exactly like manual mode (intro = personne 1, reply = personne 2).
+// Extra ("extra"-part) assets of a montage group, ordered by conversation index.
+// A plain 2-person group has none; a montage group (bank "Ajouter des clips" or
+// multi-rush upload) has clip 3+ here.
+const extraAssetsForGroup = (db, groupId) =>
+  db.assets
+    .filter((a) => a.category === "video" && a.groupId === groupId && a.videoPart === "extra")
+    .sort((a, b) => safeNumber(a.clipIndex, 0) - safeNumber(b.clipIndex, 0));
+
+// Build the ORDERED clip list for a (possibly montage) source group:
+//   intro [+ reply] [+ extra…]
+// SINGLE source of truth shared by every project-creating path (auto, manual
+// POST /api/projects, multi-rush) so a montage group ALWAYS yields all N clips —
+// never a deficient 2-clip project that would render only 2 of 3 segments.
+const buildClipsForGroup = (db, sourceGroup, settings) => {
+  const introClip = {
+    id: id("intro"), stage: "intro", sourceVideoId: sourceGroup.person1?.id || null,
+    sourceTitle: sourceGroup.person1?.title, person: personTagFromTitle(sourceGroup.person1?.title),
+    title: "Personne 1 - segment 1", hookText: settings.hookText, subtitle: "Transcription en attente",
+    musicId: null, brollId: null, imageId: null, ...defaultClipLayout("intro"), imageTransform: { scale: 100, x: 0, y: 0 },
+  };
+  const clips = [introClip];
+  if (sourceGroup.person2?.filePath) {
+    clips.push({
+      id: id("reply"), stage: "reply", sourceVideoId: sourceGroup.person2?.id || null,
+      sourceTitle: sourceGroup.person2?.title, person: personTagFromTitle(sourceGroup.person2?.title),
+      title: "Personne 2 - segment 2", hookText: "La suite arrive maintenant", subtitle: "Transcription en attente",
+      musicId: null, brollId: null, imageId: null, ...defaultClipLayout("reply"), imageTransform: { scale: 100, x: 0, y: 0 },
+    });
+  }
+  for (const a of extraAssetsForGroup(db, sourceGroup.id)) {
+    clips.push({
+      id: id("extra"), stage: "extra", sourceVideoId: a.id, sourceTitle: a.title, person: personTagFromTitle(a.title),
+      title: a.title, hookText: "", subtitle: "Transcription en attente",
+      musicId: null, brollId: null, imageId: null, ...defaultClipLayout("extra"), imageTransform: { scale: 100, x: 0, y: 0 },
+    });
+  }
+  return clips;
+};
+
 const ensureAutoProject = async (db, groupId) => {
   const sourceGroup = getVideoGroups(db.assets).find((g) => g.id === groupId);
   if (!sourceGroup?.person1?.filePath) return null; // person2 OPTIONAL (rush simple = solo)
-  const existing = db.projects.find((p) => p.sourceGroupId === groupId);
+  // The COMPLETE clip count this group should render: intro + (reply) + extras.
+  const expectedCount = 1 + (sourceGroup.person2?.filePath ? 1 : 0) + extraAssetsForGroup(db, groupId).length;
+  // Pick the project that already covers every segment. A stale 2-clip project
+  // (e.g. one created by POST /api/projects before it was montage-aware) must NOT
+  // shadow the full montage — so require clips.length >= expectedCount, not just
+  // the first match. If none qualifies, create a fresh COMPLETE one below.
+  const existing = db.projects
+    .filter((p) => p.sourceGroupId === groupId)
+    .find((p) => (p.clips || []).length >= expectedCount);
   if (existing) return existing;
   const now = new Date().toISOString();
   const settings = defaultProjectSettings();
-  // A "rush simple" group has no person2 -> a single-clip (intro only) project.
-  const solo = !sourceGroup.person2?.filePath;
-  const introClip = { id: id("intro"), stage: "intro", sourceVideoId: sourceGroup.person1?.id || null, title: "Personne 1 - segment 1", hookText: settings.hookText, subtitle: "Transcription en attente", musicId: null, brollId: null, imageId: null, ...defaultClipLayout("intro"), imageTransform: { scale: 100, x: 0, y: 0 } };
-  const replyClip = { id: id("reply"), stage: "reply", sourceVideoId: sourceGroup.person2?.id || null, title: "Personne 2 - segment 2", hookText: "La suite arrive maintenant", subtitle: "Transcription en attente", musicId: null, brollId: null, imageId: null, ...defaultClipLayout("reply"), imageTransform: { scale: 100, x: 0, y: 0 } };
   const project = normalizeProject({
     id: id("project"),
     title: `Auto ${sourceGroup.title}`,
     description: sourceGroup.note || "Projet auto Klimax",
     status: "draft", render_progress: 0, created_at: now, updated_at: now,
     sourceGroupId: sourceGroup.id, settings,
-    clips: solo ? [introClip] : [introClip, replyClip],
+    clips: buildClipsForGroup(db, sourceGroup, settings),
   });
   db.projects.unshift(project);
   await writeDb(db);
@@ -3349,7 +3736,10 @@ const ensureAutoProject = async (db, groupId) => {
 // Render every not-yet-ready item of a job. Variants are re-derived from the stored
 // params so a resumed job reproduces them exactly. Renders run with a small worker
 // pool (AUTO_RENDER_CONCURRENCY at a time) — ffmpeg is heavy but parallelises well.
-const AUTO_RENDER_CONCURRENCY = clamp(Math.round(safeNumber(process.env.KLIMAX_AUTO_CONCURRENCY, 2)), 1, 4);
+// 3 on an 8-core mac: each ffmpeg render uses ~2.7 cores (filtergraph + x264 superfast),
+// so 3 keeps the cores busy WITHOUT oversubscribing. 4 thrashed (encodes ballooned from
+// ~22s to ~160s under contention in profiling). Tunable via KLIMAX_AUTO_CONCURRENCY.
+const AUTO_RENDER_CONCURRENCY = clamp(Math.round(safeNumber(process.env.KLIMAX_AUTO_CONCURRENCY, 3)), 1, 6);
 // GLOBAL ffmpeg slot pool — shared across jobs, so two concurrent batches (or a
 // resume of several) can never stack 2 pools × 2 ffmpeg and overload the machine.
 let renderSlotsInUse = 0;
@@ -3367,7 +3757,13 @@ const releaseRenderSlot = () => {
 // Bumped whenever buildVariant's rng draw ORDER changes (e.g. safe-zone layout v2):
 // a job planned under another version would re-derive DIFFERENT variants on resume,
 // silently mismatching its stored combo/decisions — refuse to resume it instead.
-const AUTO_ENGINE_VERSION = 3;
+// v4: per-person framing cache (clip 1 == clip 3 for the same speaker) + solo X stored
+// natural (renderer negates under mirror). Output of 3+-clip and mirrored variants changed.
+// v5: 2nd-speaker token fix — the hook's incrusted speaker is now correctly the OTHER
+// person (Julien hook -> Vasko, Vasko hook -> Julien); changes dualSpeakerSource.
+// v6: hook bubble pinned to the split SEAM (between the two speakers) instead of
+// drifting up to ±150px to dodge faces; changes intro.hookPosition.y on split variants.
+const AUTO_ENGINE_VERSION = 6;
 
 const processAutoJob = async (job) => {
   if (job._running) return;
@@ -3397,6 +3793,10 @@ const processAutoJob = async (job) => {
       if (!project) continue;
       const sourceGroup = getVideoGroups(db.assets).find((g) => g.id === project.sourceGroupId);
       if (!sourceGroup?.person1?.filePath) continue; // person2 optional (rush simple = solo)
+      // Load the full transcription ONCE (db.json keeps only a stub) so every variant
+      // reuses it instead of rebuilding per render. Rebuilds from per-asset transcripts
+      // if the file is missing.
+      await hydrateTranscript(db, project, sourceGroup);
       const liveBanks = {
         speakers: db.assets.filter((a) => a.category === "speaker"),
         brolls: db.assets.filter((a) => a.category === "broll" && !a.broken),
@@ -3551,7 +3951,7 @@ const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, 
     const project = db.projects.find((p) => p.id === pid);
     const sg = project && getVideoGroups(db.assets).find((g) => g.id === project.sourceGroupId);
     if (project && sg && project.transcription?.status !== "completed") {
-      try { await ensureTranscription(project, sg); } catch (e) { console.warn("[auto] transcription failed:", e.message); }
+      try { await ensureTranscription(project, sg, db.assets); } catch (e) { console.warn("[auto] transcription failed:", e.message); }
     }
   }
   await writeDb(db);
@@ -3850,6 +4250,11 @@ const normalizeStudioProject = (body, existing) => {
     hookBank: Array.isArray(body.hookBank)
       ? body.hookBank.map((h) => String(h || "").trim()).filter(Boolean).slice(0, 40)
       : existing?.hookBank || [],
+    // Multi-rush montage: an assembled N-clip KlimaxProject (P1/P2/P1/P2…). When set,
+    // "Lancer" generates from it (with this studio project's DA/overrides) instead of a
+    // 2-clip video group. renderClipStages = the per-clip stages, for the editor display.
+    renderProjectId: typeof body.renderProjectId === "string" ? body.renderProjectId : (existing?.renderProjectId || null),
+    renderClipStages: Array.isArray(body.renderClipStages) ? body.renderClipStages : (existing?.renderClipStages || []),
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   };
@@ -3889,6 +4294,110 @@ app.post("/api/studio/projects/:id/run", async (req, res) => {
   }
 });
 
+// MULTI-RUSH: assemble a real N-clip project from an ORDERED list of video-asset ids
+// (the rushes, in conversation order). clip 1 = intro (hook), clip 2 = reply (distinct
+// DA), clips 3+ = "extra" (shared DA, per-person consistent zoom). Each clip carries
+// sourceVideoId + sourceTitle + person so the engine frames per speaker. The project
+// then generates via the normal auto pipeline (pass its id as projectIds).
+const personTagFromTitle = (title) => {
+  const t = String(title || "").toLowerCase();
+  if (t.includes("vasko")) return "vasko";
+  if (t.includes("shelly")) return "shelly";
+  if (t.includes("julien")) return "julien";
+  return "host";
+};
+// Build (and transcribe) an N-clip project from ordered video assets. Mutates db
+// (creates a pair group from the first two rushes when none is given). Returns project.
+const assembleMultirushProject = async (db, name, seqAssets, sourceGroupId = null) => {
+  let groupId = sourceGroupId;
+  let sg = groupId ? getVideoGroups(db.assets).find((g) => g.id === groupId) : null;
+  if (!sg?.person1?.filePath || !sg?.person2?.filePath) {
+    // Put ALL rushes in ONE montage group: clip1=person1, clip2=person2, the rest are
+    // "extra" (hidden from the bank by getVideoGroups). Render resolves extras by id.
+    groupId = id("video-group");
+    seqAssets.forEach((a, i) => {
+      a.groupId = groupId;
+      a.groupTitle = name;
+      a.videoPart = i === 0 ? "person1" : i === 1 ? "person2" : "extra";
+      a.clipIndex = i; // conversation order, so a montage group rebuilds the N clips in order
+    });
+    sg = getVideoGroups(db.assets).find((g) => g.id === groupId);
+  }
+  const settings = defaultProjectSettings();
+  const clips = seqAssets.map((a, i) => {
+    const stage = i === 0 ? "intro" : i === 1 ? "reply" : "extra";
+    return {
+      id: id(stage), stage, sourceVideoId: a.id, sourceTitle: a.title, person: personTagFromTitle(a.title),
+      title: a.title, hookText: i === 0 ? settings.hookText : "", subtitle: "Transcription en attente",
+      musicId: null, brollId: null, imageId: null, ...defaultClipLayout(stage), imageTransform: { scale: 100, x: 0, y: 0 },
+    };
+  });
+  const now = new Date().toISOString();
+  const project = normalizeProject({
+    id: id("project"), title: name, description: "Multi-rush podcast (P1/P2 alternés)",
+    status: "draft", render_progress: 0, created_at: now, updated_at: now, sourceGroupId: groupId, settings, clips,
+  });
+  db.projects.unshift(project);
+  await writeDb(db);
+  try { await ensureTranscription(project, sg, db.assets); await writeDb(db); }
+  catch (e) { console.warn("[multirush] transcription:", e.message); }
+  return { project, groupId, clips };
+};
+
+// Assemble from EXISTING ordered video-asset ids.
+app.post("/api/projects/multirush", async (req, res) => {
+  try {
+    const db = await readDb();
+    const name = String(req.body?.name || "Multi-rush").slice(0, 80);
+    const sequence = Array.isArray(req.body?.sequence) ? req.body.sequence.filter((x) => typeof x === "string") : [];
+    if (sequence.length < 2) return res.status(400).json({ error: "Au moins 2 rushs (P1 + P2)." });
+    const byId = new Map(db.assets.filter((a) => a.category === "video").map((a) => [a.id, a]));
+    const seqAssets = sequence.map((sid) => byId.get(sid)).filter((a) => a?.filePath);
+    if (seqAssets.length < 2) return res.status(400).json({ error: "Rushs vidéo introuvables." });
+    const { project, groupId, clips } = await assembleMultirushProject(db, name, seqAssets, req.body?.sourceGroupId || null);
+    res.json({ projectId: project.id, sourceGroupId: groupId, clipCount: clips.length, stages: clips.map((c) => c.stage) });
+  } catch (e) {
+    console.error("[multirush]", e.message);
+    res.status(500).json({ error: String(e.message || e).slice(0, 200) });
+  }
+});
+
+// Upload N rush files (in order) AND assemble the project in one call.
+app.post("/api/projects/multirush-upload", upload.array("rushes", 30), async (req, res) => {
+  try {
+    const files = Array.isArray(req.files) ? req.files : [];
+    if (files.length < 2) return res.status(400).json({ error: "Envoie au moins 2 rushs (P1 + P2)." });
+    const db = await readDb();
+    const name = String(req.body?.name || "Multi-rush").slice(0, 80);
+    // Each uploaded file -> a standalone video asset (the first two are paired by the
+    // assembler). Keep the upload ORDER (= conversation order).
+    const seqAssets = files.map((f) =>
+      assetFromFile({ file: f, category: "video", groupId: id("video-group"), groupTitle: f.originalname, videoPart: "person1", note: "rush" })
+    );
+    db.assets.unshift(...seqAssets);
+    await writeDb(db);
+    // Transcribe every rush NOW and store on the asset, BEFORE assembling — so the
+    // project's ensureTranscription reuses them instead of re-running Whisper.
+    for (const a of seqAssets) await ensureAssetTranscript(a);
+    await writeDb(db);
+    const { project, groupId, clips } = await assembleMultirushProject(db, name, seqAssets, null);
+    // If tied to a studio project, attach this montage so "Lancer" renders it with the DA.
+    const studioProjectId = req.body?.studioProjectId || null;
+    if (studioProjectId) {
+      const projects = await readStudioProjects();
+      const idx = projects.findIndex((p) => p.id === studioProjectId);
+      if (idx >= 0) {
+        projects[idx] = { ...projects[idx], renderProjectId: project.id, renderClipStages: clips.map((c) => c.stage), updatedAt: new Date().toISOString() };
+        await writeStudioProjects(projects);
+      }
+    }
+    res.json({ projectId: project.id, sourceGroupId: groupId, clipCount: clips.length, stages: clips.map((c) => c.stage), studioProjectId });
+  } catch (e) {
+    console.error("[multirush-upload]", e.message);
+    res.status(500).json({ error: String(e.message || e).slice(0, 200) });
+  }
+});
+
 // Resolve a batch request body into full planning inputs, merging a studio project
 // (if studioProjectId is given) under any explicit body fields, and folding the
 // studio's overrides into the learned-rule planner overrides.
@@ -3901,6 +4410,11 @@ const resolveBatchInputs = async (body) => {
     const studio = (await readStudioProjects()).find((p) => p.id === body.studioProjectId);
     if (studio) {
       if (body.videoGroupIds == null) base.videoGroupIds = studio.videoGroupIds || [];
+      // A studio project with a multi-rush montage renders THAT N-clip project (with the
+      // studio's DA/overrides) — unless explicit projectIds/videoGroupIds were passed.
+      if (studio.renderProjectId && body.projectIds == null && (body.videoGroupIds == null && !(studio.videoGroupIds || []).length)) {
+        base.projectIds = [studio.renderProjectId];
+      }
       if (body.variantsPerVideo == null) base.variantsPerVideo = clamp(Math.round(safeNumber(studio.variantsPerVideo, 6)), 1, 20);
       if (body.varied == null) base.varied = studio.varied || base.varied;
       if (body.lockSplitScreen == null) base.lockSplitScreen = studio.lockSplitScreen === true;
@@ -3923,6 +4437,7 @@ app.post("/api/auto/ai-request", async (req, res) => {
   if (!prompt) return res.status(400).json({ error: "Décris ce que tu veux." });
   const studioProjectId = req.body?.studioProjectId || null;
   const videoGroupIds = Array.isArray(req.body?.videoGroupIds) ? req.body.videoGroupIds : null;
+  const projectIds = Array.isArray(req.body?.projectIds) ? req.body.projectIds : null;
   // An explicit "nombre de vidéos" from the UI wins over whatever Claude infers.
   const forcedCount = req.body?.variantsPerVideo != null ? clamp(Math.round(safeNumber(req.body.variantsPerVideo, 6)), 1, 20) : null;
   const presetKeys = ["impact", "clean", "highlight", "capcut", "punch", "neon", "hormozi", "bebasGold", "iceBlue", "redAlert", "cleanMinimal", "tiktokWhite", "tiktokBlack", "tiktokRed", "capcutYellow", "capcutKaraoke", "karaokeGreen", "tiktokOutline", "bebasCaps"];
@@ -3953,6 +4468,7 @@ app.post("/api/auto/ai-request", async (req, res) => {
   try {
     const genBody = { studioProjectId, variantsPerVideo: cfg.variantsPerVideo, varied: cfg.varied, overrides: cfg.overrides };
     if (videoGroupIds) genBody.videoGroupIds = videoGroupIds;
+    if (projectIds) genBody.projectIds = projectIds;
     const resp = await fetch(`http://127.0.0.1:${port}/api/auto/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -4051,25 +4567,47 @@ await Promise.all([
   ensureDir(systemRoot),
   ensureDir(tempRoot),
 ]);
-await ensureSystemAssets();
-await seedTailleVideos();
-await compactDb();
 
-app.listen(port, "127.0.0.1", () => {
-  console.log(`Klimax local backend: http://127.0.0.1:${port}`);
-});
-
-// Resume any Automatic-Mode batch that was interrupted by a previous shutdown.
-resumeAutoJobs().catch((e) => console.error("[auto] resume failed:", e.message));
-
-// Start the local Supabase-compatible shim (auth + rest + storage on port 54321)
-// so the front-end can use real Postgres-backed auth/db/storage without any
-// external service. Disable with KLIMAX_SUPABASE_ENABLED=0.
-if (process.env.KLIMAX_SUPABASE_ENABLED !== "0") {
-  try {
-    const { start: startShim } = await import("../local-supabase/server.mjs");
-    await startShim();
-  } catch (e) {
-    console.error("[local-supabase] failed to start:", e.message);
+// SINGLE-WRITER GUARD. The backend can be (re)spawned by an external supervisor
+// (e.g. Conductor) while another instance is already live — and the data dir
+// (db.json, auto-jobs.json) is HARDCODED and shared. Two instances that both
+// read→mutate→write db.json race, and a stale snapshot from a duplicate's
+// startup `compactDb()` silently CLOBBERS the live instance's uploads (the
+// recurring "assets vanished" bug). Fix: bind the port FIRST, and run every
+// db-mutating startup step (seed/compact/resume) ONLY after we own the port.
+// A duplicate that can't bind exits immediately, before touching db.json.
+const httpServer = app.listen(port, "127.0.0.1");
+httpServer.on("error", (e) => {
+  if (e && e.code === "EADDRINUSE") {
+    console.error(`[klimax] port ${port} already in use — another backend instance owns it. Exiting WITHOUT touching db.json (avoids data races).`);
+    process.exit(0);
   }
-}
+  console.error("[klimax] listen failed:", e?.message || e);
+  process.exit(1);
+});
+httpServer.on("listening", async () => {
+  console.log(`Klimax local backend: http://127.0.0.1:${port}`);
+  // We own the port → safe to seed/compact/resume. Wrapped so a maintenance
+  // hiccup never crashes the live server.
+  try {
+    await ensureSystemAssets();
+    await seedTailleVideos();
+    await migrateTranscriptsOnce(); // split inline transcripts to files + compact db.json
+    await pruneRenders(); // bound the renders/ folder so it can't fill the disk
+  } catch (e) {
+    console.error("[klimax] startup maintenance failed:", e?.message || e);
+  }
+  // Resume any Automatic-Mode batch interrupted by a previous shutdown.
+  resumeAutoJobs().catch((e) => console.error("[auto] resume failed:", e.message));
+  // Start the local Supabase-compatible shim (auth + rest + storage on 54321)
+  // so the front-end uses real Postgres-backed auth/db/storage without any
+  // external service. Disable with KLIMAX_SUPABASE_ENABLED=0.
+  if (process.env.KLIMAX_SUPABASE_ENABLED !== "0") {
+    try {
+      const { start: startShim } = await import("../local-supabase/server.mjs");
+      await startShim();
+    } catch (e) {
+      console.error("[local-supabase] failed to start:", e.message);
+    }
+  }
+});

@@ -110,11 +110,15 @@ const BROLL_STYLES = ["square", "fullscreen", "alternate"];
 const PERSON_FRAMES = {
   julien: { xMin: -540, xMax: -417, y: 0, zoomMax: 105 },
   shelly: { xMin: 200, xMax: 300, y: 0, zoomMax: 120 },
+  // vasko = 2nd speaker (right) for the "Klimax 2" podcast — same calibration as shelly
+  // (the previous right speaker). Detected by the "vasko" prefix in the clip/source name.
+  vasko: { xMin: 200, xMax: 300, y: 0, zoomMax: 120 },
 };
 const detectPerson = (name) => {
   const n = String(name || "").toLowerCase();
   if (n.includes("julien")) return "julien";
   if (n.includes("shelly")) return "shelly";
+  if (n.includes("vasko")) return "vasko";
   return null;
 };
 // Sample a person's base frame from two unit-random draws (rx, rz) so the caller
@@ -297,16 +301,12 @@ export function computeHookPosition({ dualSpeakerEnabled, splitRatio, hookHeight
     const h = Math.min(hookHeight, maxHeight); // layout height (legacy semantics)
     const hg = Math.max(h, hookHeightEst);     // REAL bubble height, for collisions
     const line = splitRatio * 1920;
-    // Candidate centres on/around the split line, scored by face overlap; pick with
-    // bounded jitter among the (near-)optimal ones. hookPosition.y is the CENTRE.
-    const cands = [];
-    for (let d = -margin; d <= margin; d += 30) cands.push(clamp(line + d, hg / 2, 1920 - hg / 2));
-    const overlap = (y) =>
-      faces.reduce((acc, f) => acc + Math.max(0, Math.min(y + hg / 2, f.y1) - Math.max(y - hg / 2, f.y0)), 0);
-    let best = Infinity;
-    for (const y of cands) best = Math.min(best, overlap(y));
-    const good = cands.filter((y) => overlap(y) <= best + 20);
-    const y = good.length ? good[Math.floor(r * good.length) % good.length] : clamp(line, hg / 2, 1920 - hg / 2);
+    // The hook sits ON the split SEAM — literally BETWEEN the two speakers — hiding the
+    // band boundary. Pinned to the seam with only a tiny ±30 px jitter so it never
+    // drifts off into one speaker's band. (Faces are intentionally NOT dodged here: the
+    // seam region is between the two faces, which is exactly where we want it.)
+    // Exactly ONE rng draw (r), as in the solo branch — planning ↔ rendering lock-step.
+    const y = clamp(line + (r - 0.5) * 60, hg / 2, 1920 - hg / 2);
     return { x, y: Math.round(y), height: h, geomHeight: hg };
   }
   // Solo: place the bubble in a face-free zone, preferring the classic band BELOW
@@ -438,10 +438,11 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
   const reply = clips.find((c) => c.stage === "reply") || clips[1] || null;
   const comboParts = [];
 
-  // ---- MIRROR — decided FIRST because every framing computation below must know it:
-  // hflip runs BEFORE scale/crop in the render, so a mirrored variant must frame
-  // against the FLIPPED image (face cx -> 1-cx; static offsets flip sign). Exactly one
-  // variant out of two is flipped (cheap anti-shadowban lever, layout stays coherent).
+  // ---- MIRROR — decided FIRST because the split/dual-speaker framing below is
+  // mirror-aware (face cx -> 1-cx; static band offsets flip sign — see faceToBandCrop).
+  // The SOLO framing, by contrast, stores X in the natural orientation and lets the
+  // renderer negate it under mirror (single source of truth). Exactly one variant out
+  // of two is flipped (cheap anti-shadowban lever, layout stays coherent).
   settings.mirrorEnabled = variantIndex % 2 === 1;
   const mirrored = settings.mirrorEnabled === true;
 
@@ -457,7 +458,13 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
     // "other version". Never the same person twice. We match the speaker's name token
     // against the source name; "other version" has no token so it always qualifies.
     const p1name = String(base.sourceNames?.person1 || "").toLowerCase();
-    const tokenOf = (t) => String(t || "").toLowerCase().replace(/other|version|clip|speaker|incrustation/g, "").replace(/[^a-z]/g, "");
+    // Name token of a speaker bank clip. MUST drop the file extension first — otherwise
+    // "Vasko.mp4" -> "vaskomp" (the "mp" of mp4), which never matches the source name, so
+    // the SAME-person speaker fails to be excluded and a Vasko hook wrongly gets Vasko.
+    const tokenOf = (t) => String(t || "").toLowerCase()
+      .replace(/\.[a-z0-9]+$/i, "")
+      .replace(/other|version|clip|speaker|incrustation/g, "")
+      .replace(/[^a-z]/g, "");
     const reactionId = (() => {
       if (!speakers.length) return null;
       const cands = speakers.filter((s) => { const tok = tokenOf(s.title); return !tok || !p1name.includes(tok); });
@@ -591,12 +598,40 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
   // per-person X only when detection failed (sign-flipped under mirror); unknown
   // person → the old generic 100–120 % centre crop. Two rng draws per solo clip,
   // ALWAYS consumed so planning ↔ rendering stay in lock-step.
+  // EXTRA clips frame per PERSON with a CONSISTENT zoom: the first extra of each person
+  // computes the framing, every later extra of the SAME person REUSES it (clip 4 == clip 5
+  // zoom for the same speaker — no jarring re-randomisation). rx/rz are still drawn for
+  // every clip so the rng stays in lock-step.
+  // Frame each clip per PERSON with a CONSISTENT crop+zoom: the FIRST clip of a given
+  // speaker computes the framing, every later clip of the SAME speaker REUSES it — so
+  // e.g. Vasko's clip 1 (hook) and clip 3 (extra) are centred and zoomed IDENTICALLY,
+  // and clip 4 == clip 5 for the same person. A plain 2-person pair has two DIFFERENT
+  // people so it shares nothing → identical to the old per-clip behaviour. rx/rz are
+  // still drawn for EVERY clip so planning ↔ rendering stay in rng lock-step.
+  // MIRROR: the solo X is stored in the NATURAL (un-mirrored) orientation; the renderer
+  // negates it when mirrorEnabled (single source of truth) so the speaker stays centred
+  // whether the clip came from auto OR manual mode. (The split/dual-speaker path keeps
+  // its own mirror-aware cropX — see faceToBandCrop above.)
+  const frameCache = {};
   for (const clip of clips) {
     const rx = rng();
     const rz = rng();
     if (clip?.dualSpeakerEnabled) continue; // split bands have their own zooms
-    const personName = clip?.stage === "reply" ? base.sourceNames?.person2 : base.sourceNames?.person1;
+    const isExtra = clip.stage !== "intro" && clip.stage !== "reply";
+    // intro/reply: person from the pair. extra: from the clip's own source name.
+    const personName = isExtra
+      ? (clip.sourceTitle || clip.title)
+      : (clip?.stage === "reply" ? base.sourceNames?.person2 : base.sourceNames?.person1);
     const person = detectPerson(personName);
+    // Cache key groups a speaker's clips across ALL stages. Known persons key by name;
+    // otherwise the clip's own person tag, else the STAGE (intro/reply kept distinct so
+    // a 2-person pair never shares framing between its two people).
+    const frameKey = person || clip.person
+      || (clip.stage === "reply" ? "__reply__" : clip.stage === "intro" ? "__intro__" : "__other__");
+    if (frameCache[frameKey]) {
+      clip.videoTransform = { ...frameCache[frameKey] }; // reuse → consistent centre+zoom
+      continue;
+    }
     const fb = faceBoxes[clip.sourceVideoId];
     const zoomMax = person ? PERSON_FRAMES[person].zoomMax : 120;
     if (fb?.srcW && fb?.srcH) {
@@ -604,15 +639,15 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
       const s = scale / 100;
       const As = fb.srcW / fb.srcH;
       const Sx = (As >= 1080 / 1920 ? 1920 * As : 1080) * s; // cover-fit scaled width
-      const cx = mirrored ? 1 - fb.cx : fb.cx;
-      const x = Math.round((cx - 0.5) * Sx + (rx - 0.5) * 40); // centre + ±20 px jitter
+      const x = Math.round((fb.cx - 0.5) * Sx + (rx - 0.5) * 40); // centre on face + ±20 px jitter
       clip.videoTransform = { x, y: 0, scale };
     } else if (person) {
       const pf = personFrame(person, rx, rz);
-      clip.videoTransform = { x: mirrored ? -pf.x : pf.x, y: pf.y, scale: pf.zoom };
+      clip.videoTransform = { x: pf.x, y: pf.y, scale: pf.zoom };
     } else {
       clip.videoTransform = { ...(clip.videoTransform || { x: 0, y: 0 }), scale: q(100 + rz * 20, 2) };
     }
+    frameCache[frameKey] = clip.videoTransform; // cache the FIRST clip of this person
   }
 
   // ---- HOOK (text only) ----
@@ -687,6 +722,14 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
       const f = faceIntervalSolo(faceBoxes[reply.sourceVideoId], reply.videoTransform);
       if (f) replyFaces.push(f);
       reply.subtitlePosition = computeSubtitlePosition({ hookY: null, rng, faces: replyFaces, blockH });
+    }
+    // EXTRA clips (3+) — the alternating back-and-forth. They act "as one": ONE shared
+    // subtitle position (it never moves when the speaker changes), computed once and
+    // reused. No hook, no per-clip jitter. (1 rng draw, deterministic.)
+    const extraClips = clips.filter((c) => c !== intro && c !== reply && c.stage !== "intro" && c.stage !== "reply");
+    if (extraClips.length) {
+      const extraSubY = q(1180 + rng() * 120, 2); // ~1180–1300, identical for every extra
+      for (const c of extraClips) c.subtitlePosition = { x: 540, y: extraSubY };
     }
   }
 

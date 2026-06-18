@@ -1,7 +1,7 @@
 import * as React from "react";
 const { useEffect, useMemo, useRef, useState } = React;
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft, Library, Plus, Trash2, Music, Film, Image as ImageIcon, CirclePlay, Upload, AudioLines, Wand2, Sparkles, Loader2, Users, Pencil, Check } from "lucide-react";
+import { ArrowLeft, Library, Plus, Trash2, Music, Film, Image as ImageIcon, CirclePlay, Upload, AudioLines, Wand2, Sparkles, Loader2, Users, Pencil, Check, FileText, ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -18,11 +18,112 @@ import {
   type KlimaxBankAsset,
 } from "@/lib/klimaxStorage";
 
+// Small expandable transcript viewer/editor shown UNDER each rush in the bank.
+// The transcript is computed at upload (stored on the asset) and reused by every
+// render; editing it here updates what the captions say everywhere.
+function RushTranscript({ assetId, label }: { assetId: string; label?: string }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [status, setStatus] = useState<string>("");
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  const load = async () => {
+    setBusy(true);
+    try {
+      const { transcript } = await localKlimaxApi.getAssetTranscript(assetId);
+      setText(transcript?.text || "");
+      setStatus(transcript?.status || "idle");
+      setLoaded(true);
+      setDirty(false);
+    } catch {
+      setStatus("failed");
+      setLoaded(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && !loaded) load();
+  };
+  const save = async () => {
+    setBusy(true);
+    try {
+      const { transcript } = await localKlimaxApi.updateAssetTranscript(assetId, text);
+      setText(transcript?.text || text);
+      setStatus("completed");
+      setDirty(false);
+      toast({ title: "Transcript enregistré", description: "Les sous-titres utiliseront ce texte." });
+    } catch {
+      toast({ title: "Échec de l'enregistrement", variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const regen = async () => {
+    setBusy(true);
+    setStatus("transcription…");
+    try {
+      const { transcript } = await localKlimaxApi.transcribeAsset(assetId);
+      setText(transcript?.text || "");
+      setStatus(transcript?.status || "completed");
+      setDirty(false);
+    } catch {
+      setStatus("failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={toggle}
+        className="inline-flex items-center gap-1.5 rounded-full border border-white/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.15em] text-white/55 transition hover:bg-white/5 hover:text-white"
+      >
+        <FileText className="h-3 w-3" /> Transcript {label ? `· ${label}` : ""}
+        {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+      </button>
+      {open && (
+        <div className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] p-2">
+          {busy && !loaded ? (
+            <p className="flex items-center gap-2 text-[11px] text-white/45"><Loader2 className="h-3 w-3 animate-spin" /> Chargement…</p>
+          ) : (
+            <>
+              <Textarea
+                value={text}
+                onChange={(e) => { setText(e.target.value); setDirty(true); }}
+                rows={4}
+                placeholder={status === "failed" ? "Transcription indisponible — clique sur Régénérer." : "Transcript du clip (modifiable)…"}
+                className="min-h-[80px] text-xs"
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Button size="sm" onClick={save} disabled={busy || !dirty} className="h-7 rounded-full px-3 text-[11px] font-black">
+                  {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />} Enregistrer
+                </Button>
+                <Button size="sm" variant="outline" onClick={regen} disabled={busy} className="h-7 rounded-full px-3 text-[11px] font-black">
+                  <RefreshCw className="h-3 w-3" /> Régénérer
+                </Button>
+                {status && <span className="text-[10px] uppercase tracking-[0.15em] text-white/35">{status}</span>}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const categoryMeta: Record<KlimaxAssetCategory, { label: string; description: string; icon: React.ReactNode }> = {
   music: { label: "Musique", description: "Sons et ambiances", icon: <Music className="h-4 w-4" /> },
   broll: { label: "B-roll", description: "Plans d'illustration", icon: <Film className="h-4 w-4" /> },
   image: { label: "Images", description: "Visuels sous le texte", icon: <ImageIcon className="h-4 w-4" /> },
-  video: { label: "Vidéos", description: "2 parties liées", icon: <CirclePlay className="h-4 w-4" /> },
+  video: { label: "Vidéos", description: "Clips du podcast (P1/P2…)", icon: <CirclePlay className="h-4 w-4" /> },
   speaker: { label: "2e speaker", description: "Clips Shelly / Julien à incruster (haut / bas)", icon: <Users className="h-4 w-4" /> },
 };
 
@@ -38,6 +139,17 @@ const stripFileExtension = (fileName: string) => fileName.replace(/\.[^/.]+$/, "
 const formatFileSize = (size: number) => {
   if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))} Ko`;
   return `${(size / (1024 * 1024)).toFixed(1)} Mo`;
+};
+
+// The clip's speaker is read from the START of the file name. Known speakers map to a
+// camera side: julien = left (personne 1), vasko/shelly = right (personne 2). The first
+// rush = the hook (P1), the 2nd = the reply (P2), the rest alternate.
+const detectClipSpeaker = (name: string): { person: string; side: string } => {
+  const n = String(name || "").toLowerCase();
+  if (n.includes("julien")) return { person: "Julien", side: "gauche" };
+  if (n.includes("vasko")) return { person: "Vasko", side: "droite" };
+  if (n.includes("shelly")) return { person: "Shelly", side: "droite" };
+  return { person: "?", side: "auto" };
 };
 
 // Inline-renamable title. Click the pencil → edit → Enter / blur saves, Escape
@@ -128,6 +240,8 @@ const AssetBank = () => {
   const assetInputRef = useRef<HTMLInputElement | null>(null);
   const videoPersonOneInputRef = useRef<HTMLInputElement | null>(null);
   const videoPersonTwoInputRef = useRef<HTMLInputElement | null>(null);
+  const [videoClips, setVideoClips] = useState<File[]>([]);
+  const videoClipsInputRef = useRef<HTMLInputElement | null>(null);
 
   const groupedAssets = useMemo(
     () =>
@@ -176,21 +290,19 @@ const AssetBank = () => {
   const addAsset = async () => {
     if (isSaving) return;
     if (category === "video") {
-      if (!videoPersonOneFile || !videoPersonTwoFile) return;
+      if (videoClips.length < 2) return;
       setIsSaving(true);
       try {
-        const { assets: nextAssets } = await localKlimaxApi.uploadVideoPair(
-          videoPersonOneFile.file,
-          videoPersonTwoFile.file,
-          note.trim()
-        );
+        // N clips IN ORDER -> one montage group (person auto-detected by name prefix:
+        // gauche = personne 1, droite = personne 2; the rest alternate as extras).
+        const montageName = note.trim() || videoClips[0].name.replace(/\.[^/.]+$/, "").replace(/^\d+\s*[-.]\s*/, "");
+        const res = await localKlimaxApi.uploadMultirushProject(videoClips, montageName);
+        const { videoGroups: nextGroups, assets: nextAssets } = await localKlimaxApi.listAssets();
         persist(nextAssets);
         setNote("");
-        setVideoPersonOneFile(null);
-        setVideoPersonTwoFile(null);
-        if (videoPersonOneInputRef.current) videoPersonOneInputRef.current.value = "";
-        if (videoPersonTwoInputRef.current) videoPersonTwoInputRef.current.value = "";
-        toast({ title: "Vidéos ajoutées", description: "Le duo est prêt pour un nouveau projet." });
+        setVideoClips([]);
+        if (videoClipsInputRef.current) videoClipsInputRef.current.value = "";
+        toast({ title: `Montage ajouté (${res.clipCount} clips)`, description: `${res.stages.join(" · ")} — prêt pour un projet.` });
       } catch (error: any) {
         toast({ variant: "destructive", title: "Backend local", description: error.message });
       } finally {
@@ -398,67 +510,55 @@ const AssetBank = () => {
                       <Plus className="h-4 w-4" />
                     </div>
                     <div>
-                      <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">+ Vidéo personne 1</Label>
-                      <p className="text-xs text-white/35">Première partie du même projet vidéo</p>
+                      <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">+ Ajouter des clips (podcast)</Label>
+                      <p className="text-xs text-white/35">2 clips ou + dans l'ordre — chaque clip auto-rangé personne 1 (gauche) / 2 (droite) selon le prénom au début du nom.</p>
                     </div>
                   </div>
                   <input
-                    ref={videoPersonOneInputRef}
+                    ref={videoClipsInputRef}
                     type="file"
                     accept="video/*"
+                    multiple
                     className="hidden"
-                    onChange={(event) => selectVideoFile(event.target.files?.[0] || null, "one")}
+                    onChange={(event) => setVideoClips(Array.from(event.target.files || []))}
                   />
                   <Button
                     type="button"
-                    onClick={() => videoPersonOneInputRef.current?.click()}
+                    onClick={() => videoClipsInputRef.current?.click()}
                     variant="outline"
                     className="h-auto w-full justify-start rounded-2xl border-white/10 bg-white/[0.03] px-4 py-3 text-left text-white hover:bg-white/10"
                   >
                     <Upload className="mr-3 h-4 w-4 shrink-0" />
                     <span className="min-w-0">
                       <span className="block text-sm font-black">
-                        {videoPersonOneFile ? videoPersonOneFile.name : "Choisir le fichier personne 1"}
+                        {videoClips.length ? `${videoClips.length} clip(s) sélectionné(s)` : "Choisir les clips (dans l'ordre)"}
                       </span>
                       <span className="mt-1 block text-xs text-white/45">
-                        {videoPersonOneFile ? `${formatFileSize(videoPersonOneFile.size)} · ${videoPersonOneFile.type || "vidéo"}` : "Le nom du fichier sera utilisé automatiquement"}
+                        {videoClips.length ? "Re-cliquer remplace la sélection" : "Ex: « 1 - Vasko - … », « 2 - Julien - … », « 3 - Vasko - … »"}
                       </span>
                     </span>
                   </Button>
-                </div>
-                <div className="rounded-3xl border border-dashed border-white/15 bg-black p-4">
-                  <div className="mb-3 flex items-center gap-3">
-                    <div className="grid h-10 w-10 place-items-center rounded-full bg-white text-black">
-                      <Plus className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <Label className="text-xs font-black uppercase tracking-[0.2em] text-white/45">+ Vidéo personne 2</Label>
-                      <p className="text-xs text-white/35">Deuxième partie liée à la personne 1</p>
-                    </div>
-                  </div>
-                  <input
-                    ref={videoPersonTwoInputRef}
-                    type="file"
-                    accept="video/*"
-                    className="hidden"
-                    onChange={(event) => selectVideoFile(event.target.files?.[0] || null, "two")}
-                  />
-                  <Button
-                    type="button"
-                    onClick={() => videoPersonTwoInputRef.current?.click()}
-                    variant="outline"
-                    className="h-auto w-full justify-start rounded-2xl border-white/10 bg-white/[0.03] px-4 py-3 text-left text-white hover:bg-white/10"
-                  >
-                    <Upload className="mr-3 h-4 w-4 shrink-0" />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-black">
-                        {videoPersonTwoFile ? videoPersonTwoFile.name : "Choisir le fichier personne 2"}
-                      </span>
-                      <span className="mt-1 block text-xs text-white/45">
-                        {videoPersonTwoFile ? `${formatFileSize(videoPersonTwoFile.size)} · ${videoPersonTwoFile.type || "vidéo"}` : "Le nom du fichier sera utilisé automatiquement"}
-                      </span>
-                    </span>
-                  </Button>
+                  {videoClips.length > 0 && (
+                    <ol className="mt-3 space-y-1.5">
+                      {videoClips.map((f, i) => {
+                        const d = detectClipSpeaker(f.name);
+                        const role = i === 0 ? "intro (hook)" : i === 1 ? "réponse" : "clip " + (i + 1);
+                        return (
+                          <li key={i} className="flex items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs">
+                            <span className="min-w-0 truncate text-white/70">
+                              <b className="text-white">{i + 1}.</b> {f.name}
+                            </span>
+                            <span className="flex shrink-0 items-center gap-2">
+                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${d.side === "gauche" ? "bg-sky-400/15 text-sky-300" : d.side === "droite" ? "bg-amber-400/15 text-amber-300" : "bg-white/10 text-white/40"}`}>
+                                {d.person} · {d.side}
+                              </span>
+                              <span className="text-[10px] text-white/35">{role}</span>
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  )}
                 </div>
               </div>
             )}
@@ -486,11 +586,11 @@ const AssetBank = () => {
 
             <Button
               onClick={addAsset}
-              disabled={isSaving || (category === "video" ? !videoPersonOneFile || !videoPersonTwoFile : !assetFile)}
+              disabled={isSaving || (category === "video" ? videoClips.length < 2 : !assetFile)}
               className="w-full rounded-2xl bg-white text-black hover:bg-white/90 font-black disabled:opacity-35"
             >
               <Plus className="mr-2 h-4 w-4" />
-              {isSaving ? "Ajout en cours..." : category === "video" ? "Ajouter définitivement la vidéo complète" : "Ajouter définitivement"}
+              {isSaving ? "Montage en cours..." : category === "video" ? "Ajouter le podcast (clips dans l'ordre)" : "Ajouter définitivement"}
             </Button>
           </div>
         </section>
@@ -544,6 +644,7 @@ const AssetBank = () => {
                                     className="font-bold text-white"
                                     onSave={(next) => renameAsset(group.person1!.id, next)}
                                   />
+                                  <RushTranscript assetId={group.person1.id} />
                                 </div>
                               ) : (
                                 <p className="mt-1 font-bold text-white">A ajouter</p>
@@ -558,11 +659,28 @@ const AssetBank = () => {
                                     className="font-bold text-white"
                                     onSave={(next) => renameAsset(group.person2!.id, next)}
                                   />
+                                  <RushTranscript assetId={group.person2.id} />
                                 </div>
                               ) : (
                                 <p className="mt-1 font-bold text-white">A ajouter</p>
                               )}
                             </div>
+                            {/* Montage extra clips (clip 3+): same group, videoPart "extra". */}
+                            {assets
+                              .filter((a) => a.groupId === group.id && a.videoPart === "extra")
+                              .map((extra, i) => (
+                                <div key={extra.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                                  <span className="font-black uppercase tracking-[0.2em] text-white/35">Clip {i + 3}</span>
+                                  <div className="mt-1">
+                                    <EditableTitle
+                                      value={extra.title}
+                                      className="font-bold text-white"
+                                      onSave={(next) => renameAsset(extra.id, next)}
+                                    />
+                                    <RushTranscript assetId={extra.id} />
+                                  </div>
+                                </div>
+                              ))}
                           </div>
                         </article>
                       ))}

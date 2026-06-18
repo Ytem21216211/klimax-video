@@ -15,13 +15,14 @@ const AiVideoDialog = ({ open, onOpenChange, defaultProjectId }: { open: boolean
   const { toast } = useToast();
   const [studioProjects, setStudioProjects] = useState<StudioProject[]>([]);
   const [projectId, setProjectId] = useState(defaultProjectId || "");
-  const [videoType, setVideoType] = useState<"podcast" | "rush">("podcast");
+  const [videoType, setVideoType] = useState<"podcast" | "rush" | "multi">("podcast");
   const [prompt, setPrompt] = useState("");
   const [vgId, setVgId] = useState("");
   const [count, setCount] = useState(6);
   const [file1, setFile1] = useState<File | null>(null);
   const [file2, setFile2] = useState<File | null>(null);
   const [rushFile, setRushFile] = useState<File | null>(null);
+  const [multiFiles, setMultiFiles] = useState<File[]>([]);
   const [allGroups, setAllGroups] = useState<any[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState("");
@@ -83,17 +84,24 @@ const AiVideoDialog = ({ open, onOpenChange, defaultProjectId }: { open: boolean
     }
   };
 
-  const resetToForm = () => { setJobId(null); setJob(null); setSummary(""); setPrompt(""); setFile1(null); setFile2(null); setRushFile(null); };
+  const resetToForm = () => { setJobId(null); setJob(null); setSummary(""); setPrompt(""); setFile1(null); setFile2(null); setRushFile(null); setMultiFiles([]); };
 
   const submit = async () => {
     if (!prompt.trim()) { toast({ title: "Décris la vidéo que tu veux", variant: "destructive" }); return; }
     const hasPair = file1 && file2;
     const hasRush = !!rushFile;
-    if (!projectId && !vgId && !hasPair && !hasRush) { toast({ title: "Choisis un projet, une source, ou envoie une vidéo", variant: "destructive" }); return; }
+    const hasMulti = videoType === "multi" && multiFiles.length >= 2;
+    if (!projectId && !vgId && !hasPair && !hasRush && !hasMulti) { toast({ title: "Choisis un projet, une source, ou envoie des vidéos", variant: "destructive" }); return; }
     setSubmitting(true);
     try {
       let videoGroupIds: string[] | undefined;
-      if (!projectId && vgId) {
+      let projectIds: string[] | undefined;
+      if (!projectId && videoType === "multi" && hasMulti) {
+        setStatus("Envoi des rushs + montage P1/P2…");
+        const up = await localKlimaxApi.uploadMultirushProject(multiFiles, prompt.slice(0, 60) || "Multi-rush");
+        if (!up.projectId) throw new Error("Montage multi-rush échoué.");
+        projectIds = [up.projectId];
+      } else if (!projectId && vgId) {
         videoGroupIds = [vgId];
       } else if (!projectId && videoType === "rush" && hasRush) {
         setStatus("Envoi du rush…");
@@ -111,7 +119,7 @@ const AiVideoDialog = ({ open, onOpenChange, defaultProjectId }: { open: boolean
         videoGroupIds = [newId];
       }
       setStatus("L'IA prépare le lot (transcription + réglages)…");
-      const res = await localKlimaxApi.aiVideoRequest({ prompt, studioProjectId: projectId || null, videoGroupIds, variantsPerVideo: count });
+      const res = await localKlimaxApi.aiVideoRequest({ prompt, studioProjectId: projectId || null, videoGroupIds, projectIds, variantsPerVideo: count });
       setSummary(res.summary || "");
       setJobId(res.jobId); // -> switches to the results view; polling shows the videos
       toast({ title: "Génération lancée 🚀", description: `${res.total} vidéo(s) en cours…` });
@@ -153,23 +161,25 @@ const AiVideoDialog = ({ open, onOpenChange, defaultProjectId }: { open: boolean
               <div className="space-y-3">
                 <div>
                   <label className="mb-1 block text-[11px] font-black uppercase tracking-[0.18em] text-white/45">Type de vidéo</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {([["podcast", "Podcast", "2 personnes"], ["rush", "Rush simple", "1 vidéo"]] as const).map(([key, label, hint]) => (
+                  <div className="grid grid-cols-3 gap-2">
+                    {([["podcast", "Podcast", "2 personnes"], ["rush", "Rush simple", "1 vidéo"], ["multi", "Multi-rush", "P1/P2/P1/P2…"]] as const).map(([key, label, hint]) => (
                       <button key={key} type="button" onClick={() => { setVideoType(key); setVgId(""); }}
-                        className={`rounded-xl border px-3 py-2.5 text-left transition ${videoType === key ? "border-white/40 bg-white/[0.09]" : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]"}`}>
-                        <div className="text-sm font-black">{label}</div>
-                        <div className="text-[10px] uppercase tracking-wide text-white/40">{hint}</div>
+                        className={`rounded-xl border px-2.5 py-2.5 text-left transition ${videoType === key ? "border-white/40 bg-white/[0.09]" : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]"}`}>
+                        <div className="text-[13px] font-black">{label}</div>
+                        <div className="text-[9px] uppercase tracking-wide text-white/40">{hint}</div>
                       </button>
                     ))}
                   </div>
                 </div>
-                <div>
-                  <label className="mb-1 block text-[11px] font-black uppercase tracking-[0.18em] text-white/45">{videoType === "rush" ? "Rush existant" : "Paire vidéo existante"}</label>
-                  <select value={vgId} onChange={(e) => { setVgId(e.target.value); if (e.target.value) { setFile1(null); setFile2(null); setRushFile(null); } }} className="w-full rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 font-black text-white outline-none focus:border-white/30">
-                    <option value="" className="bg-neutral-900">{videoType === "rush" ? "— Choisir un rush —" : "— Choisir une paire —"}</option>
-                    {videoGroups.map((g) => <option key={g.id} value={g.id} className="bg-neutral-900">{g.title}</option>)}
-                  </select>
-                </div>
+                {videoType !== "multi" ? (
+                  <div>
+                    <label className="mb-1 block text-[11px] font-black uppercase tracking-[0.18em] text-white/45">{videoType === "rush" ? "Rush existant" : "Paire vidéo existante"}</label>
+                    <select value={vgId} onChange={(e) => { setVgId(e.target.value); if (e.target.value) { setFile1(null); setFile2(null); setRushFile(null); } }} className="w-full rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 font-black text-white outline-none focus:border-white/30">
+                      <option value="" className="bg-neutral-900">{videoType === "rush" ? "— Choisir un rush —" : "— Choisir une paire —"}</option>
+                      {videoGroups.map((g) => <option key={g.id} value={g.id} className="bg-neutral-900">{g.title}</option>)}
+                    </select>
+                  </div>
+                ) : null}
                 {!vgId && videoType === "podcast" ? (
                   <div>
                     <label className="mb-1 block text-[11px] font-black uppercase tracking-[0.18em] text-white/45">…ou envoie 2 rushs (personne 1 + personne 2)</label>
@@ -197,6 +207,27 @@ const AiVideoDialog = ({ open, onOpenChange, defaultProjectId }: { open: boolean
                       <input type="file" accept="video/*" className="hidden" onChange={(e) => setRushFile(e.target.files?.[0] || null)} />
                     </label>
                     <p className="mt-1 text-[10px] text-white/35">Pas de limite de taille stricte. Une seule vidéo = short solo (cadrage, sous-titres, zooms variés).</p>
+                  </div>
+                ) : null}
+                {videoType === "multi" ? (
+                  <div>
+                    <label className="mb-1 block text-[11px] font-black uppercase tracking-[0.18em] text-white/45">Rushs dans l'ordre (P1, P2, P1, P2…)</label>
+                    <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-white/15 bg-white/[0.03] px-2 py-4 text-center text-[11px] font-bold text-white/55 hover:bg-white/[0.06]">
+                      <Upload className="h-4 w-4" />
+                      {multiFiles.length ? `${multiFiles.length} rush(s) sélectionnés` : "Choisir les vidéos (2 ou +)"}
+                      <input type="file" accept="video/*" multiple className="hidden" onChange={(e) => setMultiFiles(Array.from(e.target.files || []))} />
+                    </label>
+                    {multiFiles.length ? (
+                      <ol className="mt-2 space-y-1">
+                        {multiFiles.map((f, i) => (
+                          <li key={i} className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.03] px-2 py-1 text-[10px] text-white/60">
+                            <span className="truncate"><b className="text-white/80">{i === 0 ? "P1·intro" : i === 1 ? "P2·reply" : `clip ${i + 1}`}</b> — {f.name}</span>
+                            <span className="shrink-0 text-white/30">{fmtMB(f)}</span>
+                          </li>
+                        ))}
+                      </ol>
+                    ) : null}
+                    <p className="mt-1 text-[10px] text-white/35">1er = hook (P1), 2e = réponse (P2), les suivants alternent (DA partagée, zoom par personne, shutter entre clips). Nomme les rushs de droite « vasko… ».</p>
                   </div>
                 ) : null}
               </div>

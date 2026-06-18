@@ -1,7 +1,7 @@
 import * as React from "react";
 const { useEffect, useMemo, useState } = React;
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Plus, Save, Trash2, Wand2, Loader2, FolderCog, Sparkles } from "lucide-react";
+import { ArrowLeft, Plus, Save, Trash2, Wand2, Loader2, FolderCog, Sparkles, Music, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
@@ -32,21 +32,53 @@ const blankDraft = (): StudioProject => ({
   overrides: { twoSpeakerRatio: 0.6, splitRatioMin: 0.25, splitRatioMax: 0.75, subtitleSizeMin: 62, subtitleSizeMax: 94, logoSizeMin: 850, logoSizeMax: 920, zoomMaxBoostPercent: 22, allowedSubtitlePresets: [], filterDenylist: [] },
   assetPools: { brollIds: null, imageIds: null, musicIds: null, speakerIds: null },
   hookBank: [],
+  renderProjectId: null,
+  renderClipStages: [],
   createdAt: "",
   updatedAt: "",
 });
 
 const Num = ({ label, value, onChange, min, max, step = 1, suffix }: { label: string; value: number | undefined; onChange: (v: number) => void; min?: number; max?: number; step?: number; suffix?: string }) => (
-  <label className="flex items-center justify-between gap-3 py-1 text-xs">
-    <span className="text-white/55">{label}</span>
-    <span className="flex items-center gap-1">
-      <input type="number" value={Number.isFinite(value as number) ? value : ""} min={min} max={max} step={step}
-        onChange={(e) => e.target.value !== "" && onChange(Number(e.target.value))}
-        className="w-24 rounded-lg border border-white/10 bg-white/[0.05] px-2 py-1 text-right font-black text-white outline-none focus:border-white/30" />
-      {suffix ? <span className="w-5 text-white/30">{suffix}</span> : null}
-    </span>
+  <label className="block py-1.5 text-xs">
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-white/55">{label}</span>
+      <span className="flex items-center gap-1">
+        <input type="number" value={Number.isFinite(value as number) ? value : ""} min={min} max={max} step={step}
+          onChange={(e) => e.target.value !== "" && onChange(Number(e.target.value))}
+          className="w-20 rounded-lg border border-white/10 bg-white/[0.05] px-2 py-1 text-right font-black text-white outline-none focus:border-white/30" />
+        {suffix ? <span className="w-5 text-white/30">{suffix}</span> : null}
+      </span>
+    </div>
+    {min != null && max != null ? (
+      <input type="range" min={min} max={max} step={step} value={Number.isFinite(value as number) ? (value as number) : min}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="mt-1.5 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-white/15 accent-emerald-400" />
+    ) : null}
   </label>
 );
+
+// Visual selectable tile for an asset pool (b-roll/image/speaker preview, music icon).
+const AssetTile = ({ asset, selected, onClick }: { asset: any; selected: boolean; onClick: () => void }) => {
+  const isImage = asset.category === "image" || String(asset.mimeType || "").startsWith("image");
+  const isAudio = asset.category === "music" || String(asset.mimeType || "").startsWith("audio");
+  return (
+    <button type="button" onClick={onClick}
+      className={cn("group relative aspect-square w-full overflow-hidden rounded-xl border text-left transition",
+        selected ? "border-emerald-400 ring-2 ring-emerald-400/40" : "border-white/10 hover:border-white/30")}>
+      {isAudio ? (
+        <div className="grid h-full w-full place-items-center bg-white/[0.04]"><Music className="h-6 w-6 text-white/40" /></div>
+      ) : isImage ? (
+        <img src={asset.fileUrl} alt="" loading="lazy" className="h-full w-full object-cover" />
+      ) : (
+        <video src={asset.fileUrl} muted playsInline preload="metadata" className="h-full w-full object-cover" />
+      )}
+      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-1.5 py-1">
+        <p className="truncate text-[9px] font-bold text-white/85">{cleanName(asset.title || asset.note)}</p>
+      </div>
+      {selected ? <div className="absolute right-1 top-1 grid h-4 w-4 place-items-center rounded-full bg-emerald-400 text-black"><Check className="h-3 w-3" /></div> : null}
+    </button>
+  );
+};
 
 const Chip = ({ on, label, onClick }: { on: boolean; label: string; onClick: () => void }) => (
   <button type="button" onClick={onClick} className={cn("rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wide transition", on ? "border-white/30 bg-white text-black" : "border-white/10 bg-white/[0.03] text-white/45 hover:bg-white/[0.08]")}>{label}</button>
@@ -68,6 +100,7 @@ const StudioProjects = () => {
   const [draft, setDraft] = useState<StudioProject | null>(null);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
+  const [uploadingRushes, setUploadingRushes] = useState(false);
 
   const refresh = () => localKlimaxApi.listStudioProjects().then(({ projects }) => setProjects(projects || [])).catch(() => {});
   useEffect(() => {
@@ -116,9 +149,23 @@ const StudioProjects = () => {
     } finally { setSaving(false); }
   };
 
+  const uploadRushes = async (files: File[]) => {
+    if (!draft?.id) { toast({ title: "Enregistre d'abord le projet", variant: "destructive" }); return; }
+    if (files.length < 2) { toast({ title: "Au moins 2 rushs (P1 + P2)", variant: "destructive" }); return; }
+    setUploadingRushes(true);
+    try {
+      const res = await localKlimaxApi.uploadMultirushProject(files, draft.name || "Multi-rush", draft.id);
+      await refresh();
+      setDraft((d) => (d ? { ...d, renderProjectId: res.projectId, renderClipStages: res.stages } : d));
+      toast({ title: `Montage prêt : ${res.clipCount} clips`, description: res.stages.join(" · ") });
+    } catch (e: any) {
+      toast({ title: "Échec du montage", description: String(e?.message || e), variant: "destructive" });
+    } finally { setUploadingRushes(false); }
+  };
+
   const run = async () => {
     if (!draft?.id) { toast({ title: "Enregistre d'abord le projet", variant: "destructive" }); return; }
-    if (!draft.videoGroupIds.length) { toast({ title: "Choisis au moins une paire vidéo", variant: "destructive" }); return; }
+    if (!draft.videoGroupIds.length && !draft.renderProjectId) { toast({ title: "Choisis une paire vidéo OU ajoute des rushs (multi-rush)", variant: "destructive" }); return; }
     setRunning(true);
     try {
       const res = await localKlimaxApi.runStudioProject(draft.id);
@@ -186,6 +233,25 @@ const StudioProjects = () => {
               )}
             </Section>
 
+            <Section title="Rushs du podcast (multi-rush — P1/P2/P1/P2…)">
+              {!draft.id ? (
+                <p className="text-[11px] text-white/40">Enregistre d'abord le projet, puis ajoute les rushs ici.</p>
+              ) : (
+                <>
+                  <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-white/15 bg-white/[0.03] px-2 py-4 text-center text-[11px] font-bold text-white/55 hover:bg-white/[0.06]">
+                    {uploadingRushes ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                    {uploadingRushes ? "Montage en cours (transcription)…" : "Choisir les rushs (2 ou +, dans l'ordre)"}
+                    <input type="file" accept="video/*" multiple className="hidden" disabled={uploadingRushes} onChange={(e) => { const fs = Array.from(e.target.files || []); if (fs.length) uploadRushes(fs); }} />
+                  </label>
+                  {draft.renderProjectId ? (
+                    <p className="mt-2 text-[11px] font-bold text-emerald-300">✓ Montage attaché : {(draft.renderClipStages || []).length} clips ({(draft.renderClipStages || []).join(" · ")}). « Lancer le lot » l'utilise avec cette DA.</p>
+                  ) : (
+                    <p className="mt-1 text-[10px] text-white/35">1er rush = hook (P1), 2e = réponse (P2), les suivants alternent (DA partagée, zoom par personne, transition 1→2, shutter entre clips). Nomme « vasko… » les rushs de droite. Ajoute-en autant que tu veux (même 10).</p>
+                  )}
+                </>
+              )}
+            </Section>
+
             <Section title="Génération">
               <Num label="Variantes par podcast" value={draft.variantsPerVideo} onChange={(v) => set({ variantsPerVideo: Math.max(1, Math.min(20, Math.round(v))) })} min={1} max={20} />
               <div className="mt-3 flex flex-wrap gap-2">
@@ -238,12 +304,16 @@ const StudioProjects = () => {
                     <span className="text-[10px] uppercase tracking-wide text-white/35">{pool === null ? "toute la banque" : `${pool.length} sélectionné(s)`}</span>
                   </div>
                   {list.length === 0 ? <p className="text-[11px] text-white/30">Aucun asset dans cette catégorie.</p> : (
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className="grid grid-cols-4 gap-2 sm:grid-cols-5 md:grid-cols-6">
                       {list.map((a) => (
-                        <Chip key={a.id} on={pool !== null && pool.includes(a.id)} label={cleanName(a.title || a.note)} onClick={() => set({ assetPools: { ...draft.assetPools, [key]: toggleInList(pool || [], a.id) } })} />
+                        <AssetTile key={a.id} asset={a} selected={pool !== null && pool.includes(a.id)}
+                          onClick={() => set({ assetPools: { ...draft.assetPools, [key]: toggleInList(pool || [], a.id) } })} />
                       ))}
                     </div>
                   )}
+                  {pool !== null && pool.length > 0 ? (
+                    <p className="mt-2 text-[10px] text-white/35">Seuls ces {pool.length} {cat === "broll" ? "b-roll" : cat === "image" ? "images" : cat === "music" ? "musiques" : "speakers"} seront utilisés pour ce podcast.</p>
+                  ) : null}
                 </Section>
               );
             })}
