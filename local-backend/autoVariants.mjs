@@ -256,6 +256,27 @@ const faceIntervalBand = (face, { bandH, y0Band, zoom, cropY }) => {
 const SAFE_TOP = 140;
 const SAFE_BOTTOM = 1750;
 
+// --- Caption mouth-safety + per-render layout jitter --------------------------------
+// Expressed as a fraction of the 1920-px canvas height so they're resolution-independent
+// and easy to tune. The caption is ALWAYS kept below the speaker's mouth + a margin;
+// a small base offset + per-variant jitter make the vertical position vary between
+// renders without ever climbing back over the mouth.
+const CANVAS_H = 1920;
+const MOUTH_LOWER_FACE_FRAC = 0.32;                          // lower lip ≈ 32% of face height BELOW the face centre
+const SUB_MOUTH_MARGIN_PX = Math.round(0.02 * CANVAS_H);     // ≥2% of height clearance under the mouth (~38px)
+const SUB_BASE_OFFSET_PX  = Math.round(0.0063 * CANVAS_H);   // base downward nudge (~12px)
+const SUB_JITTER_PX       = Math.round(0.0042 * CANVAS_H);   // ± per-render vertical jitter (~8px); < base so it never crosses the mouth floor
+
+// Lowest "mouth bottom + margin" across all faces (canvas Y). The caption's TOP must
+// stay below this. Derived from faceIntervalSolo/Band output {y0,y1}: fh=(y1-y0)/2.6,
+// cy=y0+1.15·fh (see those helpers), mouth bottom = cy + MOUTH_LOWER_FACE_FRAC·fh.
+const mouthFloor = (faces = []) =>
+  (faces || []).filter(Boolean).reduce((m, f) => {
+    const fh = (f.y1 - f.y0) / 2.6;
+    const cy = f.y0 + 1.15 * fh;
+    return Math.max(m, cy + MOUTH_LOWER_FACE_FRAC * fh + SUB_MOUTH_MARGIN_PX);
+  }, 0);
+
 // Complement of the blocked intervals inside [SAFE_TOP, SAFE_BOTTOM] -> [[lo,hi],…]
 const freeIntervals = (blocked) => {
   const bs = (blocked || [])
@@ -343,11 +364,20 @@ export function computeHookPosition({ dualSpeakerEnabled, splitRatio, hookHeight
 // ---------------------------------------------------------------------------
 export function computeSubtitlePosition({ hookY = null, hookHeight = 0, rng, faces = [], blockH = 120 }) {
   const r1 = rng ? rng() : 0;   // below/above choice (hook case)
-  const r2 = rng ? rng() : 0.5; // bounded jitter / zone offset
+  const r2 = rng ? rng() : 0.5; // per-render jitter (-1..+1 below)
   const half = blockH / 2;
   const GAP = 56; // generous clearance between the hook edge and the caption block
   const loBound = SAFE_TOP + half;
   const hiBound = SAFE_BOTTOM - half;
+  // The caption CENTRE must never sit above this — keeps the block below the mouth+margin.
+  const minCenter = mouthFloor(faces) > 0 ? mouthFloor(faces) + half : loBound;
+  // base + jitter: nudge down by SUB_BASE_OFFSET_PX, vary by ±SUB_JITTER_PX per render.
+  // base > jitter, so after jitter the caption is still strictly below the mouth floor.
+  const layout = (centre) => {
+    const base = Math.max(centre, minCenter) + SUB_BASE_OFFSET_PX;
+    const jit = (r2 * 2 - 1) * SUB_JITTER_PX;
+    return Math.round(clamp(base + jit, Math.max(loBound, minCenter), hiBound));
+  };
 
   if (hookY != null) {
     const hookBot = hookY + hookHeight / 2;
@@ -357,10 +387,10 @@ export function computeSubtitlePosition({ hookY = null, hookHeight = 0, rng, fac
     const belowFits = belowY <= hiBound;
     const aboveFits = aboveY >= loBound;
     let y;
-    if (belowFits && (r1 < 0.75 || !aboveFits)) y = Math.min(belowY + r2 * 36, hiBound); // a touch lower
-    else if (aboveFits) y = Math.max(aboveY - r2 * 36, loBound);                          // a touch higher
-    else y = clamp(belowY, loBound, hiBound);
-    return { x: 540, y: Math.round(clamp(y, loBound, hiBound)) };
+    if (belowFits && (r1 < 0.75 || !aboveFits)) y = belowY;       // a touch below the hook
+    else if (aboveFits) y = Math.max(aboveY, minCenter);          // above the hook — but never above the mouth
+    else y = belowY;
+    return { x: 540, y: layout(y) };
   }
 
   // No hook (reply): lower third, dodging the speaker's face when there's room.
@@ -369,11 +399,11 @@ export function computeSubtitlePosition({ hookY = null, hookHeight = 0, rng, fac
     .filter(([lo, hi]) => hi >= lo);
   const lowerPref = free.filter(([lo, hi]) => hi >= 1150 && lo <= 1700);
   const zone = lowerPref.length ? lowerPref[lowerPref.length - 1] : free.length ? free[free.length - 1] : null;
-  if (!zone) return { x: 540, y: Math.round(clamp(1240 + (r2 - 0.5) * 120, loBound, hiBound)) };
+  if (!zone) return { x: 540, y: layout(1240) };
   const lo = Math.max(zone[0], 1150);
   const hi = Math.min(zone[1], 1680);
-  const y = lo <= hi ? lo + (0.35 + r2 * 0.5) * (hi - lo) : (zone[0] + zone[1]) / 2;
-  return { x: 540, y: Math.round(clamp(y, loBound, hiBound)) };
+  const centre = lo <= hi ? lo + 0.4 * (hi - lo) : (zone[0] + zone[1]) / 2;
+  return { x: 540, y: layout(centre) };
 }
 
 // stable stringify for the uniqueness hash
@@ -724,11 +754,19 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
       reply.subtitlePosition = computeSubtitlePosition({ hookY: null, rng, faces: replyFaces, blockH });
     }
     // EXTRA clips (3+) — the alternating back-and-forth. They act "as one": ONE shared
-    // subtitle position (it never moves when the speaker changes), computed once and
-    // reused. No hook, no per-clip jitter. (1 rng draw, deterministic.)
+    // subtitle position (it never moves when the speaker changes). Kept mouth-safe for
+    // EVERY extra speaker: place it below the LOWEST mouth among the extras + margin,
+    // with the same base offset + jitter as the rest. (1 rng draw, deterministic.)
     const extraClips = clips.filter((c) => c !== intro && c !== reply && c.stage !== "intro" && c.stage !== "reply");
     if (extraClips.length) {
-      const extraSubY = q(1180 + rng() * 120, 2); // ~1180–1300, identical for every extra
+      const r = rng(); // single draw (jitter), keeps planning↔rendering lock-step
+      const extraFaces = extraClips
+        .map((c) => faceIntervalSolo(faceBoxes[c.sourceVideoId], c.videoTransform))
+        .filter(Boolean);
+      const floor = mouthFloor(extraFaces);
+      const half = blockH / 2;
+      const base = Math.max(1180, floor > 0 ? floor + half : 0) + SUB_BASE_OFFSET_PX;
+      const extraSubY = q(clamp(base + (r * 2 - 1) * SUB_JITTER_PX, SAFE_TOP + half, SAFE_BOTTOM - half), 2);
       for (const c of extraClips) c.subtitlePosition = { x: 540, y: extraSubY };
     }
   }

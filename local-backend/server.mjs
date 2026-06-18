@@ -2090,6 +2090,26 @@ const resolveTriggerTime = (words, trigger, cueStart) => {
 // Kept a touch smaller (620) so the subtitle band sits comfortably just above it.
 const BROLL_SQUARE_SIZE = 620;
 const BROLL_SQUARE_Y = 1080;
+// Per-occurrence square-b-roll size variation: ±3% so the layout isn't pixel-identical
+// every time, WITHOUT shifting the subject (the cover-fit crop stays centred and the
+// overlay x/y are recomputed from the jittered size). Tunable.
+const BROLL_SQUARE_SCALE_JITTER = 0.03;
+// Small string-seeded PRNG (mulberry32) so per-render layout jitter is reproducible
+// from a logged seed — re-render with KLIMAX_RENDER_SEED=<seed> to reproduce a frame.
+const seededRng = (seedStr) => {
+  let h = 1779033703 ^ String(seedStr).length;
+  for (let i = 0; i < String(seedStr).length; i += 1) {
+    h = Math.imul(h ^ String(seedStr).charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  let a = (Math.imul(h ^ (h >>> 16), 2246822507) ^ Math.imul(h ^ (h >>> 13), 3266489909)) >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
 // Theme matching for b-rolls: two clips are the SAME subject if they share ANY
 // meaningful word (accent-folded; generic filler dropped). Order-insensitive, so
 // "exercice périné kegel" and "kegel périné exercice 2" match on {perine, kegel}.
@@ -2303,6 +2323,12 @@ const renderProject = async (db, project, sourceGroup) => {
   let _last = Date.now();
   const _mark = (label) => { if (!_perf) return; const now = Date.now(); console.log(`[perf] ${label}: ${now - _last}ms`); _last = now; };
 
+  // Per-render layout seed (logged) — drives the small b-roll size jitter and is
+  // reproducible: set KLIMAX_RENDER_SEED=<seed> to re-render the exact same layout.
+  const renderSeed = process.env.KLIMAX_RENDER_SEED || `${project.id}:${Date.now()}:${Math.floor(Math.random() * 1e9)}`;
+  const renderRng = seededRng(renderSeed);
+  console.log(`[layout] render seed=${renderSeed}`);
+
   // Voice loudness normalisation (EBU R128, TWO-PASS): measure each source's real
   // loudness first, then normalise every clip to the same target — so a quietly
   // recorded clip (e.g. personne 2) is brought up to match the louder one.
@@ -2366,6 +2392,7 @@ const renderProject = async (db, project, sourceGroup) => {
 
   for (let clipIndex = 0; clipIndex < clipsToRender.length; clipIndex += 1) {
     const clip = clipsToRender[clipIndex];
+    console.log(`[layout] clip ${clipIndex} (${clip.stage}) subtitleY=${clip.subtitlePosition?.y ?? "default"}`); // logged for repro
     const sourceAsset = sourceAssetForClip(sourceGroup, clip, db.assets);
     const clipTranscription = project.transcription?.clips?.find((entry) => entry.clipId === clip.id);
     const fullClipDuration = safeNumber(clipTranscription?.duration, 0);
@@ -2639,7 +2666,11 @@ const renderProject = async (db, project, sourceGroup) => {
           // Auto mode may shrink the square (brollSquareScale, 0.5–1.0) while keeping
           // its TOP anchored at BROLL_SQUARE_Y, so it stays at the SAME spot — only the
           // 9:16 fullscreen b-roll is never resized. Even px keeps scale/crop happy.
-          const squareScale = clamp(safeNumber(project.settings?.brollSquareScale, 1), 0.5, 1);
+          const baseSquareScale = clamp(safeNumber(project.settings?.brollSquareScale, 1), 0.5, 1);
+          // ±3% per-occurrence size jitter (seeded → reproducible, logged). Centre/crop
+          // unchanged (ox/oy recomputed from the jittered size), so the subject doesn't move.
+          const squareScale = clamp(baseSquareScale * (1 + (renderRng() * 2 - 1) * BROLL_SQUARE_SCALE_JITTER), 0.5, 1.03);
+          console.log(`[layout] broll square scale=${squareScale.toFixed(4)} (base ${baseSquareScale})`);
           const S = Math.round(BROLL_SQUARE_SIZE * squareScale / 2) * 2;
           const PAD = BROLL_SQUARE_PAD;
           const ox = Math.round((1080 - S) / 2) - PAD; // combined layer carries the shadow margin
@@ -2665,7 +2696,11 @@ const renderProject = async (db, project, sourceGroup) => {
           // rounded/shadow assets are missing). The square fallback honours the same
           // auto-mode shrink (top-anchored); fullscreen 9:16 is never resized.
           const isSquare = seg.placement === "square";
-          const squareScale = clamp(safeNumber(project.settings?.brollSquareScale, 1), 0.5, 1);
+          const baseSquareScale = clamp(safeNumber(project.settings?.brollSquareScale, 1), 0.5, 1);
+          // ±3% per-occurrence size jitter (seeded → reproducible, logged). Centre/crop
+          // unchanged (ox/oy recomputed from the jittered size), so the subject doesn't move.
+          const squareScale = clamp(baseSquareScale * (1 + (renderRng() * 2 - 1) * BROLL_SQUARE_SCALE_JITTER), 0.5, 1.03);
+          console.log(`[layout] broll square scale=${squareScale.toFixed(4)} (base ${baseSquareScale})`);
           const sqSize = Math.round(BROLL_SQUARE_SIZE * squareScale / 2) * 2;
           const W = isSquare ? sqSize : 1080;
           const H = isSquare ? sqSize : 1920;
@@ -3771,7 +3806,9 @@ const releaseRenderSlot = () => {
 // person (Julien hook -> Vasko, Vasko hook -> Julien); changes dualSpeakerSource.
 // v6: hook bubble pinned to the split SEAM (between the two speakers) instead of
 // drifting up to ±150px to dodge faces; changes intro.hookPosition.y on split variants.
-const AUTO_ENGINE_VERSION = 6;
+// v7: captions are mouth-safe (always below the speaker's mouth + margin) with a base
+// offset + per-render vertical jitter; b-roll square gets ±3% size jitter.
+const AUTO_ENGINE_VERSION = 7;
 
 const processAutoJob = async (job) => {
   if (job._running) return;
