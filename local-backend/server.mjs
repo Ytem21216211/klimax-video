@@ -630,6 +630,29 @@ const probeMediaDurationSec = async (filePath) => {
   return duration;
 };
 
+// Decode-probe a VIDEO b-roll source. A file can have a valid container duration yet a
+// BROKEN h264 bitstream (truncated/corrupt import) — decoding it makes the MAIN render
+// ffmpeg ABORT ("Invalid NAL unit size" / "Error splitting … NAL units") and the whole
+// render 500s. We decode the stream here with -xerror (fails fast on the first decode
+// error); if it throws, the source is dropped from the plan like a 0-duration one, so
+// the render simply SKIPS it instead of crashing. Cached per file (mtime-aware).
+const decodableCache = new Map();
+const probeVideoDecodable = async (filePath) => {
+  const key = mediaCacheKey(filePath);
+  if (decodableCache.has(key)) return decodableCache.get(key);
+  let ok = true;
+  try {
+    await runProcess(ffmpegPath, [
+      "-hide_banner", "-v", "error", "-xerror",
+      "-i", filePath, "-map", "0:v:0", "-f", "null", "-",
+    ], { timeoutMs: 60000 });
+  } catch {
+    ok = false; // non-zero exit / -xerror abort on a broken stream / timeout
+  }
+  decodableCache.set(key, ok);
+  return ok;
+};
+
 // Detect black bars baked INTO a b-roll source (letterboxed/pillarboxed clips) and
 // return an ffmpeg "crop=W:H:X:Y," prefix that strips them, so the cover-fit below
 // fills the frame with real content instead of showing the bars. "" when the source
@@ -2174,6 +2197,14 @@ const buildBrollPlan = async (db, project, clipMeta) => {
   // duration, so they're kept.
   const isVideoBroll = (b) => String(b.mimeType || "").startsWith("video") || /\.(mp4|mov|webm|mkv|m4v)$/i.test(b.filePath || "");
   pool = pool.filter((b) => !isVideoBroll(b) || safeNumber(durById[b.id], 0) > 0.15);
+  if (!pool.length) return plan;
+  // Drop VIDEO b-rolls whose bitstream is CORRUPT (valid duration but undecodable —
+  // a truncated/broken import). Without this one bad source aborts the entire render
+  // ("Invalid NAL unit size"). Probed in PARALLEL, cached per file → at most once.
+  const decodeOk = await Promise.all(pool.map((b) => (isVideoBroll(b) ? probeVideoDecodable(b.filePath) : Promise.resolve(true))));
+  const corrupt = pool.filter((_, i) => decodeOk[i] === false);
+  if (corrupt.length) console.warn(`[broll] dropped ${corrupt.length} CORRUPT video source(s) (undecodable) from the plan:`, corrupt.map((b) => path.basename(b.filePath || b.id)).join(" | "));
+  pool = pool.filter((_, i) => decodeOk[i] !== false);
   if (!pool.length) return plan;
   const brollPayload = pool.map((b) => ({ id: b.id, note: b.note, title: b.title }));
   // Never reuse the same b-roll in the whole video — recurring themes must use a
