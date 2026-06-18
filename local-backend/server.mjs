@@ -640,14 +640,26 @@ const decodableCache = new Map();
 const probeVideoDecodable = async (filePath) => {
   const key = mediaCacheKey(filePath);
   if (decodableCache.has(key)) return decodableCache.get(key);
-  let ok = true;
+  // CONSERVATIVE test: can ffmpeg decode at least ONE real video frame? We decode the
+  // first frame to a tiny PNG (image2pipe → stdout) and require non-empty output. This
+  // is deliberately NOT `-xerror`: a WORKING file can emit a recoverable "Invalid NAL
+  // unit size" warning (a previous over-eager check wrongly quarantined good b-rolls
+  // on that warning). Only a source that yields ZERO frames is treated as corrupt, so
+  // we never drop a playable clip — we only drop the genuinely dead ones.
+  let ok = false;
+  const out = path.join(tempRoot, `decprobe-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}.png`);
   try {
-    await runProcess(ffmpegPath, [
-      "-hide_banner", "-v", "error", "-xerror",
-      "-i", filePath, "-map", "0:v:0", "-f", "null", "-",
-    ], { timeoutMs: 60000 });
-  } catch {
-    ok = false; // non-zero exit / -xerror abort on a broken stream / timeout
+    try { fsSync.mkdirSync(tempRoot, { recursive: true }); } catch { /* exists */ }
+    try {
+      await runProcess(ffmpegPath, [
+        "-hide_banner", "-v", "error", "-y", "-i", filePath,
+        "-map", "0:v:0", "-frames:v", "1", "-vf", "scale=64:-2", "-c:v", "png", out,
+      ], { timeoutMs: 60000 });
+    } catch { /* a WORKING file may exit non-zero on a recoverable warning yet still
+                 write the frame — judge on the OUTPUT, not the exit code. */ }
+    try { ok = fsSync.statSync(out).size > 0; } catch { ok = false; }
+  } finally {
+    try { if (fsSync.existsSync(out)) fsSync.unlinkSync(out); } catch { /* ignore */ }
   }
   decodableCache.set(key, ok);
   return ok;
