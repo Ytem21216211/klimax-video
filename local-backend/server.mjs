@@ -2094,6 +2094,16 @@ const BROLL_SQUARE_Y = 1080;
 // every time, WITHOUT shifting the subject (the cover-fit crop stays centred and the
 // overlay x/y are recomputed from the jittered size). Tunable.
 const BROLL_SQUARE_SCALE_JITTER = 0.03;
+// Each b-roll occurrence is horizontally mirrored ~50% of the time (seeded, logged).
+// The flip is applied to the CONTENT before scale/crop, so the b-roll's size/position
+// on screen is unchanged — only the image is mirrored.
+const BROLL_MIRROR_PROB = 0.5;
+// Random entry animation for the SQUARE b-roll (like the subtitle entry presets).
+// Implemented by animating the OVERLAY POSITION (cheap, no per-frame scaler re-init) +
+// the existing alpha fade — so it's fast. One picked at random per occurrence (seeded).
+const BROLL_SQUARE_ANIMS = ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "popIn"];
+const BROLL_ANIM_SLIDE_PX = 150; // slide travel distance
+const BROLL_ANIM_T = 0.35;       // entry duration (s)
 // Small string-seeded PRNG (mulberry32) so per-render layout jitter is reproducible
 // from a logged seed — re-render with KLIMAX_RENDER_SEED=<seed> to reproduce a frame.
 const seededRng = (seedStr) => {
@@ -2388,17 +2398,27 @@ const renderProject = async (db, project, sourceGroup) => {
   const brollAnimOut = ["fade", "none"].includes(project.settings?.brollAnimOut) ? project.settings.brollAnimOut : "fade";
   const brollZoom = ["none", "in", "out"].includes(project.settings?.brollZoom) ? project.settings.brollZoom : "in";
   // Smooth Ken-Burns zoom on a b-roll (scale-over-time + centre crop, no jitter).
-  const brollZoomFx = (W, H, segDur) => {
-    if (brollZoom === "none") return "";
+  const brollZoomFx = (W, H, segDur, entry) => {
+    const pop = entry === "popIn";
+    if (brollZoom === "none" && !pop) return "";
     // Ken-Burns via ZOOMPAN (fixed W×H output). The old approach animated the scale's
     // OUTPUT size per frame (scale=…:eval=frame), which re-inits the ffmpeg scaler on
     // EVERY frame → ~18x slower renders. zoompan keeps a constant output size and zooms
     // internally, so it's as fast as a static b-roll. Centred 7% travel over the segment.
     const frames = Math.max(1, Math.round(Math.max(0.2, segDur) * 30));
     const per = (0.07 / frames).toFixed(6);
-    const z = brollZoom === "out"
+    const base = brollZoom === "out"
       ? `max(1.07-${per}*on,1.0)`
-      : `min(1.0+${per}*on,1.07)`;
+      : brollZoom === "in"
+        ? `min(1.0+${per}*on,1.07)`
+        : `1.0`;
+    // popIn: a quick centred scale "pop" (overshoot 1.16 → settle) over the first ~9
+    // frames, then hand off to the Ken-Burns curve. Still zoompan → fixed output, cheap.
+    let z = base;
+    if (pop) {
+      const ef = Math.max(1, Math.round(0.30 * 30));
+      z = `if(lt(on,${ef}),1.0+0.16*pow(1-on/${ef},2),${base})`;
+    }
     return `,zoompan=z='${z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=30`;
   };
   const hasShutter = fsSync.existsSync(shutterSoundPath);
@@ -2665,6 +2685,9 @@ const renderProject = async (db, project, sourceGroup) => {
         // Strip black bars baked into the source so the cover-fit fills with real
         // content (no letterbox showing through). Videos only; cached per file.
         const contentCrop = seg.isVideo ? await probeBrollContentCrop(seg.path) : "";
+        // ~50% chance to mirror THIS b-roll (content only — size/position unchanged).
+        const brollFlip = renderRng() < BROLL_MIRROR_PROB ? "hflip," : "";
+        if (brollFlip) console.log(`[layout] broll ${bi} mirrored`);
         const fadeOut = Math.max(0, seg.segDur - FADE).toFixed(3);
         // Animations are INDEPENDENT of shutter mode (you can have fade + zoom AND
         // the shutter click). fade=alpha multiplies the existing alpha (keeps rounded
@@ -2693,12 +2716,28 @@ const renderProject = async (db, project, sourceGroup) => {
           const PAD = BROLL_SQUARE_PAD;
           const ox = Math.round((1080 - S) / 2) - PAD; // combined layer carries the shadow margin
           const oy = BROLL_SQUARE_Y - PAD;
+          // Random entry animation (seeded → reproducible, logged), like the subtitle
+          // presets. fade = alpha only; slide* = animate the OVERLAY position (cheap, no
+          // scaler re-init); popIn = centred zoompan scale-pop. The square never leaves
+          // its final spot — slides only affect the first ${BROLL_ANIM_T}s of the window.
+          const sqAnim = BROLL_SQUARE_ANIMS[Math.floor(renderRng() * BROLL_SQUARE_ANIMS.length)];
+          console.log(`[layout] broll ${bi} anim=${sqAnim}`);
+          const st = seg.start.toFixed(3);
+          // ease-out cubic 0→1 over BROLL_ANIM_T (commas are safe inside the single-quoted
+          // overlay x/y expressions, same as the existing enable='between(t,..,..)').
+          const ease = `(1-pow(1-min(1,max(0,(t-${st})/${BROLL_ANIM_T})),3))`;
+          let ovX = `${ox}`, ovY = `${oy}`;
+          if (sqAnim === "slideUp") ovY = `${oy}+${BROLL_ANIM_SLIDE_PX}*(1-${ease})`;
+          else if (sqAnim === "slideDown") ovY = `${oy}-${BROLL_ANIM_SLIDE_PX}*(1-${ease})`;
+          else if (sqAnim === "slideLeft") ovX = `${ox}+${BROLL_ANIM_SLIDE_PX}*(1-${ease})`;
+          else if (sqAnim === "slideRight") ovX = `${ox}-${BROLL_ANIM_SLIDE_PX}*(1-${ease})`;
+          const sqEntry = sqAnim === "popIn" ? "popIn" : null;
           inputArgs.push("-i", brollSquareMaskPath);
           const maskIn = inputIndex; inputIndex += 1;
           inputArgs.push("-i", brollSquareShadowPath);
           const shadowIn = inputIndex; inputIndex += 1;
           const p = `${clipIndex}_${bi}`;
-          filterChains.push(`[${brIn}:v]${contentCrop}scale=${S}:${S}:force_original_aspect_ratio=increase,crop=${S}:${S},setsar=1,fps=30${brollZoomFx(S, S, seg.segDur)},format=rgba[bsc${p}]`);
+          filterChains.push(`[${brIn}:v]${contentCrop}${brollFlip}scale=${S}:${S}:force_original_aspect_ratio=increase,crop=${S}:${S},setsar=1,fps=30${brollZoomFx(S, S, seg.segDur, sqEntry)},format=rgba[bsc${p}]`);
           // The mask/shadow PNGs are authored for a 720px square (mask 720x720,
           // shadow 816x816 = 720 + 2*48 pad). alphamerge REQUIRES equal dimensions,
           // so scale both to the CURRENT square size or the whole render fails
@@ -2708,7 +2747,7 @@ const renderProject = async (db, project, sourceGroup) => {
           filterChains.push(`[${shadowIn}:v]scale=${S + 2 * PAD}:${S + 2 * PAD},format=rgba[bshad${p}]`);
           filterChains.push(`[bshad${p}][bround${p}]overlay=${PAD}:${PAD}[bcomb${p}]`);
           filterChains.push(`[bcomb${p}]${anim ? anim.slice(1) + "," : ""}${shift}[${brTag}]`);
-          filterChains.push(`[${currentVideo}][${brTag}]overlay=${ox}:${oy}:${enable}[${nextVideo}]`);
+          filterChains.push(`[${currentVideo}][${brTag}]overlay=x='${ovX}':y='${ovY}':${enable}[${nextVideo}]`);
         } else {
           // "fullscreen" fills the 9:16 frame (or a plain square fallback if the
           // rounded/shadow assets are missing). The square fallback honours the same
@@ -2725,7 +2764,7 @@ const renderProject = async (db, project, sourceGroup) => {
           const ox = isSquare ? Math.round((1080 - sqSize) / 2) : 0;
           const oy = isSquare ? BROLL_SQUARE_Y : 0;
           filterChains.push(
-            `[${brIn}:v]${contentCrop}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,fps=30${brollZoomFx(W, H, seg.segDur)},format=rgba${anim},${shift}[${brTag}]`
+            `[${brIn}:v]${contentCrop}${brollFlip}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,fps=30${brollZoomFx(W, H, seg.segDur)},format=rgba${anim},${shift}[${brTag}]`
           );
           filterChains.push(`[${currentVideo}][${brTag}]overlay=${ox}:${oy}:${enable}[${nextVideo}]`);
         }
@@ -3822,7 +3861,8 @@ const releaseRenderSlot = () => {
 // drifting up to ±150px to dodge faces; changes intro.hookPosition.y on split variants.
 // v7: captions are mouth-safe (always below the speaker's mouth + margin) with a base
 // offset + per-render vertical jitter; b-roll square gets ±3% size jitter.
-const AUTO_ENGINE_VERSION = 7;
+// v8: caption centre capped (never glued to the bottom, SUB_MAX_CENTER ≈0.78·H).
+const AUTO_ENGINE_VERSION = 8;
 
 const processAutoJob = async (job) => {
   if (job._running) return;

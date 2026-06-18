@@ -266,6 +266,7 @@ const MOUTH_LOWER_FACE_FRAC = 0.32;                          // lower lip ≈ 32
 const SUB_MOUTH_MARGIN_PX = Math.round(0.02 * CANVAS_H);     // ≥2% of height clearance under the mouth (~38px)
 const SUB_BASE_OFFSET_PX  = Math.round(0.0063 * CANVAS_H);   // base downward nudge (~12px)
 const SUB_JITTER_PX       = Math.round(0.0042 * CANVAS_H);   // ± per-render vertical jitter (~8px); < base so it never crosses the mouth floor
+const SUB_MAX_CENTER      = Math.round(0.78 * CANVAS_H);     // caption CENTRE never lower than this (~1498px) — keeps it off the very bottom
 
 // Lowest "mouth bottom + margin" across all faces (canvas Y). The caption's TOP must
 // stay below this. Derived from faceIntervalSolo/Band output {y0,y1}: fh=(y1-y0)/2.6,
@@ -373,10 +374,13 @@ export function computeSubtitlePosition({ hookY = null, hookHeight = 0, rng, fac
   const minCenter = mouthFloor(faces) > 0 ? mouthFloor(faces) + half : loBound;
   // base + jitter: nudge down by SUB_BASE_OFFSET_PX, vary by ±SUB_JITTER_PX per render.
   // base > jitter, so after jitter the caption is still strictly below the mouth floor.
+  // Upper cap so the caption never glues to the very bottom — but mouth-safety wins if
+  // a very low mouth forces it lower than the cap.
+  const maxCenter = Math.max(minCenter, Math.min(hiBound, SUB_MAX_CENTER));
   const layout = (centre) => {
     const base = Math.max(centre, minCenter) + SUB_BASE_OFFSET_PX;
     const jit = (r2 * 2 - 1) * SUB_JITTER_PX;
-    return Math.round(clamp(base + jit, Math.max(loBound, minCenter), hiBound));
+    return Math.round(clamp(base + jit, Math.max(loBound, minCenter), maxCenter));
   };
 
   if (hookY != null) {
@@ -766,7 +770,8 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
       const floor = mouthFloor(extraFaces);
       const half = blockH / 2;
       const base = Math.max(1180, floor > 0 ? floor + half : 0) + SUB_BASE_OFFSET_PX;
-      const extraSubY = q(clamp(base + (r * 2 - 1) * SUB_JITTER_PX, SAFE_TOP + half, SAFE_BOTTOM - half), 2);
+      const xMax = Math.max(floor > 0 ? floor + half : 0, Math.min(SAFE_BOTTOM - half, SUB_MAX_CENTER));
+      const extraSubY = q(clamp(base + (r * 2 - 1) * SUB_JITTER_PX, SAFE_TOP + half, xMax), 2);
       for (const c of extraClips) c.subtitlePosition = { x: 540, y: extraSubY };
     }
   }
