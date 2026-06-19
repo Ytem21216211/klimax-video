@@ -1913,7 +1913,7 @@ const subtitleAnimationOverride = (subtitleStyle, x, y, shadowDown, options = {}
   ].join("")}}`;
 };
 
-const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindows = [], subtitleAboveSquare = false, hideInLogoWindow = false) => {
+const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindows = [], subtitleAboveSquare = false, hideInLogoWindow = false, fullscreenBrollWindows = []) => {
   const subtitleStyle = project.settings?.subtitleStyle || defaultSubtitleStyle;
   const renderStyle = resolveSubtitleRenderStyle(subtitleStyle);
   const clipLayout = normalizeClipLayout(clip);
@@ -1952,13 +1952,25 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindow
   const SUBTITLE_LOGO_TOP_Y = 280; // very top band, well clear of the centred logo card
   // Just above the centred square b-roll (square image top ≈ BROLL_SQUARE_Y = 1080).
   const SUBTITLE_ABOVE_SQUARE_Y = 990;
+  const SUBTITLE_FULLSCREEN_CENTER_Y = 960; // dead centre of the 1920 canvas
   const baseY = subtitleAboveSquare ? SUBTITLE_ABOVE_SQUARE_Y : y;
   const baseAnim = ovFor(baseY);
   const baseStill = ovFor(baseY, "none");
   const topAnim = logoWindows.length ? ovFor(SUBTITLE_LOGO_TOP_Y) : baseAnim;
   const topStill = logoWindows.length ? ovFor(SUBTITLE_LOGO_TOP_Y, "none") : baseStill;
+  // While a FULLSCREEN b-roll covers the frame, the caption rides the dead centre so it
+  // stays readable over the b-roll; once the b-roll leaves it returns to its base spot.
+  const centerAnim = fullscreenBrollWindows.length ? ovFor(SUBTITLE_FULLSCREEN_CENTER_Y) : baseAnim;
+  const centerStill = fullscreenBrollWindows.length ? ovFor(SUBTITLE_FULLSCREEN_CENTER_Y, "none") : baseStill;
   const inLogoWindow = (cue) =>
     logoWindows.some((w) => safeNumber(cue.start, 0) < w.end && safeNumber(cue.end, 0) > w.start);
+  // Center a caption only if its MIDPOINT falls inside a fullscreen window — a cue that
+  // straddles the b-roll's end returns to base (so it never lingers centred after the
+  // b-roll is gone).
+  const inFullscreenBroll = (cue) => {
+    const mid = (safeNumber(cue.start, 0) + Math.max(safeNumber(cue.start, 0) + 0.05, safeNumber(cue.end, 0))) / 2;
+    return fullscreenBrollWindows.some((w) => mid >= w.start && mid <= w.end);
+  };
   const cues = clipTranscription?.cues?.length
     ? clipTranscription.cues
     : [{ start: 0, end: 2, text: stripCaptionPunctuation(clip.subtitle || "Sous titres automatiques") }];
@@ -1978,8 +1990,9 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindow
     const cueText = renderStyle.uppercase === true ? String(cue.text || "").toUpperCase() : String(cue.text || "");
     const shadowText = assEscapePlain(cueText);
     const inLogo = inLogoWindow(cue);
-    const anim = inLogo ? topAnim : baseAnim;
-    const still = inLogo ? topStill : baseStill;
+    const inFsBroll = !inLogo && inFullscreenBroll(cue);
+    const anim = inLogo ? topAnim : inFsBroll ? centerAnim : baseAnim;
+    const still = inLogo ? topStill : inFsBroll ? centerStill : baseStill;
     const tokens = cueText.split(/\s+/).filter(Boolean);
 
     // Build word segments (single segment = whole cue when karaoke is off / 1 word).
@@ -2684,6 +2697,7 @@ const renderProject = async (db, project, sourceGroup) => {
     // pulled to JUST ABOVE the square (instead of its default band, which would land
     // on top of the square). Set while compositing the b-roll below.
     let subtitleAboveSquare = false;
+    let fullscreenBrollWindows = [];
     if (clip.stage === "reply" && project.settings?.brollEnabled !== false && clip.imageId) {
       const overlayAsset = db.assets.find((asset) => asset.id === clip.imageId && (asset.category === "image" || asset.category === "broll"));
       if (overlayAsset?.filePath) {
@@ -2713,6 +2727,12 @@ const renderProject = async (db, project, sourceGroup) => {
       if (project.settings?.autoMode === true && segments.some((seg) => seg.placement === "square")) {
         subtitleAboveSquare = true;
       }
+      // FULLSCREEN segments cover the speaker → the caption is centred during their
+      // windows (and returns to base afterwards). Collected here for the subtitle build.
+      fullscreenBrollWindows = segments
+        .filter((seg) => seg.placement === "fullscreen")
+        .map((seg) => ({ start: seg.start, end: seg.end }));
+      if (fullscreenBrollWindows.length) console.log(`[layout] clip ${clip.id} caption centred during fullscreen b-roll:`, fullscreenBrollWindows.map((w) => `${w.start.toFixed(1)}-${w.end.toFixed(1)}s`).join(" | "));
       for (let bi = 0; bi < segments.length; bi += 1) {
         const seg = segments[bi];
         // Input: a random window of a video (loop if shorter than the slot), or a held image.
@@ -2820,7 +2840,7 @@ const renderProject = async (db, project, sourceGroup) => {
     // frame so it's never over or under the logo (manual mode: no windows passed).
     // Centred logo → DROP the subtitle during the pop-up window (nothing behind it);
     // base-position logo → LIFT the subtitle to the top so it clears the logo (default).
-    const assFilePath = await buildAssSubtitleFile(project, clip, clipTranscription, logoOnTop ? logoWindows : [], subtitleAboveSquare, logoCenter);
+    const assFilePath = await buildAssSubtitleFile(project, clip, clipTranscription, logoOnTop ? logoWindows : [], subtitleAboveSquare, logoCenter, fullscreenBrollWindows);
     const subtitledVideo = `vsub${clipIndex}`;
     // In AUTO mode the logo is composited LAST (on top of the b-roll AND the
     // subtitles), so write the subtitles to a pre-logo label and let the logo
