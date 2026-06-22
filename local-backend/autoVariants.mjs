@@ -442,6 +442,7 @@ function signatureOf(settings, clips) {
       dsrc: c.dualSpeakerSource, dmz: c.dualSpeakerMainZoom, daz: c.dualSpeakerAddedZoom,
       dmx: c.dualSpeakerMainCropX, dax: c.dualSpeakerAddedCropX, br: c.brollId, im: c.imageId,
       vs: c.videoTransform?.scale, hy: c.hookPosition?.y, sy: c.subtitlePosition?.y,
+      hbs: c.hookBrollSplit ? `${c.hookBrollSplitRatio}:${c.hookBrollSplitPosition}:${(c.hookBrollSplitIds || []).join(",")}` : 0,
     })),
   };
   return stable(sig);
@@ -715,6 +716,34 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
     const hookFontSize = q(clamp(hkLo + rng() * (hkHi - hkLo), 34, 84), 1);
     settings.hookStyle = { ...(settings.hookStyle || {}), bubbleColor: bubble.bubbleColor, textColor: bubble.textColor, fontSize: hookFontSize };
     comboParts.push(`hook ${bubble.bubbleColor} ${hookFontSize}px`);
+  }
+
+  // ---- HOOK B-ROLL SPLIT (optional, OFF by default) ----
+  // When the option is on, the HOOK clip becomes a split-screen whose SECOND band is
+  // ONE-or-SEVERAL random b-rolls (full-bleed, cover-fit → no black bars) instead of a
+  // reaction speaker. The split ratio, the band side and the b-roll count/picks all vary
+  // per variant. Mutually exclusive with the real 2-speaker split on the intro. When the
+  // setting is absent (default) NOTHING runs here, so existing renders are untouched.
+  if (base.settings?.hookBrollSplitEnabled === true && intro) {
+    const brollPool = banks.brolls && banks.brolls.length ? banks.brolls : [];
+    if (brollPool.length) {
+      intro.dualSpeakerEnabled = false; // never both splits on the same hook
+      const splitRatio = q(clamp(0.34 + rng() * 0.32, 0.3, 0.66), 0.01); // band fraction, varied
+      const position = rng() < 0.5 ? "top" : "bottom";               // which band is the b-roll
+      const maxN = Math.min(3, brollPool.length);
+      const n = 1 + Math.floor(rng() * maxN);                        // 1..3 b-rolls
+      const pool = brollPool.slice();
+      const ids = [];
+      for (let k = 0; k < n && pool.length; k += 1) {
+        const idx = Math.floor(rng() * pool.length);
+        ids.push(pool.splice(idx, 1)[0].id);
+      }
+      intro.hookBrollSplit = true;
+      intro.hookBrollSplitRatio = splitRatio;
+      intro.hookBrollSplitPosition = position;
+      intro.hookBrollSplitIds = ids;
+      comboParts.push(`hook split b-roll ×${ids.length} ${Math.round(splitRatio * 100)}/${Math.round((1 - splitRatio) * 100)} ${position}`);
+    }
   }
 
   // ---- SAFE-ZONE LAYOUT (hook + subtitle positions) ----

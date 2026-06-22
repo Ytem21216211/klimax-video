@@ -327,6 +327,9 @@ const mergeProjectSettings = (settings = {}) => {
     brollStyle: ["square", "fullscreen", "alternate"].includes(settings.brollStyle) ? settings.brollStyle : "alternate",
     brollZoom: ["none", "in", "out"].includes(settings.brollZoom) ? settings.brollZoom : "in",
     mirrorEnabled: settings.mirrorEnabled === true,
+    // Optional: split the HOOK clip with a b-roll band (1+ random b-rolls) as the 2nd
+    // "speaker". OFF by default — opt-in (auto picks the params, manual can set fields).
+    hookBrollSplitEnabled: settings.hookBrollSplitEnabled === true,
     zoomOutStartPercent: clamp(safeNumber(settings.zoomOutStartPercent, defaults.zoomOutStartPercent), 110, 260),
     zoomOutDurationSeconds: clamp(safeNumber(settings.zoomOutDurationSeconds, defaults.zoomOutDurationSeconds), 0.4, 3),
     subtitleStyle,
@@ -2513,13 +2516,90 @@ const renderProject = async (db, project, sourceGroup) => {
     const sourceInput = inputIndex;
     inputIndex += 1;
 
+    // HOOK B-ROLL SPLIT (optional): a split-screen where the SECOND band is one or
+    // more b-rolls (cover-fit → no black bars) instead of a reaction speaker. Only the
+    // resolved + DECODABLE b-rolls are kept (a corrupt source would abort the render);
+    // if none survive we fall through to the normal framing. Mutually exclusive with the
+    // real 2-speaker split (the engine sets dualSpeakerEnabled=false when it picks this).
+    // MANUAL/any-mode fallback: if the option is on but no explicit split fields were set
+    // (auto mode pre-fills them per variant), pick them now from the b-roll bank so a
+    // single toggle works everywhere. Seeded by renderRng → logged & reproducible.
+    if (clip.stage === "intro" && project.settings?.hookBrollSplitEnabled === true && !clip.hookBrollSplit) {
+      const pool = db.assets.filter((a) => a.category === "broll" && !a.broken && a.filePath);
+      if (pool.length) {
+        const ratio = 0.34 + renderRng() * 0.32;
+        const position = renderRng() < 0.5 ? "top" : "bottom";
+        const n = 1 + Math.floor(renderRng() * Math.min(3, pool.length));
+        const p = pool.slice(); const ids = [];
+        for (let k = 0; k < n && p.length; k += 1) ids.push(p.splice(Math.floor(renderRng() * p.length), 1)[0].id);
+        clip.hookBrollSplit = true;
+        clip.hookBrollSplitRatio = Math.round(ratio * 100) / 100;
+        clip.hookBrollSplitPosition = position;
+        clip.hookBrollSplitIds = ids;
+      }
+    }
+    const brollSplitIds = clip.hookBrollSplit && Array.isArray(clip.hookBrollSplitIds) ? clip.hookBrollSplitIds : [];
+    const brollSplitAssets = [];
+    for (const id of brollSplitIds) {
+      const a = db.assets.find((x) => x.id === id);
+      if (a?.filePath && (await probeVideoDecodable(a.filePath))) brollSplitAssets.push(a);
+    }
+    const isBrollSplit = brollSplitAssets.length > 0;
+
     let currentVideo = `vbase${clipIndex}`;
     // Dual-Speaker Split-Screen: when enabled and the added source resolves to a
     // registered asset, the base 1080x1920 frame is built by stacking two bands
     // (the main clip + the added speaker video) instead of the standard
     // scale/crop. Everything downstream (zoom, overlays, subtitles, audio)
     // stays identical because we land the result in the same `vbase` label.
-    if (isDualSpeaker) {
+    if (isBrollSplit) {
+      // Split-screen with a B-ROLL band: the speaker fills one band, one-or-several
+      // b-rolls fill the other (cover-fit → fills exactly, no black bars). Several
+      // b-rolls are concatenated across the clip so the band is never empty.
+      const ratio = clamp(safeNumber(clip.hookBrollSplitRatio, 0.5), 0.2, 0.8);
+      const TOP = Math.round(1920 * ratio / 2) * 2;
+      const BOTTOM = 1920 - TOP;
+      const brollOnTop = clip.hookBrollSplitPosition === "top";
+      const brollBandH = brollOnTop ? TOP : BOTTOM;
+      const spkBandH = brollOnTop ? BOTTOM : TOP;
+      const dur = clipDuration > 0 ? clipDuration : 6;
+      const n = brollSplitAssets.length;
+      const slice = dur / n;
+      console.log(`[layout] clip ${clip.id} HOOK b-roll split: ratio=${ratio.toFixed(2)} ${brollOnTop ? "broll-top" : "broll-bottom"} ${n} broll(s)`);
+      // Speaker band (cover-fit, centred) — fps pinned so it stacks with the b-roll band.
+      const spkBand = `spk${clipIndex}`;
+      filterChains.push(
+        `[${sourceInput}:v]${mirrorFx}scale=1080:${spkBandH}:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:${spkBandH},setsar=1,fps=30,trim=0:${dur.toFixed(3)},setpts=PTS-STARTPTS[${spkBand}]`
+      );
+      // B-roll band: each b-roll cover-fit to the band, looped to fill its time slice,
+      // then concatenated end-to-end across the whole clip duration.
+      const bbLabels = [];
+      for (let k = 0; k < n; k += 1) {
+        inputArgs.push("-stream_loop", "-1", "-t", (slice + 0.5).toFixed(3), "-i", brollSplitAssets[k].filePath);
+        const bi = inputIndex; inputIndex += 1;
+        const lab = `bb${clipIndex}_${k}`;
+        // Strip any black bars BAKED INTO the source first (letterbox/pillarbox), then
+        // cover-fit the band — otherwise the source's own bars survive the fill.
+        const contentCrop = await probeBrollContentCrop(brollSplitAssets[k].filePath);
+        filterChains.push(
+          `[${bi}:v]${contentCrop}scale=1080:${brollBandH}:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:${brollBandH},setsar=1,fps=30,trim=0:${slice.toFixed(3)},setpts=PTS-STARTPTS[${lab}]`
+        );
+        bbLabels.push(`[${lab}]`);
+      }
+      let brollBand;
+      if (n === 1) {
+        brollBand = `bb${clipIndex}_0`;
+      } else {
+        brollBand = `brollband${clipIndex}`;
+        filterChains.push(`${bbLabels.join("")}concat=n=${n}:v=1:a=0[${brollBand}]`);
+      }
+      const topLab = brollOnTop ? brollBand : spkBand;
+      const botLab = brollOnTop ? spkBand : brollBand;
+      filterChains.push(`[${topLab}][${botLab}]vstack=inputs=2[clipStacked${clipIndex}]`);
+      filterChains.push(
+        `[clipStacked${clipIndex}]setsar=1${videoFilterChain(project.settings?.videoFilterKey)},format=rgba[${currentVideo}]`
+      );
+    } else if (isDualSpeaker) {
       const ratio = clamp(safeNumber(clip.dualSpeakerSplitRatio, 0.5), 0.2, 0.8);
       const TOP = Math.round(1920 * ratio);
       const BOTTOM = 1920 - TOP;
@@ -3928,7 +4008,7 @@ const releaseRenderSlot = () => {
 // v7: captions are mouth-safe (always below the speaker's mouth + margin) with a base
 // offset + per-render vertical jitter; b-roll square gets ±3% size jitter.
 // v8: caption centre capped (never glued to the bottom, SUB_MAX_CENTER ≈0.78·H).
-const AUTO_ENGINE_VERSION = 9;
+const AUTO_ENGINE_VERSION = 10;
 
 const processAutoJob = async (job) => {
   if (job._running) return;

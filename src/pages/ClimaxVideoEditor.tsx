@@ -847,6 +847,7 @@ const ClimaxVideoEditor = () => {
   const [brollShutterMode, setBrollShutterMode] = useState(false);
   // Mirror effect: flips the source footage of every clip horizontally (overlays stay readable).
   const [mirrorEnabled, setMirrorEnabled] = useState(false);
+  const [hookBrollSplitEnabled, setHookBrollSplitEnabled] = useState(false);
   // B-roll style: "square", "fullscreen" (9:16), or "alternate" (both).
   const [brollStyle, setBrollStyle] = useState<"square" | "fullscreen" | "alternate">("alternate");
   // B-roll zoom motion (Ken Burns): none, in, or out.
@@ -911,12 +912,13 @@ const ClimaxVideoEditor = () => {
       clipTransitionType,
       brollShutterMode,
       mirrorEnabled,
+      hookBrollSplitEnabled,
       brollStyle,
       brollZoom,
       logoTriggerWord: "klimax",
     });
     return () => { delete (window as any).__klimaxCurrentSnapshot; };
-  }, [hookText, subtitleSize, subtitleStyle, hookStyle, selectedMusicId, musicEnabled, musicVolumeDb, videoVolumeDb, videoFilterKey, brollEnabled, autoSfxEnabled, autoZoomEnabled, autoZoomMode, autoZoomBoostPercent, autoZoomDurationSeconds, introZoomOutEnabled, replyZoomOutEnabled, zoomOutStartPercent, zoomOutDurationSeconds, klimaxLogoEnabled, clipTransitionsEnabled, clipTransitionType, brollShutterMode, mirrorEnabled, brollStyle, brollZoom]);
+  }, [hookText, subtitleSize, subtitleStyle, hookStyle, selectedMusicId, musicEnabled, musicVolumeDb, videoVolumeDb, videoFilterKey, brollEnabled, autoSfxEnabled, autoZoomEnabled, autoZoomMode, autoZoomBoostPercent, autoZoomDurationSeconds, introZoomOutEnabled, replyZoomOutEnabled, zoomOutStartPercent, zoomOutDurationSeconds, klimaxLogoEnabled, clipTransitionsEnabled, clipTransitionType, brollShutterMode, mirrorEnabled, hookBrollSplitEnabled, brollStyle, brollZoom]);
 
   // Apply a preset from the Presets panel: update local state, then save the project.
   React.useEffect(() => {
@@ -954,6 +956,7 @@ const ClimaxVideoEditor = () => {
       if (detail.clipTransitionType === "opacity" || detail.clipTransitionType === "camera_flash" || detail.clipTransitionType === "random") setClipTransitionType(detail.clipTransitionType);
       if (typeof detail.brollShutterMode === "boolean") setBrollShutterMode(detail.brollShutterMode);
       if (typeof detail.mirrorEnabled === "boolean") setMirrorEnabled(detail.mirrorEnabled);
+      if (typeof detail.hookBrollSplitEnabled === "boolean") setHookBrollSplitEnabled(detail.hookBrollSplitEnabled);
       if (detail.brollStyle === "square" || detail.brollStyle === "fullscreen" || detail.brollStyle === "alternate") setBrollStyle(detail.brollStyle);
       if (detail.brollZoom === "none" || detail.brollZoom === "in" || detail.brollZoom === "out") setBrollZoom(detail.brollZoom);
       toast({ title: "Preset appliqué", description: "Les réglages sont en place. Sauvegarde le projet pour les conserver." });
@@ -1054,6 +1057,7 @@ const ClimaxVideoEditor = () => {
     setBrollEnabled(project.settings?.brollEnabled !== false);
     setBrollShutterMode(project.settings?.brollShutterMode === true);
     setMirrorEnabled(project.settings?.mirrorEnabled === true);
+    setHookBrollSplitEnabled(project.settings?.hookBrollSplitEnabled === true);
     setBrollStyle(
       ["square", "fullscreen", "alternate"].includes(project.settings?.brollStyle as string)
         ? (project.settings!.brollStyle as "square" | "fullscreen" | "alternate")
@@ -1551,6 +1555,7 @@ const ClimaxVideoEditor = () => {
       clipTransitionType,
       brollShutterMode,
       mirrorEnabled,
+      hookBrollSplitEnabled,
       brollStyle,
       brollZoom,
       brollEnabled,
@@ -1591,6 +1596,7 @@ const ClimaxVideoEditor = () => {
     mergedHookStyle,
     mergedSubtitleStyle,
     mirrorEnabled,
+    hookBrollSplitEnabled,
     replyZoomOutEnabled,
     selectedMusicId,
     musicEnabled,
@@ -1653,6 +1659,7 @@ const ClimaxVideoEditor = () => {
       clipTransitionType,
       brollShutterMode,
       mirrorEnabled,
+      hookBrollSplitEnabled,
       brollStyle,
       brollZoom,
       brollEnabled,
@@ -3160,6 +3167,7 @@ const ClimaxVideoEditor = () => {
                 { label: "B-rolls sous le texte", value: brollEnabled, setter: setBrollEnabled, icon: Image },
                 { label: "Mode shutter (b-roll)", value: brollShutterMode, setter: setBrollShutterMode, icon: Image },
                 { label: "Effet miroir", value: mirrorEnabled, setter: setMirrorEnabled, icon: Scissors },
+                { label: "Split hook avec b-roll", value: hookBrollSplitEnabled, setter: setHookBrollSplitEnabled, icon: Image },
                 { label: "Musique active", value: musicEnabled, setter: setMusicEnabled, icon: Music },
                 { label: "Logo KLIMAX sur mot clé", value: klimaxLogoEnabled, setter: setKlimaxLogoEnabled, icon: Sparkles },
               ].map((setting) => {

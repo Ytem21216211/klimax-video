@@ -110,6 +110,7 @@ export type LocalKlimaxProject = {
     clipTransitionsEnabled?: boolean;
     clipTransitionType?: "random" | "opacity" | "camera_flash";
     mirrorEnabled?: boolean;
+    hookBrollSplitEnabled?: boolean;
     brollShutterMode?: boolean;
     brollAnimIn?: "fade" | "none";
     brollAnimOut?: "fade" | "none";
