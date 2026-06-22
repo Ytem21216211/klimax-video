@@ -95,7 +95,9 @@ const LOGO_PREVIEW_FRAME_RATIO = 734 / 1080;
 // rectangle, soft shadow), shared 1:1 with the export (render_hook_bubble.py).
 // Only the hook TEXT options (color, size, position) stay editable.
 const HOOK_FONT_CSS = "Helvetica, 'Helvetica Neue', Arial, sans-serif";
-const HOOK_BUBBLE_RADIUS = 64; // canvas px (rounded rectangle, not a full pill)
+const HOOK_BUBBLE_RADIUS = 39; // canvas px ≈ 0.19 × a 2-line bubble height — matches the
+                               // TikTok-native corner the export uses (radiusRatio 0.19);
+                               // the old 64 made short bubbles look like a full "pill".
 const HOOK_BUBBLE_PAD_X = 56;  // canvas px
 const HOOK_BUBBLE_PAD_Y = 30;  // canvas px
 

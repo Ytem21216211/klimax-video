@@ -2077,7 +2077,10 @@ const createHookBubbleOverlay = async (project, clip) => {
     // The bubble auto-stretches with the text and wraps once it hits maxWidth.
     maxWidth: Math.round(clipLayout.hookSize.width * HOOK_SCALE),
     minHeight: Math.round(clipLayout.hookSize.height * HOOK_SCALE),
-    radius: Math.round(64 * HOOK_SCALE),
+    // TikTok-native corner: radius ≈ 0.19 × bubble height (measured from a real TikTok
+    // caption). A ratio (not a fixed px) keeps the rounded-rectangle look for 1 or 2
+    // lines; the old fixed 64 turned short bubbles into an over-rounded "pill".
+    radiusRatio: 0.19,
     paddingX: Math.round(56 * HOOK_SCALE),
     paddingY: Math.round(30 * HOOK_SCALE),
   });

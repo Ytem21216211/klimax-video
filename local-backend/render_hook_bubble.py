@@ -207,6 +207,11 @@ def main() -> int:
     max_bubble_width = max(240, min(CANVAS_WIDTH, int(config.get("maxWidth", config.get("bubbleWidth", 980)))))
     min_bubble_height = max(80, min(CANVAS_HEIGHT, int(config.get("minHeight", config.get("bubbleHeight", 120)))))
     radius_cfg = max(8, int(config.get("radius", 64)))
+    # TikTok-native corner: a fixed FRACTION of the bubble height (measured ~0.19 from a
+    # real TikTok caption) instead of a fixed px value — so the rounded-rectangle look
+    # holds for 1 or 2 lines and at any scale (a fixed px turned short bubbles into a
+    # full "pill"). radiusRatio>0 wins over the legacy fixed `radius`.
+    radius_ratio = float(config.get("radiusRatio", 0) or 0)
 
     image = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
@@ -252,8 +257,11 @@ def main() -> int:
     bubble_right = bubble_left + bubble_width
     bubble_top = max(0, min(CANVAS_HEIGHT - bubble_height, center_y - bubble_height // 2))
     bubble_bottom = bubble_top + bubble_height
-    # Configurable corner radius, never beyond the full pill (half-height).
-    radius = min(radius_cfg, bubble_height // 2)
+    # Configurable corner radius, never beyond the full pill (half-height). With
+    # radiusRatio set, the radius tracks the height (TikTok ~0.19) for a consistent
+    # rounded-rectangle on any line count.
+    radius = round(bubble_height * radius_ratio) if radius_ratio > 0 else radius_cfg
+    radius = max(8, min(radius, bubble_height // 2))
 
     # Soft drop shadow under the bubble — reproduces the preview's
     # shadow-[0_16px_50px_rgba(0,0,0,0.45)] scaled to the 1080-wide canvas. The
