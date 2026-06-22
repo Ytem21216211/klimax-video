@@ -352,6 +352,7 @@ export const localKlimaxApi = {
     variantsPerVideo: number;
     varied: Record<string, boolean>;
     lockSplitScreen?: boolean;
+    hookBrollSplit?: boolean;
     subtitleSizePx?: number;
   }) {
     return parseResponse<{ jobId: string; total: number; items: LocalAutoItem[]; achievablePerVideo: LocalAutoAchievable[] }>(
@@ -379,6 +380,7 @@ export const localKlimaxApi = {
     variantsPerVideo: number;
     varied: Record<string, boolean>;
     lockSplitScreen?: boolean;
+    hookBrollSplit?: boolean;
     subtitleSizePx?: number;
   }) {
     return parseResponse<{ projects: AutoPlanProject[] }>(

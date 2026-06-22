@@ -4181,10 +4181,11 @@ const parseAutoBatchParams = (body) => ({
   variantsPerVideo: clamp(Math.round(safeNumber(body?.variantsPerVideo, 6)), 1, 20),
   varied: body?.varied || { broll: true, subtitles: true, hook: true, sfx: false, zooms: false, music: true },
   lockSplitScreen: body?.lockSplitScreen === true,
+  hookBrollSplit: body?.hookBrollSplit === true,
   subtitleSizePx: body?.subtitleSizePx != null ? clamp(Math.round(safeNumber(body.subtitleSizePx, 0)), 30, 120) : 0,
 });
 
-const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, subtitleSizePx, plannerOverrides, genHooks = true, assetPools = null, hookBank = null }) => {
+const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit = false, subtitleSizePx, plannerOverrides, genHooks = true, assetPools = null, hookBank = null }) => {
   const { planVideoVariants } = await import("./autoVariants.mjs");
   // Assemble/reuse a project per video pair and transcribe it (whisper) — A→Z.
   const allProjectIds = [...projectIds];
@@ -4240,6 +4241,9 @@ const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, 
       baseSettings.subtitleSize = subtitleSizePx;
       baseSettings.subtitleStyle = { ...(baseSettings.subtitleStyle || {}), fontSize: subtitleSizePx };
     }
+    // Auto-mode toggle: force the hook b-roll split on for this batch (the engine then
+    // picks ratio/side/count/b-rolls per variant). When off, the project's own setting wins.
+    if (hookBrollSplit) baseSettings.hookBrollSplitEnabled = true;
     const base = {
       settings: baseSettings,
       clips: project.clips || [],
@@ -4267,7 +4271,7 @@ const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, 
 app.post("/api/auto/generate", async (req, res) => {
   await loadAutoJobs();
   const db = await readDb();
-  const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
+  const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
   // Training mode: learned overrides narrow the deterministic picks. A studio project's
   // overrides fold on top. Snapshot the MERGED set on the job so a resumed/re-derived
   // job reproduces the exact same variants even if rules/projects change later.
@@ -4275,7 +4279,7 @@ app.post("/api/auto/generate", async (req, res) => {
 
   if (!videoGroupIds.length && !projectIds.length) return res.status(400).json({ error: "Aucune vidéo sélectionnée." });
   const { allProjectIds, perProject } = await buildAutoPlan(db, {
-    videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, subtitleSizePx, plannerOverrides, assetPools, hookBank,
+    videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, subtitleSizePx, plannerOverrides, assetPools, hookBank,
   });
 
   const jobId = `auto-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -4318,11 +4322,11 @@ app.post("/api/auto/generate", async (req, res) => {
 app.post("/api/auto/plan", async (req, res) => {
   try {
     const db = await readDb();
-    const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
+    const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
     if (!videoGroupIds.length && !projectIds.length) return res.status(400).json({ error: "Aucune vidéo sélectionnée." });
     const plannerOverrides = { ...(await getPlannerOverrides()), ...(overrides || {}) };
     const { perProject } = await buildAutoPlan(db, {
-      videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, subtitleSizePx, plannerOverrides, assetPools, hookBank,
+      videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, subtitleSizePx, plannerOverrides, assetPools, hookBank,
     });
     const lite = (asset) => (asset ? { id: asset.id, title: asset.title, fileUrl: asset.fileUrl } : null);
     const speakers = db.assets.filter((a) => a.category === "speaker").map(lite);
