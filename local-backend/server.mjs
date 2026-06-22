@@ -2524,7 +2524,7 @@ const renderProject = async (db, project, sourceGroup) => {
     // MANUAL/any-mode fallback: if the option is on but no explicit split fields were set
     // (auto mode pre-fills them per variant), pick them now from the b-roll bank so a
     // single toggle works everywhere. Seeded by renderRng → logged & reproducible.
-    if (clip.stage === "intro" && project.settings?.hookBrollSplitEnabled === true && !clip.hookBrollSplit) {
+    if (clip.stage === "intro" && project.settings?.hookBrollSplitEnabled === true && !clip.hookBrollSplit && !clip.dualSpeakerEnabled) {
       const pool = db.assets.filter((a) => a.category === "broll" && !a.broken && a.filePath);
       if (pool.length) {
         const ratio = 0.34 + renderRng() * 0.32;
@@ -4008,7 +4008,7 @@ const releaseRenderSlot = () => {
 // v7: captions are mouth-safe (always below the speaker's mouth + margin) with a base
 // offset + per-render vertical jitter; b-roll square gets ±3% size jitter.
 // v8: caption centre capped (never glued to the bottom, SUB_MAX_CENTER ≈0.78·H).
-const AUTO_ENGINE_VERSION = 10;
+const AUTO_ENGINE_VERSION = 11;
 
 const processAutoJob = async (job) => {
   if (job._running) return;

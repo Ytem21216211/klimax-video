@@ -489,13 +489,28 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
   settings.mirrorEnabled = variantIndex % 2 === 1;
   const mirrored = settings.mirrorEnabled === true;
 
+  // ---- INTRO HOOK MODE — when the HOOK B-ROLL SPLIT option is on, decide HERE (before
+  // the split block) whether this variant's hook is a B-ROLL split or, if the 2-speaker
+  // option is ALSO on, a real 2-speaker split: exactly ONE of them, ~50/50 per variant.
+  // This guarantees the two never both fire on the same hook (no bug) and gives the
+  // requested 1/2 mix. When the option is off, nothing changes (no rng draw, no effect).
+  const brollSplitOptionOn = base.settings?.hookBrollSplitEnabled === true && (banks.brolls?.length || 0) > 0 && !!intro;
+  const twoSpeakerOptionOn = !lockSplitScreen && (banks.speakers?.length || 0) > 0 && !!reply;
+  let brollSplitChosen = false, forceTwoSpeaker = false;
+  if (brollSplitOptionOn) {
+    if (twoSpeakerOptionOn) { if (rng() < 0.5) brollSplitChosen = true; else forceTwoSpeaker = true; }
+    else brollSplitChosen = true;
+  }
+
   // ---- SPLIT-SCREEN (primary lever, FIRST CLIP ONLY) — varies unless locked ----
   let introRatio = intro?.dualSpeakerSplitRatio ?? 0.5;
   if (!lockSplitScreen) {
     const speakers = banks.speakers || [];
     // A "rush simple" (solo project, no reply clip) is rendered as JUST that one rush —
-    // never split with a reaction speaker. Split is a podcast-only lever.
-    const two = !!reply && speakers.length > 0 && isTwoSpeaker(variantIndex, cfg.twoSpeakerRatio);
+    // never split with a reaction speaker. Split is a podcast-only lever. When the hook
+    // is going to be a B-ROLL split this variant, the 2-speaker split is suppressed;
+    // when the 50/50 picked the 2-speaker side, it's forced on.
+    const two = !brollSplitChosen && (forceTwoSpeaker || (!!reply && speakers.length > 0 && isTwoSpeaker(variantIndex, cfg.twoSpeakerRatio)));
     // The 2nd speaker (reaction) is the bank clip that is NOT the same person as the
     // intro's main speaker — so a "julien" intro gets "shelly", a "shelly" intro gets
     // "other version". Never the same person twice. We match the speaker's name token
@@ -724,7 +739,7 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
   // reaction speaker. The split ratio, the band side and the b-roll count/picks all vary
   // per variant. Mutually exclusive with the real 2-speaker split on the intro. When the
   // setting is absent (default) NOTHING runs here, so existing renders are untouched.
-  if (base.settings?.hookBrollSplitEnabled === true && intro) {
+  if (brollSplitChosen && intro) {
     const brollPool = banks.brolls && banks.brolls.length ? banks.brolls : [];
     if (brollPool.length) {
       intro.dualSpeakerEnabled = false; // never both splits on the same hook
@@ -781,18 +796,35 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
       }
       intro.hookSize = intro.hookSize || { width: 980, height: 120 };
       const hookText = intro.hookText || settings.hookText || "";
-      const hp = computeHookPosition({
-        dualSpeakerEnabled: !!intro.dualSpeakerEnabled,
-        splitRatio: intro.dualSpeakerSplitRatio ?? introRatio,
-        hookHeight: intro.hookSize.height,
-        hookHeightEst: estimateHookHeight(hookText, intro.hookSize.height, settings.hookStyle?.fontSize),
-        rng, margin: cfg.hookMargin, maxHeight: cfg.hookMaxHeight, faces: introFaces,
-      });
-      intro.hookPosition = { x: hp.x, y: hp.y };
-      intro.hookSize = { ...intro.hookSize, height: hp.height };
-      intro.subtitlePosition = computeSubtitlePosition({
-        hookY: hp.y, hookHeight: hp.geomHeight, rng, faces: introFaces, blockH,
-      });
+      if (intro.hookBrollSplit) {
+        // HOOK B-ROLL SPLIT layout: the hook text rides the SPEAKER band (NOT centred on
+        // the seam between the two bands), and the caption sits RANDOMLY over the B-ROLL
+        // band — never too low (capped) and never on the hook (it's in the other band).
+        const r = intro.hookBrollSplitRatio ?? 0.5;
+        const TOP = Math.round(1920 * r);
+        const brollTop = intro.hookBrollSplitPosition === "top";
+        const spk0 = brollTop ? TOP : 0, spk1 = brollTop ? 1920 : TOP;
+        const br0 = brollTop ? 0 : TOP, br1 = brollTop ? TOP : 1920;
+        intro.hookPosition = { x: 540, y: Math.round(spk0 + (spk1 - spk0) * 0.42) };
+        const half = Math.round(blockH / 2);
+        const lo = br0 + half + 24;
+        const hi = Math.min(br1 - half - 24, Math.round(0.78 * 1920)); // jamais trop bas
+        const rr = rng();
+        intro.subtitlePosition = { x: 540, y: hi > lo ? Math.round(lo + rr * (hi - lo)) : Math.round((br0 + br1) / 2) };
+      } else {
+        const hp = computeHookPosition({
+          dualSpeakerEnabled: !!intro.dualSpeakerEnabled,
+          splitRatio: intro.dualSpeakerSplitRatio ?? introRatio,
+          hookHeight: intro.hookSize.height,
+          hookHeightEst: estimateHookHeight(hookText, intro.hookSize.height, settings.hookStyle?.fontSize),
+          rng, margin: cfg.hookMargin, maxHeight: cfg.hookMaxHeight, faces: introFaces,
+        });
+        intro.hookPosition = { x: hp.x, y: hp.y };
+        intro.hookSize = { ...intro.hookSize, height: hp.height };
+        intro.subtitlePosition = computeSubtitlePosition({
+          hookY: hp.y, hookHeight: hp.geomHeight, rng, faces: introFaces, blockH,
+        });
+      }
     }
     if (reply && reply !== intro) {
       const replyFaces = [];
