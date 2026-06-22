@@ -297,12 +297,20 @@ const freeIntervals = (blocked) => {
 
 // Real on-screen height of the hook bubble PNG (render_hook_bubble.py wraps at
 // maxWidth ≈ 784 px / HOOK_SCALE 0.8 — ≈38 chars per line at ~42 px Helvetica).
-export const estimateHookHeight = (text, layoutHeight = 120) => {
+export const estimateHookHeight = (text, layoutHeight = 120, fontSize = 53) => {
+  // Effective on-screen px = fontSize * HOOK_SCALE (0.8). The baseline (38 chars/line,
+  // 55 px/line, 48 px padding) was tuned for ~42 px effective (= 53 * 0.8); scale it
+  // with the chosen size so a BIGGER hook is estimated taller (chars/line shrink, line
+  // advance grows) and the mouth-safe placement stays correct when the size varies.
+  const eff = Math.max(20, (Number(fontSize) || 53) * 0.8);
+  const k = eff / 42;
   const len = String(text || "").trim().length;
   const minH = Math.max(96, Math.round(layoutHeight * 0.8));
   if (!len) return minH;
-  const lines = Math.max(1, Math.ceil(len / 38));
-  return Math.max(minH, 48 + lines * 55);
+  const charsPerLine = Math.max(12, Math.round(38 / k));
+  const lineH = Math.max(28, Math.round(55 * k));
+  const lines = Math.max(1, Math.ceil(len / charsPerLine));
+  return Math.max(minH, Math.round(48 * k) + lines * lineH);
 };
 
 // On-screen height of one caption line (wordsPerLine is forced to 2 -> single line):
@@ -425,7 +433,7 @@ function signatureOf(settings, clips) {
   const sig = {
     f: s.videoFilterKey, sp: s.subtitleStyle?.stylePreset, an: s.subtitleStyle?.animationPreset,
     ff: s.subtitleStyle?.fontFamily, ss: s.subtitleSize, tc: s.subtitleStyle?.textColor,
-    hk: s.hookText, hf: s.hookStyle?.fontFamily, hb: s.hookStyle?.bubbleColor,
+    hk: s.hookText, hf: s.hookStyle?.fontFamily, hb: s.hookStyle?.bubbleColor, hs: s.hookStyle?.fontSize,
     mu: s.musicId, mv: s.musicVolumeDb, vv: s.videoVolumeDb,
     zm: s.autoZoomMode, zb: s.autoZoomBoostPercent, zoi: s.introZoomOutEnabled, zor: s.replyZoomOutEnabled,
     tr: s.clipTransitionType, bs: s.brollStyle, bsq: s.brollSquareScale, mi: s.mirrorEnabled,
@@ -699,8 +707,14 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
     // Hook COLOUR varies again (white / black / yellow / red …) instead of being
     // forced to white — avoid repeating the previous variant's bubble colour.
     const bubble = pickAvoid(HOOK_BUBBLES, rng, HOOK_BUBBLES.find((b) => b.bubbleColor === prev.hookBubble));
-    settings.hookStyle = { ...(settings.hookStyle || {}), bubbleColor: bubble.bubbleColor, textColor: bubble.textColor };
-    comboParts.push(`hook ${bubble.bubbleColor}`);
+    // Hook SIZE varies too (like the subtitle size) so no two renders share the same
+    // bubble dimensions — the bubble hugs the text, so the font size drives the whole
+    // hook size. Range is overridable (hookSizeMin/Max); the layout's height estimate
+    // below is size-aware so the bubble stays off the mouth whatever size is drawn.
+    const [hkLo, hkHi] = range("hookSizeMin", "hookSizeMax", 46, 64);
+    const hookFontSize = q(clamp(hkLo + rng() * (hkHi - hkLo), 34, 84), 1);
+    settings.hookStyle = { ...(settings.hookStyle || {}), bubbleColor: bubble.bubbleColor, textColor: bubble.textColor, fontSize: hookFontSize };
+    comboParts.push(`hook ${bubble.bubbleColor} ${hookFontSize}px`);
   }
 
   // ---- SAFE-ZONE LAYOUT (hook + subtitle positions) ----
@@ -742,7 +756,7 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
         dualSpeakerEnabled: !!intro.dualSpeakerEnabled,
         splitRatio: intro.dualSpeakerSplitRatio ?? introRatio,
         hookHeight: intro.hookSize.height,
-        hookHeightEst: estimateHookHeight(hookText, intro.hookSize.height),
+        hookHeightEst: estimateHookHeight(hookText, intro.hookSize.height, settings.hookStyle?.fontSize),
         rng, margin: cfg.hookMargin, maxHeight: cfg.hookMaxHeight, faces: introFaces,
       });
       intro.hookPosition = { x: hp.x, y: hp.y };

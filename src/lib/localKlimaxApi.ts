@@ -644,6 +644,8 @@ export type StudioOverrides = {
   splitRatioMax?: number;
   subtitleSizeMin?: number;
   subtitleSizeMax?: number;
+  hookSizeMin?: number;
+  hookSizeMax?: number;
   logoSizeMin?: number;
   logoSizeMax?: number;
   zoomMaxBoostPercent?: number;
