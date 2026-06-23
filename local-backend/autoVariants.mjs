@@ -796,35 +796,25 @@ export function buildVariant({ base, videoId, variantIndex, varied = {}, lockSpl
       }
       intro.hookSize = intro.hookSize || { width: 980, height: 120 };
       const hookText = intro.hookText || settings.hookText || "";
-      if (intro.hookBrollSplit) {
-        // HOOK B-ROLL SPLIT layout: the hook text rides the SPEAKER band (NOT centred on
-        // the seam between the two bands), and the caption sits RANDOMLY over the B-ROLL
-        // band — never too low (capped) and never on the hook (it's in the other band).
-        const r = intro.hookBrollSplitRatio ?? 0.5;
-        const TOP = Math.round(1920 * r);
-        const brollTop = intro.hookBrollSplitPosition === "top";
-        const spk0 = brollTop ? TOP : 0, spk1 = brollTop ? 1920 : TOP;
-        const br0 = brollTop ? 0 : TOP, br1 = brollTop ? TOP : 1920;
-        intro.hookPosition = { x: 540, y: Math.round(spk0 + (spk1 - spk0) * 0.42) };
-        const half = Math.round(blockH / 2);
-        const lo = br0 + half + 24;
-        const hi = Math.min(br1 - half - 24, Math.round(0.78 * 1920)); // jamais trop bas
-        const rr = rng();
-        intro.subtitlePosition = { x: 540, y: hi > lo ? Math.round(lo + rr * (hi - lo)) : Math.round((br0 + br1) / 2) };
-      } else {
-        const hp = computeHookPosition({
-          dualSpeakerEnabled: !!intro.dualSpeakerEnabled,
-          splitRatio: intro.dualSpeakerSplitRatio ?? introRatio,
-          hookHeight: intro.hookSize.height,
-          hookHeightEst: estimateHookHeight(hookText, intro.hookSize.height, settings.hookStyle?.fontSize),
-          rng, margin: cfg.hookMargin, maxHeight: cfg.hookMaxHeight, faces: introFaces,
-        });
-        intro.hookPosition = { x: hp.x, y: hp.y };
-        intro.hookSize = { ...intro.hookSize, height: hp.height };
-        intro.subtitlePosition = computeSubtitlePosition({
-          hookY: hp.y, hookHeight: hp.geomHeight, rng, faces: introFaces, blockH,
-        });
-      }
+      // The HOOK B-ROLL SPLIT places the hook exactly like a 2-speaker split: ON the line
+      // that separates the two bands (the seam), with the caption just BELOW it. So treat
+      // it as "split-like" and feed the b-roll split ratio as the seam position.
+      const splitLike = !!intro.dualSpeakerEnabled || !!intro.hookBrollSplit;
+      const splitRatioForHook = intro.hookBrollSplit
+        ? (intro.hookBrollSplitRatio ?? 0.5)
+        : (intro.dualSpeakerSplitRatio ?? introRatio);
+      const hp = computeHookPosition({
+        dualSpeakerEnabled: splitLike,
+        splitRatio: splitRatioForHook,
+        hookHeight: intro.hookSize.height,
+        hookHeightEst: estimateHookHeight(hookText, intro.hookSize.height, settings.hookStyle?.fontSize),
+        rng, margin: cfg.hookMargin, maxHeight: cfg.hookMaxHeight, faces: introFaces,
+      });
+      intro.hookPosition = { x: hp.x, y: hp.y };
+      intro.hookSize = { ...intro.hookSize, height: hp.height };
+      intro.subtitlePosition = computeSubtitlePosition({
+        hookY: hp.y, hookHeight: hp.geomHeight, rng, faces: introFaces, blockH,
+      });
     }
     if (reply && reply !== intro) {
       const replyFaces = [];

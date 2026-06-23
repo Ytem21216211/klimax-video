@@ -4008,7 +4008,7 @@ const releaseRenderSlot = () => {
 // v7: captions are mouth-safe (always below the speaker's mouth + margin) with a base
 // offset + per-render vertical jitter; b-roll square gets ±3% size jitter.
 // v8: caption centre capped (never glued to the bottom, SUB_MAX_CENTER ≈0.78·H).
-const AUTO_ENGINE_VERSION = 11;
+const AUTO_ENGINE_VERSION = 12;
 
 const processAutoJob = async (job) => {
   if (job._running) return;
