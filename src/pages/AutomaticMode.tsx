@@ -113,6 +113,7 @@ const AutomaticMode = () => {
   const [varySplit, setVarySplit] = useState(true); // split-screen is the primary lever; lock = !varySplit
   const [hookBrollSplit, setHookBrollSplit] = useState(false); // optional: hook split where band 2 = random b-roll(s)
   const [shake, setShake] = useState(false); // optional: subtle "sigma" hand-held shake over the whole video
+  const [blurBg, setBlurBg] = useState(false); // optional: shrink montage centred over a big blurred copy (~1/2 variants)
   const [variantsPerVideo, setVariantsPerVideo] = useState(6);
   const [job, setJob] = useState<LocalAutoJob | null>(null);
   const [starting, setStarting] = useState(false);
@@ -295,6 +296,7 @@ const AutomaticMode = () => {
         lockSplitScreen: !varySplit,
         hookBrollSplit,
         shake,
+        blurBg,
       });
       setJob({ id: res.jobId, createdAt: new Date().toISOString(), finishedAt: null, total: res.total, done: 0, items: res.items });
       const capped = (res.achievablePerVideo || []).filter((a) => a.achievable < a.requested);
@@ -508,6 +510,24 @@ const AutomaticMode = () => {
               <div className="flex shrink-0 flex-col items-end gap-2">
                 <Switch checked={shake} onCheckedChange={setShake} />
                 <span className={cn("text-[10px] font-black uppercase tracking-[0.16em]", shake ? "text-white" : "text-white/35")}>{shake ? "Activé" : "Off"}</span>
+              </div>
+            </div>
+            {/* Blur background: shrink the montage centred over a big blurred copy of itself */}
+            <div className="flex items-start justify-between gap-4 rounded-2xl border border-white/15 bg-white/[0.05] p-4 sm:col-span-2">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-white/70"><Film className="h-4 w-4" /></div>
+                <div className="min-w-0">
+                  <p className="text-sm font-black uppercase tracking-tight">Flou background</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-white/45">
+                    {blurBg
+                      ? "Le montage de base est réduit et centré, avec le même rendu en grand + flou derrière. Appliqué sur ~1/2 des variantes."
+                      : "Désactivé : montage plein cadre normal."}
+                  </p>
+                </div>
+              </div>
+              <div className="flex shrink-0 flex-col items-end gap-2">
+                <Switch checked={blurBg} onCheckedChange={setBlurBg} />
+                <span className={cn("text-[10px] font-black uppercase tracking-[0.16em]", blurBg ? "text-white" : "text-white/35")}>{blurBg ? "Activé" : "Off"}</span>
               </div>
             </div>
 

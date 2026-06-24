@@ -112,6 +112,7 @@ export type LocalKlimaxProject = {
     mirrorEnabled?: boolean;
     hookBrollSplitEnabled?: boolean;
     shakeEnabled?: boolean;
+    blurBgEnabled?: boolean;
     brollShutterMode?: boolean;
     brollAnimIn?: "fade" | "none";
     brollAnimOut?: "fade" | "none";
@@ -355,6 +356,7 @@ export const localKlimaxApi = {
     lockSplitScreen?: boolean;
     hookBrollSplit?: boolean;
     shake?: boolean;
+    blurBg?: boolean;
     subtitleSizePx?: number;
   }) {
     return parseResponse<{ jobId: string; total: number; items: LocalAutoItem[]; achievablePerVideo: LocalAutoAchievable[] }>(
@@ -384,6 +386,7 @@ export const localKlimaxApi = {
     lockSplitScreen?: boolean;
     hookBrollSplit?: boolean;
     shake?: boolean;
+    blurBg?: boolean;
     subtitleSizePx?: number;
   }) {
     return parseResponse<{ projects: AutoPlanProject[] }>(

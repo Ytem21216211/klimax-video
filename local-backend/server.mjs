@@ -339,6 +339,9 @@ const mergeProjectSettings = (settings = {}) => {
     // Optional "sigma" hand-held shake over the whole video (auto picks per-variant
     // values at render time; ~1/3 of renders get none even when on). OFF by default.
     shakeEnabled: settings.shakeEnabled === true,
+    // Optional: shrink the base montage centred over a big blurred copy of itself (auto;
+    // ~1/2 of variants). OFF by default.
+    blurBgEnabled: settings.blurBgEnabled === true,
     zoomOutStartPercent: clamp(safeNumber(settings.zoomOutStartPercent, defaults.zoomOutStartPercent), 110, 260),
     zoomOutDurationSeconds: clamp(safeNumber(settings.zoomOutDurationSeconds, defaults.zoomOutDurationSeconds), 0.4, 3),
     subtitleStyle,
@@ -3163,6 +3166,26 @@ const renderProject = async (db, project, sourceGroup) => {
     }
   }
 
+  // ---- BLUR BACKGROUND (optional, AUTO) — keep the exact base montage but shrink it,
+  // centre it, and put the SAME render BIG + heavily blurred behind it. Decided at render
+  // time → applied on ~1/2 of the variants when the option is on. Cheap blur via a hard
+  // downscale→upscale (no costly full-res gblur).
+  if (project.settings?.blurBgEnabled === true) {
+    if (renderRng() < 0.5) {
+      const small = 0.82;
+      const fw = Math.round(1080 * small / 2) * 2;
+      const fh = Math.round(1920 * small / 2) * 2;
+      filterChains.push(`[${finalVideoTag}]split=2[bgsrc][fgsrc]`);
+      filterChains.push(`[bgsrc]scale=146:260,gblur=sigma=6,scale=1080:1920:flags=bilinear,setsar=1,eq=brightness=-0.05:saturation=1.05[blurbg]`);
+      filterChains.push(`[fgsrc]scale=${fw}:${fh}:flags=lanczos,setsar=1[fgsm]`);
+      filterChains.push(`[blurbg][fgsm]overlay=(W-w)/2:(H-h)/2,format=yuv420p[vblur]`);
+      finalVideoTag = "vblur";
+      console.log(`[layout] blur background ON (foreground ${Math.round(small * 100)}% centred)`);
+    } else {
+      console.log(`[layout] blur background skipped this render (1/2)`);
+    }
+  }
+
   const musicAssetId = project.settings?.musicId || clipsToRender.find((clip) => clip.musicId)?.musicId || null;
   const musicAsset = project.settings?.musicEnabled
     ? db.assets.find((asset) => asset.id === musicAssetId && asset.category === "music")
@@ -3208,6 +3231,24 @@ const renderProject = async (db, project, sourceGroup) => {
   const videoCodecArgs = useHwEncoder
     ? ["-c:v", "h264_videotoolbox", "-b:v", VIDEOTOOLBOX_BITRATE, "-maxrate", VIDEOTOOLBOX_BITRATE, "-bufsize", "24M", "-allow_sw", "1", "-pix_fmt", "yuv420p"]
     : ["-c:v", "libx264", "-preset", "superfast", "-threads", "0", "-crf", "20", "-pix_fmt", "yuv420p"];
+  // Make the file look like a fresh iPhone capture (TikTok/Instagram read these tags;
+  // a "real phone" provenance + a unique recent creation date per export reduces the
+  // duplicate/low-quality flags that lead to shadowban). Applies to MANUAL and AUTO.
+  // Values vary per render (seeded by renderRng) so no two exports share metadata.
+  const IOS_VERS = ["26.0", "26.0.1", "26.1", "18.6.2"];
+  const iosVer = IOS_VERS[Math.floor(renderRng() * IOS_VERS.length)];
+  const creationIso = new Date(Date.now() - Math.floor(renderRng() * 25) * 86400000 - Math.floor(renderRng() * 86400) * 1000).toISOString();
+  const iphoneMeta = [
+    "-metadata", "make=Apple",
+    "-metadata", "model=iPhone 17 Pro Max",
+    "-metadata", "com.apple.quicktime.make=Apple",
+    "-metadata", "com.apple.quicktime.model=iPhone 17 Pro Max",
+    "-metadata", `com.apple.quicktime.software=${iosVer}`,
+    "-metadata", `creation_time=${creationIso}`,
+    "-metadata:s:v:0", "handler_name=Core Media Video",
+    "-metadata:s:a:0", "handler_name=Core Media Audio",
+  ];
+  console.log(`[meta] iPhone 17 Pro Max · iOS ${iosVer} · ${creationIso}`);
   const args = [
     ...inputArgs,
     "-filter_complex",
@@ -3219,8 +3260,9 @@ const renderProject = async (db, project, sourceGroup) => {
     ...videoCodecArgs,
     "-c:a",
     "aac",
+    ...iphoneMeta,
     "-movflags",
-    "+faststart",
+    "+faststart+use_metadata_tags",
     outputPath,
   ];
 
@@ -4227,10 +4269,11 @@ const parseAutoBatchParams = (body) => ({
   lockSplitScreen: body?.lockSplitScreen === true,
   hookBrollSplit: body?.hookBrollSplit === true,
   shake: body?.shake === true,
+  blurBg: body?.blurBg === true,
   subtitleSizePx: body?.subtitleSizePx != null ? clamp(Math.round(safeNumber(body.subtitleSizePx, 0)), 30, 120) : 0,
 });
 
-const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit = false, shake = false, subtitleSizePx, plannerOverrides, genHooks = true, assetPools = null, hookBank = null }) => {
+const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit = false, shake = false, blurBg = false, subtitleSizePx, plannerOverrides, genHooks = true, assetPools = null, hookBank = null }) => {
   const { planVideoVariants } = await import("./autoVariants.mjs");
   // Assemble/reuse a project per video pair and transcribe it (whisper) — A→Z.
   const allProjectIds = [...projectIds];
@@ -4290,6 +4333,7 @@ const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, 
     // picks ratio/side/count/b-rolls per variant). When off, the project's own setting wins.
     if (hookBrollSplit) baseSettings.hookBrollSplitEnabled = true;
     if (shake) baseSettings.shakeEnabled = true;
+    if (blurBg) baseSettings.blurBgEnabled = true;
     const base = {
       settings: baseSettings,
       clips: project.clips || [],
@@ -4317,7 +4361,7 @@ const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, 
 app.post("/api/auto/generate", async (req, res) => {
   await loadAutoJobs();
   const db = await readDb();
-  const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
+  const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, blurBg, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
   // Training mode: learned overrides narrow the deterministic picks. A studio project's
   // overrides fold on top. Snapshot the MERGED set on the job so a resumed/re-derived
   // job reproduces the exact same variants even if rules/projects change later.
@@ -4325,7 +4369,7 @@ app.post("/api/auto/generate", async (req, res) => {
 
   if (!videoGroupIds.length && !projectIds.length) return res.status(400).json({ error: "Aucune vidéo sélectionnée." });
   const { allProjectIds, perProject } = await buildAutoPlan(db, {
-    videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, subtitleSizePx, plannerOverrides, assetPools, hookBank,
+    videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, blurBg, subtitleSizePx, plannerOverrides, assetPools, hookBank,
   });
 
   const jobId = `auto-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -4368,11 +4412,11 @@ app.post("/api/auto/generate", async (req, res) => {
 app.post("/api/auto/plan", async (req, res) => {
   try {
     const db = await readDb();
-    const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
+    const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, blurBg, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
     if (!videoGroupIds.length && !projectIds.length) return res.status(400).json({ error: "Aucune vidéo sélectionnée." });
     const plannerOverrides = { ...(await getPlannerOverrides()), ...(overrides || {}) };
     const { perProject } = await buildAutoPlan(db, {
-      videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, subtitleSizePx, plannerOverrides, assetPools, hookBank,
+      videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, blurBg, subtitleSizePx, plannerOverrides, assetPools, hookBank,
     });
     const lite = (asset) => (asset ? { id: asset.id, title: asset.title, fileUrl: asset.fileUrl } : null);
     const speakers = db.assets.filter((a) => a.category === "speaker").map(lite);
