@@ -36,6 +36,12 @@ const faceModelPath = path.join(projectRoot, "local-backend", "models", "ultrafa
 const cropAlphaScriptPath = path.join(projectRoot, "local-backend", "crop_alpha_image.py");
 const logoAnimationSourceCandidate = "/Users/juliengoussale/Downloads/pop up klimax app store.mov";
 const logoAnimationPath = path.join(systemRoot, "klimax-pop-up.mov");
+// Lightweight logo for RENDERS: the source is a 2160×3840 12-bit ProRes (270 Mbps) that
+// takes ~20 s JUST to decode — and it's decoded once per logo window per clip, so it
+// dominated render time. The logo only ever shows ≤920 px wide, so a 960-px ProRes 4444
+// (~4 s decode, 5× faster) is visually identical. Generated once in ensureSystemAssets.
+const logoAnimationFastPath = path.join(systemRoot, "klimax-pop-up-960.mov");
+const activeLogoPath = () => (fsSync.existsSync(logoAnimationFastPath) ? logoAnimationFastPath : logoAnimationPath);
 const logoPreviewRawPath = path.join(systemRoot, "klimax-logo-preview.raw.png");
 const logoPreviewPath = path.join(systemRoot, "klimax-logo-preview.png");
 const logoPreviewTimeSeconds = 2;
@@ -943,6 +949,18 @@ const ensureSystemAssets = async () => {
   await ensureDir(systemRoot);
   if (fsSync.existsSync(logoAnimationSourceCandidate) && !fsSync.existsSync(logoAnimationPath)) {
     await fs.copyFile(logoAnimationSourceCandidate, logoAnimationPath);
+  }
+  // Build the lightweight 960-px logo once (5× faster to decode than the 4K source).
+  if (ffmpegPath && fsSync.existsSync(logoAnimationPath) && !fsSync.existsSync(logoAnimationFastPath)) {
+    try {
+      await runProcess(ffmpegPath, [
+        "-y", "-i", logoAnimationPath, "-an",
+        "-vf", "scale=960:-2:flags=lanczos",
+        "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le",
+        logoAnimationFastPath,
+      ], { timeoutMs: 180000 });
+      console.log("[logo] built fast 960px logo for renders");
+    } catch (e) { console.warn("[logo] fast-logo build failed (using full logo):", e.message); }
   }
   if (ffmpegPath && fsSync.existsSync(logoAnimationPath)) {
     try {
@@ -2752,7 +2770,7 @@ const renderProject = async (db, project, sourceGroup) => {
       let cur = inLabel;
       for (let logoIndex = 0; logoIndex < logoWindows.length; logoIndex += 1) {
         const win = logoWindows[logoIndex];
-        inputArgs.push("-i", logoAnimationPath);
+        inputArgs.push("-i", activeLogoPath());
         const logoInput = inputIndex;
         inputIndex += 1;
         const shiftedLogo = `logo${clipIndex}_${logoIndex}`;
