@@ -19,7 +19,7 @@ const VARY_KEYS: { key: VaryKey; label: string }[] = [
   { key: "zooms", label: "Zooms" },
 ];
 
-const FILTER_KEYS = ["none", "clean_boost", "warm_viral", "cold_crisp", "contrast_punch", "soft_glow", "grain_light", "mono_noir", "green_tint", "pink_pop", "vhs_lite"];
+const FILTER_KEYS = ["none", "clean_boost", "warm_viral", "cold_crisp", "contrast_punch", "soft_glow", "grain_light", "green_tint", "pink_pop", "vhs_lite", "teal_orange", "vibrant_pop", "moody_film", "sunny_warm", "retro_fade", "neon_night"];
 const PRESET_KEYS = ["impact", "clean", "highlight", "capcut", "punch", "neon", "quickFade", "orangeThe", "proQuick", "yellowPop", "pinkPunch", "cyanGlow", "whiteBox", "creatorClean", "hormozi", "bebasGold", "iceBlue", "redAlert", "mintBounce", "cleanMinimal", "invertBox", "purpleNeon", "tiktokWhite", "tiktokBlack", "tiktokRed", "capcutYellow", "capcutKaraoke", "karaokeGreen", "tiktokOutline", "bebasCaps"];
 const ANIM_KEYS = ["pop", "bounce", "rise", "fade", "zoom", "slide", "shake", "typewriter", "flicker", "elastic", "none"];
 

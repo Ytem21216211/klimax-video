@@ -38,10 +38,15 @@ const VIDEO_FILTER_CSS: Record<string, string> = {
   contrast_punch: "contrast(1.16) saturate(1.13) brightness(0.996)",
   soft_glow: "contrast(1.03) saturate(1.06) brightness(1.014)",
   grain_light: "contrast(1.05) saturate(1.04)",
-  mono_noir: "grayscale(1) contrast(1.15) brightness(1.01)",
   green_tint: "contrast(1.05) saturate(1.06) hue-rotate(15deg)",
   pink_pop: "contrast(1.06) saturate(1.16) hue-rotate(-8deg)",
   vhs_lite: "contrast(1.08) saturate(0.95)",
+  teal_orange: "contrast(1.08) saturate(1.08) hue-rotate(-4deg)",
+  vibrant_pop: "contrast(1.10) saturate(1.28) brightness(1.005)",
+  moody_film: "contrast(1.12) saturate(0.92) brightness(0.988)",
+  sunny_warm: "contrast(1.05) saturate(1.12) brightness(1.012) sepia(0.08)",
+  retro_fade: "contrast(0.97) saturate(0.95) brightness(1.02) sepia(0.12)",
+  neon_night: "contrast(1.10) saturate(1.16) hue-rotate(8deg)",
 };
 
 export const clampValue = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));

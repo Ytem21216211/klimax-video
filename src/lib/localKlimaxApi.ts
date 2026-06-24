@@ -111,6 +111,7 @@ export type LocalKlimaxProject = {
     clipTransitionType?: "random" | "opacity" | "camera_flash";
     mirrorEnabled?: boolean;
     hookBrollSplitEnabled?: boolean;
+    shakeEnabled?: boolean;
     brollShutterMode?: boolean;
     brollAnimIn?: "fade" | "none";
     brollAnimOut?: "fade" | "none";
@@ -353,6 +354,7 @@ export const localKlimaxApi = {
     varied: Record<string, boolean>;
     lockSplitScreen?: boolean;
     hookBrollSplit?: boolean;
+    shake?: boolean;
     subtitleSizePx?: number;
   }) {
     return parseResponse<{ jobId: string; total: number; items: LocalAutoItem[]; achievablePerVideo: LocalAutoAchievable[] }>(
@@ -381,6 +383,7 @@ export const localKlimaxApi = {
     varied: Record<string, boolean>;
     lockSplitScreen?: boolean;
     hookBrollSplit?: boolean;
+    shake?: boolean;
     subtitleSizePx?: number;
   }) {
     return parseResponse<{ projects: AutoPlanProject[] }>(

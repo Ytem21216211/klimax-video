@@ -19,7 +19,9 @@
 
 export const FILTER_KEYS = [
   "none", "clean_boost", "warm_viral", "cold_crisp", "contrast_punch",
-  "soft_glow", "grain_light", "mono_noir", "green_tint", "pink_pop", "vhs_lite",
+  "soft_glow", "grain_light", "green_tint", "pink_pop", "vhs_lite",
+  // B&W ("mono_noir") removed; new colour grades added.
+  "teal_orange", "vibrant_pop", "moody_film", "sunny_warm", "retro_fade", "neon_night",
 ];
 
 // The 14 subtitle presets manual mode offers (concrete field sets, copied verbatim).

@@ -248,10 +248,16 @@ const VIDEO_FILTERS = new Map([
   ["contrast_punch", "eq=contrast=1.16:saturation=1.13:brightness=-0.004"],
   ["soft_glow", "eq=contrast=1.03:saturation=1.06:brightness=0.014,unsharp=5:5:0.35:3:3:0.15"],
   ["grain_light", "noise=alls=7:allf=t+u,eq=contrast=1.05:saturation=1.04"],
-  ["mono_noir", "hue=s=0,eq=contrast=1.15:brightness=0.01"],
   ["green_tint", "colorbalance=rs=-0.035:gs=0.055:bs=-0.035,eq=contrast=1.05:saturation=1.06"],
   ["pink_pop", "colorbalance=rs=0.07:gs=-0.025:bs=0.045,eq=contrast=1.06:saturation=1.16"],
   ["vhs_lite", "noise=alls=10:allf=t+u,eq=contrast=1.08:saturation=0.95"],
+  // Newer grades (no spaces/quotes → filtergraph-safe). The B&W "mono_noir" was removed.
+  ["teal_orange", "colorbalance=rs=0.05:bs=-0.05:gm=0.02:bm=0.04,eq=contrast=1.08:saturation=1.06"],
+  ["vibrant_pop", "eq=contrast=1.10:saturation=1.28:brightness=0.005"],
+  ["moody_film", "colorbalance=rs=-0.02:bs=0.03,eq=contrast=1.12:saturation=0.92:brightness=-0.012"],
+  ["sunny_warm", "colorbalance=rs=0.07:gs=0.03:bs=-0.06,eq=contrast=1.05:saturation=1.12:brightness=0.012"],
+  ["retro_fade", "colorbalance=rs=0.03:bs=0.03,eq=contrast=0.97:saturation=0.95:brightness=0.02"],
+  ["neon_night", "colorbalance=rs=-0.03:bs=0.08:bm=0.05,eq=contrast=1.10:saturation=1.16"],
 ]);
 
 const normalizeVideoFilterKey = (key) => (VIDEO_FILTERS.has(String(key || "")) ? String(key) : "none");
@@ -330,6 +336,9 @@ const mergeProjectSettings = (settings = {}) => {
     // Optional: split the HOOK clip with a b-roll band (1+ random b-rolls) as the 2nd
     // "speaker". OFF by default — opt-in (auto picks the params, manual can set fields).
     hookBrollSplitEnabled: settings.hookBrollSplitEnabled === true,
+    // Optional "sigma" hand-held shake over the whole video (auto picks per-variant
+    // values at render time; ~1/3 of renders get none even when on). OFF by default.
+    shakeEnabled: settings.shakeEnabled === true,
     zoomOutStartPercent: clamp(safeNumber(settings.zoomOutStartPercent, defaults.zoomOutStartPercent), 110, 260),
     zoomOutDurationSeconds: clamp(safeNumber(settings.zoomOutDurationSeconds, defaults.zoomOutDurationSeconds), 0.4, 3),
     subtitleStyle,
@@ -3130,6 +3139,30 @@ const renderProject = async (db, project, sourceGroup) => {
     }
   }
 
+  // ---- "SIGMA" SHAKE (optional) — a subtle hand-held camera tremble over the WHOLE
+  // video. Decided at render time via renderRng so every variant/video gets DIFFERENT
+  // shake values, and ~1/3 get NO shake even when the option is on. Cheap: a one-time
+  // small overscan + a per-frame animated crop OFFSET (sine sum) — no scaler re-init.
+  let finalVideoTag = "vcat";
+  if (project.settings?.shakeEnabled === true) {
+    if (renderRng() >= 1 / 3) {
+      const M = 24; // overscan margin (px) — bigger than the max amplitude so no black edges
+      const ax = +(4 + renderRng() * 10).toFixed(2);  // 4–14 px
+      const ay = +(4 + renderRng() * 10).toFixed(2);
+      const fx = +(2 + renderRng() * 3).toFixed(3);    // 2–5 Hz
+      const fy = +(2 + renderRng() * 3).toFixed(3);
+      const ax2 = +(ax * 0.4).toFixed(2), ay2 = +(ay * 0.4).toFixed(2);
+      const fx2 = +(fx * 1.7).toFixed(3), fy2 = +(fy * 1.3).toFixed(3);
+      const xExpr = `${M}+${ax}*sin(2*PI*${fx}*t)+${ax2}*sin(2*PI*${fx2}*t)`;
+      const yExpr = `${M}+${ay}*sin(2*PI*${fy}*t+1.1)+${ay2}*sin(2*PI*${fy2}*t)`;
+      filterChains.push(`[vcat]scale=${1080 + 2 * M}:${1920 + 2 * M}:flags=bilinear,crop=1080:1920:${xExpr}:${yExpr},format=yuv420p[vshake]`);
+      finalVideoTag = "vshake";
+      console.log(`[layout] sigma shake ON amp=${ax}/${ay}px freq=${fx}/${fy}Hz`);
+    } else {
+      console.log(`[layout] sigma shake skipped this render (1/3)`);
+    }
+  }
+
   const musicAssetId = project.settings?.musicId || clipsToRender.find((clip) => clip.musicId)?.musicId || null;
   const musicAsset = project.settings?.musicEnabled
     ? db.assets.find((asset) => asset.id === musicAssetId && asset.category === "music")
@@ -3147,6 +3180,17 @@ const renderProject = async (db, project, sourceGroup) => {
   }
 
   if (musicAsset?.filePath) {
+    // Random START offset inside the track (seeded by renderRng → reproducible & logged):
+    // when the music is longer than the whole clip, take a clip-length slice from a RANDOM
+    // point instead of always the intro. -stream_loop stays as a safety net for tracks
+    // shorter than the clip. The volume (dB) handling below is unchanged.
+    const musicDur = await probeMediaDurationSec(musicAsset.filePath);
+    const span = (musicDur || 0) - totalDuration;
+    const musicStart = span > 0.5 ? Math.round(renderRng() * (span - 0.2) * 100) / 100 : 0;
+    if (musicStart > 0) {
+      console.log(`[layout] music start=${musicStart.toFixed(2)}s (track ${musicDur.toFixed(1)}s / clip ${totalDuration.toFixed(1)}s)`);
+      inputArgs.push("-ss", musicStart.toFixed(3));
+    }
     inputArgs.push("-stream_loop", "-1", "-i", musicAsset.filePath);
     const musicInput = inputIndex;
     inputIndex += 1;
@@ -3169,7 +3213,7 @@ const renderProject = async (db, project, sourceGroup) => {
     "-filter_complex",
     filterChains.join(";"),
     "-map",
-    "[vcat]",
+    `[${finalVideoTag}]`,
     "-map",
     "[aout]",
     ...videoCodecArgs,
@@ -4008,7 +4052,7 @@ const releaseRenderSlot = () => {
 // v7: captions are mouth-safe (always below the speaker's mouth + margin) with a base
 // offset + per-render vertical jitter; b-roll square gets ±3% size jitter.
 // v8: caption centre capped (never glued to the bottom, SUB_MAX_CENTER ≈0.78·H).
-const AUTO_ENGINE_VERSION = 12;
+const AUTO_ENGINE_VERSION = 13;
 
 const processAutoJob = async (job) => {
   if (job._running) return;
@@ -4182,10 +4226,11 @@ const parseAutoBatchParams = (body) => ({
   varied: body?.varied || { broll: true, subtitles: true, hook: true, sfx: false, zooms: false, music: true },
   lockSplitScreen: body?.lockSplitScreen === true,
   hookBrollSplit: body?.hookBrollSplit === true,
+  shake: body?.shake === true,
   subtitleSizePx: body?.subtitleSizePx != null ? clamp(Math.round(safeNumber(body.subtitleSizePx, 0)), 30, 120) : 0,
 });
 
-const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit = false, subtitleSizePx, plannerOverrides, genHooks = true, assetPools = null, hookBank = null }) => {
+const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit = false, shake = false, subtitleSizePx, plannerOverrides, genHooks = true, assetPools = null, hookBank = null }) => {
   const { planVideoVariants } = await import("./autoVariants.mjs");
   // Assemble/reuse a project per video pair and transcribe it (whisper) — A→Z.
   const allProjectIds = [...projectIds];
@@ -4244,6 +4289,7 @@ const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, 
     // Auto-mode toggle: force the hook b-roll split on for this batch (the engine then
     // picks ratio/side/count/b-rolls per variant). When off, the project's own setting wins.
     if (hookBrollSplit) baseSettings.hookBrollSplitEnabled = true;
+    if (shake) baseSettings.shakeEnabled = true;
     const base = {
       settings: baseSettings,
       clips: project.clips || [],
@@ -4271,7 +4317,7 @@ const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, 
 app.post("/api/auto/generate", async (req, res) => {
   await loadAutoJobs();
   const db = await readDb();
-  const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
+  const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
   // Training mode: learned overrides narrow the deterministic picks. A studio project's
   // overrides fold on top. Snapshot the MERGED set on the job so a resumed/re-derived
   // job reproduces the exact same variants even if rules/projects change later.
@@ -4279,7 +4325,7 @@ app.post("/api/auto/generate", async (req, res) => {
 
   if (!videoGroupIds.length && !projectIds.length) return res.status(400).json({ error: "Aucune vidéo sélectionnée." });
   const { allProjectIds, perProject } = await buildAutoPlan(db, {
-    videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, subtitleSizePx, plannerOverrides, assetPools, hookBank,
+    videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, subtitleSizePx, plannerOverrides, assetPools, hookBank,
   });
 
   const jobId = `auto-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -4322,11 +4368,11 @@ app.post("/api/auto/generate", async (req, res) => {
 app.post("/api/auto/plan", async (req, res) => {
   try {
     const db = await readDb();
-    const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
+    const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
     if (!videoGroupIds.length && !projectIds.length) return res.status(400).json({ error: "Aucune vidéo sélectionnée." });
     const plannerOverrides = { ...(await getPlannerOverrides()), ...(overrides || {}) };
     const { perProject } = await buildAutoPlan(db, {
-      videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, subtitleSizePx, plannerOverrides, assetPools, hookBank,
+      videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, subtitleSizePx, plannerOverrides, assetPools, hookBank,
     });
     const lite = (asset) => (asset ? { id: asset.id, title: asset.title, fileUrl: asset.fileUrl } : null);
     const speakers = db.assets.filter((a) => a.category === "speaker").map(lite);

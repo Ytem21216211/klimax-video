@@ -112,6 +112,7 @@ const AutomaticMode = () => {
   const [varied, setVaried] = useState<Record<VaryKey, boolean>>({ broll: true, subtitles: true, hook: true, sfx: false, zooms: false, music: true });
   const [varySplit, setVarySplit] = useState(true); // split-screen is the primary lever; lock = !varySplit
   const [hookBrollSplit, setHookBrollSplit] = useState(false); // optional: hook split where band 2 = random b-roll(s)
+  const [shake, setShake] = useState(false); // optional: subtle "sigma" hand-held shake over the whole video
   const [variantsPerVideo, setVariantsPerVideo] = useState(6);
   const [job, setJob] = useState<LocalAutoJob | null>(null);
   const [starting, setStarting] = useState(false);
@@ -293,6 +294,7 @@ const AutomaticMode = () => {
         varied,
         lockSplitScreen: !varySplit,
         hookBrollSplit,
+        shake,
       });
       setJob({ id: res.jobId, createdAt: new Date().toISOString(), finishedAt: null, total: res.total, done: 0, items: res.items });
       const capped = (res.achievablePerVideo || []).filter((a) => a.achievable < a.requested);
@@ -488,6 +490,24 @@ const AutomaticMode = () => {
               <div className="flex shrink-0 flex-col items-end gap-2">
                 <Switch checked={hookBrollSplit} onCheckedChange={setHookBrollSplit} />
                 <span className={cn("text-[10px] font-black uppercase tracking-[0.16em]", hookBrollSplit ? "text-white" : "text-white/35")}>{hookBrollSplit ? "Activé" : "Off"}</span>
+              </div>
+            </div>
+            {/* Sigma shake: subtle hand-held tremble over the whole video */}
+            <div className="flex items-start justify-between gap-4 rounded-2xl border border-white/15 bg-white/[0.05] p-4 sm:col-span-2">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-white/70"><Waves className="h-4 w-4" /></div>
+                <div className="min-w-0">
+                  <p className="text-sm font-black uppercase tracking-tight">Shake sigma</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-white/45">
+                    {shake
+                      ? "Léger tremblement caméra sur toute la vidéo. Valeurs différentes à chaque variante ; ~1/3 sans shake même activé."
+                      : "Désactivé : image stable."}
+                  </p>
+                </div>
+              </div>
+              <div className="flex shrink-0 flex-col items-end gap-2">
+                <Switch checked={shake} onCheckedChange={setShake} />
+                <span className={cn("text-[10px] font-black uppercase tracking-[0.16em]", shake ? "text-white" : "text-white/35")}>{shake ? "Activé" : "Off"}</span>
               </div>
             </div>
 

@@ -74,10 +74,15 @@ const VIDEO_FILTER_PRESETS = [
   { key: "contrast_punch", label: "Punch", note: "Plus impactant", css: "contrast(1.16) saturate(1.13) brightness(0.996)" },
   { key: "soft_glow", label: "Soft Glow", note: "Plus lumineux", css: "contrast(1.03) saturate(1.06) brightness(1.014)" },
   { key: "grain_light", label: "Grain Light", note: "Texture fine", css: "contrast(1.05) saturate(1.04)" },
-  { key: "mono_noir", label: "Mono Noir", note: "Noir et blanc", css: "grayscale(1) contrast(1.15) brightness(1.01)" },
   { key: "green_tint", label: "Green Tint", note: "Tint vert subtil", css: "contrast(1.05) saturate(1.06) hue-rotate(15deg)" },
   { key: "pink_pop", label: "Pink Pop", note: "Rouge pop", css: "contrast(1.06) saturate(1.16) hue-rotate(-8deg)" },
   { key: "vhs_lite", label: "VHS Lite", note: "Texture repost", css: "contrast(1.08) saturate(0.95)" },
+  { key: "teal_orange", label: "Teal & Orange", note: "Ciné", css: "contrast(1.08) saturate(1.08) hue-rotate(-4deg)" },
+  { key: "vibrant_pop", label: "Vibrant Pop", note: "Couleurs punchy", css: "contrast(1.10) saturate(1.28) brightness(1.005)" },
+  { key: "moody_film", label: "Moody Film", note: "Désat. ciné", css: "contrast(1.12) saturate(0.92) brightness(0.988)" },
+  { key: "sunny_warm", label: "Sunny Warm", note: "Doré chaud", css: "contrast(1.05) saturate(1.12) brightness(1.012) sepia(0.08)" },
+  { key: "retro_fade", label: "Retro Fade", note: "Délavé vintage", css: "contrast(0.97) saturate(0.95) brightness(1.02) sepia(0.12)" },
+  { key: "neon_night", label: "Neon Night", note: "Bleu néon", css: "contrast(1.10) saturate(1.16) hue-rotate(8deg)" },
 ] as const;
 
 // Transparent PNG (rgba) cropped from klimax-pop-up.mov — the export's .mov is
@@ -848,6 +853,7 @@ const ClimaxVideoEditor = () => {
   // Mirror effect: flips the source footage of every clip horizontally (overlays stay readable).
   const [mirrorEnabled, setMirrorEnabled] = useState(false);
   const [hookBrollSplitEnabled, setHookBrollSplitEnabled] = useState(false);
+  const [shakeEnabled, setShakeEnabled] = useState(false);
   // B-roll style: "square", "fullscreen" (9:16), or "alternate" (both).
   const [brollStyle, setBrollStyle] = useState<"square" | "fullscreen" | "alternate">("alternate");
   // B-roll zoom motion (Ken Burns): none, in, or out.
@@ -913,12 +919,13 @@ const ClimaxVideoEditor = () => {
       brollShutterMode,
       mirrorEnabled,
       hookBrollSplitEnabled,
+      shakeEnabled,
       brollStyle,
       brollZoom,
       logoTriggerWord: "klimax",
     });
     return () => { delete (window as any).__klimaxCurrentSnapshot; };
-  }, [hookText, subtitleSize, subtitleStyle, hookStyle, selectedMusicId, musicEnabled, musicVolumeDb, videoVolumeDb, videoFilterKey, brollEnabled, autoSfxEnabled, autoZoomEnabled, autoZoomMode, autoZoomBoostPercent, autoZoomDurationSeconds, introZoomOutEnabled, replyZoomOutEnabled, zoomOutStartPercent, zoomOutDurationSeconds, klimaxLogoEnabled, clipTransitionsEnabled, clipTransitionType, brollShutterMode, mirrorEnabled, hookBrollSplitEnabled, brollStyle, brollZoom]);
+  }, [hookText, subtitleSize, subtitleStyle, hookStyle, selectedMusicId, musicEnabled, musicVolumeDb, videoVolumeDb, videoFilterKey, brollEnabled, autoSfxEnabled, autoZoomEnabled, autoZoomMode, autoZoomBoostPercent, autoZoomDurationSeconds, introZoomOutEnabled, replyZoomOutEnabled, zoomOutStartPercent, zoomOutDurationSeconds, klimaxLogoEnabled, clipTransitionsEnabled, clipTransitionType, brollShutterMode, mirrorEnabled, hookBrollSplitEnabled, shakeEnabled, brollStyle, brollZoom]);
 
   // Apply a preset from the Presets panel: update local state, then save the project.
   React.useEffect(() => {
@@ -957,6 +964,7 @@ const ClimaxVideoEditor = () => {
       if (typeof detail.brollShutterMode === "boolean") setBrollShutterMode(detail.brollShutterMode);
       if (typeof detail.mirrorEnabled === "boolean") setMirrorEnabled(detail.mirrorEnabled);
       if (typeof detail.hookBrollSplitEnabled === "boolean") setHookBrollSplitEnabled(detail.hookBrollSplitEnabled);
+      if (typeof detail.shakeEnabled === "boolean") setShakeEnabled(detail.shakeEnabled);
       if (detail.brollStyle === "square" || detail.brollStyle === "fullscreen" || detail.brollStyle === "alternate") setBrollStyle(detail.brollStyle);
       if (detail.brollZoom === "none" || detail.brollZoom === "in" || detail.brollZoom === "out") setBrollZoom(detail.brollZoom);
       toast({ title: "Preset appliqué", description: "Les réglages sont en place. Sauvegarde le projet pour les conserver." });
@@ -1058,6 +1066,7 @@ const ClimaxVideoEditor = () => {
     setBrollShutterMode(project.settings?.brollShutterMode === true);
     setMirrorEnabled(project.settings?.mirrorEnabled === true);
     setHookBrollSplitEnabled(project.settings?.hookBrollSplitEnabled === true);
+    setShakeEnabled(project.settings?.shakeEnabled === true);
     setBrollStyle(
       ["square", "fullscreen", "alternate"].includes(project.settings?.brollStyle as string)
         ? (project.settings!.brollStyle as "square" | "fullscreen" | "alternate")
@@ -1556,6 +1565,7 @@ const ClimaxVideoEditor = () => {
       brollShutterMode,
       mirrorEnabled,
       hookBrollSplitEnabled,
+      shakeEnabled,
       brollStyle,
       brollZoom,
       brollEnabled,
@@ -1597,6 +1607,7 @@ const ClimaxVideoEditor = () => {
     mergedSubtitleStyle,
     mirrorEnabled,
     hookBrollSplitEnabled,
+    shakeEnabled,
     replyZoomOutEnabled,
     selectedMusicId,
     musicEnabled,
@@ -1660,6 +1671,7 @@ const ClimaxVideoEditor = () => {
       brollShutterMode,
       mirrorEnabled,
       hookBrollSplitEnabled,
+      shakeEnabled,
       brollStyle,
       brollZoom,
       brollEnabled,
@@ -3168,6 +3180,7 @@ const ClimaxVideoEditor = () => {
                 { label: "Mode shutter (b-roll)", value: brollShutterMode, setter: setBrollShutterMode, icon: Image },
                 { label: "Effet miroir", value: mirrorEnabled, setter: setMirrorEnabled, icon: Scissors },
                 { label: "Split hook avec b-roll", value: hookBrollSplitEnabled, setter: setHookBrollSplitEnabled, icon: Image },
+                { label: "Shake sigma", value: shakeEnabled, setter: setShakeEnabled, icon: Scissors },
                 { label: "Musique active", value: musicEnabled, setter: setMusicEnabled, icon: Music },
                 { label: "Logo KLIMAX sur mot clé", value: klimaxLogoEnabled, setter: setKlimaxLogoEnabled, icon: Sparkles },
               ].map((setting) => {
