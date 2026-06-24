@@ -4158,7 +4158,10 @@ const processAutoJob = async (job) => {
           clips: project.clips || [],
           sourceNames: { person1: sourceGroup.person1?.title, person2: sourceGroup.person2?.title },
         },
-        videoId: pid, requested: p.variantsPerVideo, varied: p.varied, lockSplitScreen: p.lockSplitScreen, banks, faceBoxes, overrides: p.plannerOverrides || {},
+        // MUST match the generate-time request (variantsPerVideo × driveDestinations),
+        // otherwise the worker re-derives fewer variants than the job has items and the
+        // extra items stay "queued" forever (and Drive uploads a partial set).
+        videoId: pid, requested: p.variantsPerVideo * Math.max(1, job.driveDestinations || 1), varied: p.varied, lockSplitScreen: p.lockSplitScreen, banks, faceBoxes, overrides: p.plannerOverrides || {},
       });
       for (const v of plan.variants) {
         const item = job.items.find((it) => it.id === `${job.id}-${pid}-${v.index}`);
