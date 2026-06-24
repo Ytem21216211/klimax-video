@@ -4171,6 +4171,54 @@ const processAutoJob = async (job) => {
       }
     }
 
+    // 1b) Incremental Drive delivery: each rendered video is uploaded to its destination
+    //     folder and DELETED from disk immediately — no accumulation on the machine.
+    //     Folders are created lazily on first use. Destination of an item = which "copy"
+    //     it belongs to: floor(variantIndex / variantsPerVideo) → 0..N-1.
+    const { isDriveConfigured, createSharedFolder, uploadOneFile } = await import("./driveUpload.mjs");
+    const driveOn = isDriveConfigured();
+    const N = Math.max(1, Math.min(5, job.driveDestinations || 1));
+    const vpv = Math.max(1, p.variantsPerVideo || 1);
+    const ds = new Date();
+    const dtag = `${ds.getFullYear()}-${String(ds.getMonth() + 1).padStart(2, "0")}-${String(ds.getDate()).padStart(2, "0")} ${String(ds.getHours()).padStart(2, "0")}h${String(ds.getMinutes()).padStart(2, "0")}`;
+    if (!job.drive || !Array.isArray(job.drive.folders) || job.drive.folders.length !== N) {
+      job.drive = {
+        status: driveOn ? "uploading" : "skipped", uploaded: 0, total: job.total, link: null,
+        folders: Array.from({ length: N }, (_, i) => ({ label: N > 1 ? `Lot ${i + 1}/${N}` : "Lot", link: null, folderId: null, uploaded: 0 })),
+        error: null,
+      };
+      await saveAutoJobs();
+    }
+    const folderLocks = {};
+    const ensureFolder = (di) => {
+      const f = job.drive.folders[di];
+      if (f.folderId) return Promise.resolve(f.folderId);
+      if (!folderLocks[di]) folderLocks[di] = (async () => {
+        const folder = await createSharedFolder(N > 1 ? `Klimax ${dtag} · Lot ${di + 1}/${N}` : `Klimax ${dtag}`);
+        f.folderId = folder.id; f.link = folder.link;
+        if (!job.drive.link) job.drive.link = folder.link;
+        await saveAutoJobs();
+        return folder.id;
+      })();
+      return folderLocks[di];
+    };
+    const uploadAndCleanup = async (item) => {
+      if (!driveOn || !item.path || item.uploaded) return;
+      const di = Math.min(N - 1, Math.floor((item.index || 0) / vpv));
+      try {
+        const fid = await ensureFolder(di);
+        const name = `${String(item.source || "variante").replace(/[^\w\- ]+/g, "").trim() || "variante"} - v${(item.index ?? 0) + 1}.mp4`;
+        await uploadOneFile(item.path, name, fid);
+        try { fsSync.unlinkSync(item.path); } catch { /* already gone */ }
+        item.path = null; item.url = null; item.uploaded = true; // dropped from disk on purpose
+        job.drive.folders[di].uploaded = (job.drive.folders[di].uploaded || 0) + 1;
+        job.drive.uploaded = job.drive.folders.reduce((s, x) => s + (x.uploaded || 0), 0);
+        await saveAutoJobs();
+      } catch (e) {
+        console.warn(`[drive] upload+cleanup raté (${item.id}):`, e.message);
+      }
+    };
+
     // 2) Worker pool: N concurrent renders.
     let cursor = 0;
     const worker = async () => {
@@ -4214,62 +4262,32 @@ const processAutoJob = async (job) => {
         } finally {
           releaseRenderSlot();
         }
+        // Upload AFTER releasing the render slot (upload is network-bound, not CPU), then
+        // the file is deleted locally so the machine never piles up renders.
+        if (item.status === "ready") await uploadAndCleanup(item);
         job.done = jobDoneCount(job); await saveAutoJobs();
       }
     };
     await Promise.all(Array.from({ length: Math.min(AUTO_RENDER_CONCURRENCY, work.length || 1) }, worker));
     job.finishedAt = new Date().toISOString();
 
-    // Google Drive: one folder per DESTINATION (N≥1). Every READY variant is split
-    // round-robin across the N folders so each destination gets a UNIQUE set (no two
-    // people receive the same video). The UI polls job.drive {status, uploaded, total,
-    // link, folders:[{label,link,uploaded,total}]} to animate the step + show the links.
-    try {
-      const { isDriveConfigured, uploadBatchToDrive } = await import("./driveUpload.mjs");
-      const readyFiles = job.items
-        .filter((it) => it.status === "ready" && it.path && fsSync.existsSync(it.path))
-        .map((it, i) => ({ path: it.path, name: `${String(it.source || "variante").replace(/[^\w\- ]+/g, "").trim() || "variante"} - v${(it.index ?? i) + 1}.mp4` }));
-      const N = Math.max(1, Math.min(5, job.driveDestinations || 1));
-      if (!isDriveConfigured() || !readyFiles.length) {
-        if (job.drive?.status !== "done") job.drive = { status: "skipped", uploaded: 0, total: readyFiles.length, link: null, folders: [], error: null };
-      } else if (job.drive?.status !== "done") {
-        const stamp = new Date();
-        const tag = `${stamp.getFullYear()}-${String(stamp.getMonth() + 1).padStart(2, "0")}-${String(stamp.getDate()).padStart(2, "0")} ${String(stamp.getHours()).padStart(2, "0")}h${String(stamp.getMinutes()).padStart(2, "0")}`;
-        // Round-robin split: folder f gets items f, f+N, f+2N, … → unique per destination.
-        const groups = Array.from({ length: N }, () => []);
-        readyFiles.forEach((f, i) => groups[i % N].push(f));
-        const folders = groups.map((_, i) => ({ label: N > 1 ? `Lot ${i + 1}/${N}` : "Lot", link: null, uploaded: 0, total: groups[i].length }));
-        const grandTotal = readyFiles.length;
-        job.drive = { status: "uploading", uploaded: 0, total: grandTotal, link: null, folders, error: null };
-        await saveAutoJobs();
-        let done = 0;
-        for (let i = 0; i < N; i += 1) {
-          if (!groups[i].length) { folders[i].link = null; continue; }
-          const folderName = N > 1
-            ? `Klimax ${tag} · Lot ${i + 1}/${N} (${groups[i].length} vidéos)`
-            : `Klimax ${tag} (${groups[i].length} vidéos)`;
-          const result = await uploadBatchToDrive({
-            folderName,
-            files: groups[i],
-            onProgress: (up) => {
-              folders[i].uploaded = up;
-              job.drive = { ...job.drive, uploaded: done + up, folders };
-              saveAutoJobs();
-            },
-          });
-          folders[i].link = result.folderLink;
-          folders[i].uploaded = result.uploaded;
-          done += result.uploaded;
-          job.drive = { ...job.drive, uploaded: done, folders };
-          await saveAutoJobs();
-          console.log(`[drive] batch ${job.id} ${folders[i].label}: ${result.uploaded}/${result.total} → ${result.folderLink}`);
+    // Drive was delivered INCREMENTALLY in the worker (upload + local delete per video).
+    // Here we just finalize the status + a safety net: re-try any ready file still on disk
+    // (e.g. a transient upload failure earlier), then mark done/skipped.
+    if (driveOn) {
+      for (const it of job.items) {
+        if (it.status === "ready" && it.path && !it.uploaded && fsSync.existsSync(it.path)) {
+          await uploadAndCleanup(it);
         }
-        job.drive = { status: "done", uploaded: done, total: grandTotal, link: folders[0]?.link || null, folders, error: null };
       }
-    } catch (error) {
-      job.drive = { status: "failed", uploaded: job.drive?.uploaded || 0, total: job.drive?.total || 0, link: null, folders: job.drive?.folders || [], error: String(error.message || error).slice(0, 200) };
-      console.error("[drive] upload du batch échoué:", error.message);
+      job.drive.uploaded = (job.drive.folders || []).reduce((s, x) => s + (x.uploaded || 0), 0);
+      job.drive.link = job.drive.link || (job.drive.folders || []).find((f) => f.link)?.link || null;
+      job.drive.status = "done";
+      console.log(`[drive] batch ${job.id}: ${job.drive.uploaded} vidéo(s) → ${(job.drive.folders || []).filter((f) => f.link).length} dossier(s)`);
+    } else {
+      job.drive.status = "skipped";
     }
+    await saveAutoJobs();
   } finally {
     job._running = false;
     await saveAutoJobs();

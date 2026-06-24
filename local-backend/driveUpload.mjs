@@ -276,3 +276,15 @@ export const uploadBatchToDrive = async ({ folderName, files, onProgress }) => {
     total: files.length,
   };
 };
+
+// Create one shared folder (anyone-with-link reader). Returns { id, link }.
+export const createSharedFolder = async (name) => {
+  const folder = await createFolder(name);
+  try { await shareAnyoneReader(folder.id); } catch { /* link still works for the owner */ }
+  return { id: folder.id, link: folder.webViewLink || `https://drive.google.com/drive/folders/${folder.id}` };
+};
+
+// Upload ONE file into an existing folder. Throws on failure (caller decides cleanup).
+export const uploadOneFile = async (filePath, fileName, folderId) => {
+  await uploadFile(filePath, fileName, folderId);
+};

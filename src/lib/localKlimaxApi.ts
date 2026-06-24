@@ -734,7 +734,7 @@ export type LocalAutoJob = {
     uploaded: number;
     total: number;
     link: string | null;
-    folders?: { label: string; link: string | null; uploaded: number; total: number }[];
+    folders?: { label: string; link: string | null; uploaded: number; total?: number }[];
     error: string | null;
   };
 };
