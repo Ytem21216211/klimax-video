@@ -121,7 +121,7 @@ const defaultProjectSettings = () => ({
   subtitleSize: 53,
   musicEnabled: true,
   musicId: null,
-  musicVolumeDb: -17,
+  musicVolumeDb: -15,
   videoVolumeDb: 2,
   brollEnabled: true,
   autoSfxEnabled: true,
@@ -3149,11 +3149,13 @@ const renderProject = async (db, project, sourceGroup) => {
   let finalVideoTag = "vcat";
   if (project.settings?.shakeEnabled === true) {
     if (renderRng() >= 1 / 3) {
-      const M = 24; // overscan margin (px) — bigger than the max amplitude so no black edges
-      const ax = +(4 + renderRng() * 10).toFixed(2);  // 4–14 px
-      const ay = +(4 + renderRng() * 10).toFixed(2);
-      const fx = +(2 + renderRng() * 3).toFixed(3);    // 2–5 Hz
-      const fy = +(2 + renderRng() * 3).toFixed(3);
+      const M = 20; // overscan margin (px) — bigger than the max amplitude so no black edges
+      // Force VARIES but never stronger than the reference render (~10 px max), and
+      // sometimes much smoother (down to ~2 px / slower sway).
+      const ax = +(2 + renderRng() * 8).toFixed(2);    // 2–10 px
+      const ay = +(2 + renderRng() * 8).toFixed(2);
+      const fx = +(1.8 + renderRng() * 2.6).toFixed(3); // 1.8–4.4 Hz
+      const fy = +(1.8 + renderRng() * 2.6).toFixed(3);
       const ax2 = +(ax * 0.4).toFixed(2), ay2 = +(ay * 0.4).toFixed(2);
       const fx2 = +(fx * 1.7).toFixed(3), fy2 = +(fy * 1.3).toFixed(3);
       const xExpr = `${M}+${ax}*sin(2*PI*${fx}*t)+${ax2}*sin(2*PI*${fx2}*t)`;
@@ -3171,8 +3173,10 @@ const renderProject = async (db, project, sourceGroup) => {
   // time → applied on ~1/2 of the variants when the option is on. Cheap blur via a hard
   // downscale→upscale (no costly full-res gblur).
   if (project.settings?.blurBgEnabled === true) {
-    if (renderRng() < 0.5) {
-      const small = 0.82;
+    if (renderRng() >= 1 / 3) {
+      // Foreground size VARIES: max = the reference render (0.82), min = 1.5× smaller
+      // (0.82/1.5 ≈ 0.547). The sharp rush sits centred in front of the blurred copy.
+      const small = +(0.82 / 1.5 + renderRng() * (0.82 - 0.82 / 1.5)).toFixed(3);
       const fw = Math.round(1080 * small / 2) * 2;
       const fh = Math.round(1920 * small / 2) * 2;
       filterChains.push(`[${finalVideoTag}]split=2[bgsrc][fgsrc]`);
@@ -3182,7 +3186,7 @@ const renderProject = async (db, project, sourceGroup) => {
       finalVideoTag = "vblur";
       console.log(`[layout] blur background ON (foreground ${Math.round(small * 100)}% centred)`);
     } else {
-      console.log(`[layout] blur background skipped this render (1/2)`);
+      console.log(`[layout] blur background skipped this render (1/3)`);
     }
   }
 
@@ -3217,11 +3221,15 @@ const renderProject = async (db, project, sourceGroup) => {
     inputArgs.push("-stream_loop", "-1", "-i", musicAsset.filePath);
     const musicInput = inputIndex;
     inputIndex += 1;
-    const musicVolumeDb = safeNumber(project.settings?.musicVolumeDb, -17);
+    const musicVolumeDb = safeNumber(project.settings?.musicVolumeDb, -15);
     filterChains.push(
       `[${musicInput}:a]volume=${musicVolumeDb}dB,atrim=0:${Math.max(0.1, totalDuration).toFixed(3)},asetpts=N/SR/TB,aresample=async=1[bgm]`
     );
-    filterChains.push(`[${voiceTag}][bgm]amix=inputs=2:duration=first:dropout_transition=0[aout]`);
+    // normalize=0 → the VOICE keeps its full level (amix's default normalize halves every
+    // input, which buried the voice AND the music). The music is summed UNDER the voice at
+    // musicVolumeDb, so the voice stays clearly dominant while the music is still audible
+    // (stylé). A limiter guards the brief moments where voice + music peak together.
+    filterChains.push(`[${voiceTag}][bgm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.97[aout]`);
   } else {
     filterChains.push(`[${voiceTag}]anull[aout]`);
   }

@@ -520,7 +520,7 @@ const AutomaticMode = () => {
                   <p className="text-sm font-black uppercase tracking-tight">Flou background</p>
                   <p className="mt-1 text-[11px] leading-relaxed text-white/45">
                     {blurBg
-                      ? "Le montage de base est réduit et centré, avec le même rendu en grand + flou derrière. Appliqué sur ~1/2 des variantes."
+                      ? "Le montage de base est réduit (taille variable) et centré, avec le même rendu en grand + flou derrière. ~1/3 des variantes sans flou."
                       : "Désactivé : montage plein cadre normal."}
                   </p>
                 </div>
