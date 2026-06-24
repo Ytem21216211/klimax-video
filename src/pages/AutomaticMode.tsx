@@ -115,6 +115,7 @@ const AutomaticMode = () => {
   const [shake, setShake] = useState(false); // optional: subtle "sigma" hand-held shake over the whole video
   const [blurBg, setBlurBg] = useState(false); // optional: shrink montage centred over a big blurred copy (~1/2 variants)
   const [variantsPerVideo, setVariantsPerVideo] = useState(6);
+  const [driveDestinations, setDriveDestinations] = useState(1); // N Drive folders (1 = normal); each gets a UNIQUE set
   const [job, setJob] = useState<LocalAutoJob | null>(null);
   const [starting, setStarting] = useState(false);
   const [presets, setPresets] = useState<LocalAutoPreset[]>([]);
@@ -272,7 +273,7 @@ const AutomaticMode = () => {
 
   const selectedCount = selectedIds.size;
   const allSelected = selectedCount > 0 && selectedCount === selectable.length;
-  const totalOutput = selectedCount * variantsPerVideo;
+  const totalOutput = selectedCount * variantsPerVideo * Math.max(1, driveDestinations);
   const variedCount = useMemo(() => Object.values(varied).filter(Boolean).length + (varySplit ? 1 : 0), [varied, varySplit]);
 
   const toggleVideo = (id: string) =>
@@ -297,6 +298,7 @@ const AutomaticMode = () => {
         hookBrollSplit,
         shake,
         blurBg,
+        driveDestinations,
       });
       setJob({ id: res.jobId, createdAt: new Date().toISOString(), finishedAt: null, total: res.total, done: 0, items: res.items });
       const capped = (res.achievablePerVideo || []).filter((a) => a.achievable < a.requested);
@@ -598,12 +600,26 @@ const AutomaticMode = () => {
                 <Captions className="h-4 w-4 text-white/35" />
                 Taille des sous-titres : aléatoire (62–94 px) par variante
               </div>
+
+              {/* Multi-destinations Drive: N dossiers Drive, chacun reçoit un lot UNIQUE de
+                  `variantes` vidéos (idéal pour envoyer à N personnes différentes). */}
+              <div className="mt-4 flex items-center justify-between gap-4 rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-black uppercase tracking-[0.15em] text-white/55">Destinations Drive</p>
+                  <p className="mt-0.5 text-[10px] text-white/40">{driveDestinations > 1 ? `${driveDestinations} dossiers · lot unique par destination` : "1 seul dossier (normal)"}</p>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <button type="button" onClick={() => setDriveDestinations((v) => Math.max(1, v - 1))} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-white/[0.03] text-lg font-black text-white/70 hover:bg-white hover:text-black">−</button>
+                  <span className="w-5 text-center text-xl font-black leading-none">{driveDestinations}</span>
+                  <button type="button" onClick={() => setDriveDestinations((v) => Math.min(5, v + 1))} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-white/[0.03] text-lg font-black text-white/70 hover:bg-white hover:text-black">+</button>
+                </div>
+              </div>
             </div>
 
             <div className="flex flex-col justify-center rounded-2xl border border-white/15 bg-white/[0.06] p-5">
               <p className="text-[10px] font-black uppercase tracking-[0.3em] text-white/40">Volume total</p>
-              <p className="mt-3 text-2xl font-black leading-none">{selectedCount} <span className="text-white/40">×</span> {variantsPerVideo}</p>
-              <p className="mt-2 text-xs font-black uppercase tracking-[0.18em] text-white/45">= {totalOutput} vidéo{totalOutput > 1 ? "s" : ""}</p>
+              <p className="mt-3 text-2xl font-black leading-none">{selectedCount} <span className="text-white/40">×</span> {variantsPerVideo}{driveDestinations > 1 ? <> <span className="text-white/40">×</span> {driveDestinations}</> : null}</p>
+              <p className="mt-2 text-xs font-black uppercase tracking-[0.18em] text-white/45">= {totalOutput} vidéo{totalOutput > 1 ? "s" : ""}{driveDestinations > 1 ? ` · ${driveDestinations} dossiers` : ""}</p>
               <Button onClick={generate} disabled={!selectedCount || starting} className="mt-4 rounded-full bg-white text-black font-black uppercase tracking-[0.14em] hover:bg-white/90 disabled:opacity-40">
                 {starting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Wand2 className="mr-2 h-4 w-4" />}
                 {starting ? "Lancement…" : "Générer le lot"}
@@ -742,15 +758,15 @@ const AutomaticMode = () => {
                 )}
               />
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-black uppercase tracking-tight">Google Drive</p>
+                <p className="text-sm font-black uppercase tracking-tight">Google Drive{(job.drive?.folders?.length || 0) > 1 ? ` · ${job.drive!.folders!.length} dossiers` : ""}</p>
                 <p className="text-xs text-white/50">
                   {!job.drive && "Préparation de l'envoi…"}
                   {job.drive?.status === "uploading" && `Envoi en cours — ${job.drive.uploaded}/${job.drive.total} vidéo(s)…`}
-                  {job.drive?.status === "done" && `${job.drive.uploaded}/${job.drive.total} vidéo(s) envoyées dans le dossier du lot.`}
+                  {job.drive?.status === "done" && `${job.drive.uploaded}/${job.drive.total} vidéo(s) envoyées${(job.drive.folders?.length || 0) > 1 ? ` — réparties dans ${job.drive.folders!.length} dossiers (1 par destination).` : " dans le dossier du lot."}`}
                   {job.drive?.status === "failed" && `Envoi échoué : ${job.drive.error || "erreur inconnue"}`}
                 </p>
               </div>
-              {job.drive?.status === "done" && job.drive.link && (
+              {job.drive?.status === "done" && (job.drive.folders?.length || 0) <= 1 && job.drive.link && (
                 <a
                   href={job.drive.link}
                   target="_blank"
@@ -759,6 +775,35 @@ const AutomaticMode = () => {
                 >
                   <DriveLogo className="h-4 w-4" /> Ouvrir le dossier
                 </a>
+              )}
+              {job.drive?.status === "done" && (job.drive.folders?.length || 0) > 1 && (
+                <div className="w-full space-y-2">
+                  {job.drive.folders!.map((f, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <span className="w-20 shrink-0 text-[10px] font-black uppercase tracking-[0.12em] text-white/40">{f.label}</span>
+                      <input
+                        readOnly
+                        value={f.link || ""}
+                        onFocus={(e) => e.currentTarget.select()}
+                        className="flex-1 min-w-0 rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white/80 outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => { navigator.clipboard?.writeText(f.link || ""); toast({ title: `${f.label} copié` }); }}
+                        className="shrink-0 rounded-lg bg-white/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-white hover:bg-white/20"
+                      >
+                        Copier
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => { navigator.clipboard?.writeText(job.drive!.folders!.map((f) => `${f.label}: ${f.link || ""}`).join("\n")); toast({ title: "Tous les liens copiés" }); }}
+                    className="rounded-full bg-white px-4 py-2 text-[11px] font-black uppercase tracking-[0.14em] text-black hover:bg-white/90"
+                  >
+                    Copier tous les liens
+                  </button>
+                </div>
               )}
             </div>
           )}

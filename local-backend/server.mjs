@@ -4217,33 +4217,54 @@ const processAutoJob = async (job) => {
     await Promise.all(Array.from({ length: Math.min(AUTO_RENDER_CONCURRENCY, work.length || 1) }, worker));
     job.finishedAt = new Date().toISOString();
 
-    // Google Drive: one folder per batch, every READY variant uploaded into it.
-    // The UI polls job.drive {status, link, uploaded, total} to animate the step.
+    // Google Drive: one folder per DESTINATION (N≥1). Every READY variant is split
+    // round-robin across the N folders so each destination gets a UNIQUE set (no two
+    // people receive the same video). The UI polls job.drive {status, uploaded, total,
+    // link, folders:[{label,link,uploaded,total}]} to animate the step + show the links.
     try {
       const { isDriveConfigured, uploadBatchToDrive } = await import("./driveUpload.mjs");
       const readyFiles = job.items
         .filter((it) => it.status === "ready" && it.path && fsSync.existsSync(it.path))
         .map((it, i) => ({ path: it.path, name: `${String(it.source || "variante").replace(/[^\w\- ]+/g, "").trim() || "variante"} - v${(it.index ?? i) + 1}.mp4` }));
+      const N = Math.max(1, Math.min(5, job.driveDestinations || 1));
       if (!isDriveConfigured() || !readyFiles.length) {
-        if (job.drive?.status !== "done") job.drive = { status: "skipped", uploaded: 0, total: readyFiles.length, link: null, error: null };
+        if (job.drive?.status !== "done") job.drive = { status: "skipped", uploaded: 0, total: readyFiles.length, link: null, folders: [], error: null };
       } else if (job.drive?.status !== "done") {
         const stamp = new Date();
-        const folderName = `Klimax ${stamp.getFullYear()}-${String(stamp.getMonth() + 1).padStart(2, "0")}-${String(stamp.getDate()).padStart(2, "0")} ${String(stamp.getHours()).padStart(2, "0")}h${String(stamp.getMinutes()).padStart(2, "0")} (${readyFiles.length} vidéos)`;
-        job.drive = { status: "uploading", uploaded: 0, total: readyFiles.length, link: null, error: null };
+        const tag = `${stamp.getFullYear()}-${String(stamp.getMonth() + 1).padStart(2, "0")}-${String(stamp.getDate()).padStart(2, "0")} ${String(stamp.getHours()).padStart(2, "0")}h${String(stamp.getMinutes()).padStart(2, "0")}`;
+        // Round-robin split: folder f gets items f, f+N, f+2N, … → unique per destination.
+        const groups = Array.from({ length: N }, () => []);
+        readyFiles.forEach((f, i) => groups[i % N].push(f));
+        const folders = groups.map((_, i) => ({ label: N > 1 ? `Lot ${i + 1}/${N}` : "Lot", link: null, uploaded: 0, total: groups[i].length }));
+        const grandTotal = readyFiles.length;
+        job.drive = { status: "uploading", uploaded: 0, total: grandTotal, link: null, folders, error: null };
         await saveAutoJobs();
-        const result = await uploadBatchToDrive({
-          folderName,
-          files: readyFiles,
-          onProgress: (uploaded, total) => {
-            job.drive = { ...job.drive, uploaded, total };
-            saveAutoJobs();
-          },
-        });
-        job.drive = { status: "done", uploaded: result.uploaded, total: result.total, link: result.folderLink, error: null };
-        console.log(`[drive] batch ${job.id}: ${result.uploaded}/${result.total} → ${result.folderLink}`);
+        let done = 0;
+        for (let i = 0; i < N; i += 1) {
+          if (!groups[i].length) { folders[i].link = null; continue; }
+          const folderName = N > 1
+            ? `Klimax ${tag} · Lot ${i + 1}/${N} (${groups[i].length} vidéos)`
+            : `Klimax ${tag} (${groups[i].length} vidéos)`;
+          const result = await uploadBatchToDrive({
+            folderName,
+            files: groups[i],
+            onProgress: (up) => {
+              folders[i].uploaded = up;
+              job.drive = { ...job.drive, uploaded: done + up, folders };
+              saveAutoJobs();
+            },
+          });
+          folders[i].link = result.folderLink;
+          folders[i].uploaded = result.uploaded;
+          done += result.uploaded;
+          job.drive = { ...job.drive, uploaded: done, folders };
+          await saveAutoJobs();
+          console.log(`[drive] batch ${job.id} ${folders[i].label}: ${result.uploaded}/${result.total} → ${result.folderLink}`);
+        }
+        job.drive = { status: "done", uploaded: done, total: grandTotal, link: folders[0]?.link || null, folders, error: null };
       }
     } catch (error) {
-      job.drive = { status: "failed", uploaded: job.drive?.uploaded || 0, total: job.drive?.total || 0, link: null, error: String(error.message || error).slice(0, 200) };
+      job.drive = { status: "failed", uploaded: job.drive?.uploaded || 0, total: job.drive?.total || 0, link: null, folders: job.drive?.folders || [], error: String(error.message || error).slice(0, 200) };
       console.error("[drive] upload du batch échoué:", error.message);
     }
   } finally {
@@ -4278,10 +4299,13 @@ const parseAutoBatchParams = (body) => ({
   hookBrollSplit: body?.hookBrollSplit === true,
   shake: body?.shake === true,
   blurBg: body?.blurBg === true,
+  // N separate Drive destinations: the batch renders variantsPerVideo × N unique variants
+  // per video and splits them round-robin into N Drive folders (one shareable link each).
+  driveDestinations: clamp(Math.round(safeNumber(body?.driveDestinations, 1)), 1, 5),
   subtitleSizePx: body?.subtitleSizePx != null ? clamp(Math.round(safeNumber(body.subtitleSizePx, 0)), 30, 120) : 0,
 });
 
-const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit = false, shake = false, blurBg = false, subtitleSizePx, plannerOverrides, genHooks = true, assetPools = null, hookBank = null }) => {
+const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit = false, shake = false, blurBg = false, driveDestinations = 1, subtitleSizePx, plannerOverrides, genHooks = true, assetPools = null, hookBank = null }) => {
   const { planVideoVariants } = await import("./autoVariants.mjs");
   // Assemble/reuse a project per video pair and transcribe it (whisper) — A→Z.
   const allProjectIds = [...projectIds];
@@ -4354,7 +4378,9 @@ const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, 
       music: banks.music.map((a) => ({ id: a.id, title: a.title })),
     };
     const plan = planVideoVariants({
-      base, videoId: pid, requested: variantsPerVideo, varied, lockSplitScreen, banks, faceBoxes, overrides: plannerOverrides,
+      // ×N when several Drive destinations are requested → each destination gets its own
+      // unique set of `variantsPerVideo` videos (split round-robin at upload time).
+      base, videoId: pid, requested: variantsPerVideo * Math.max(1, driveDestinations), varied, lockSplitScreen, banks, faceBoxes, overrides: plannerOverrides,
     });
     // First ~3 caption cues per stage = a representative subtitle sample for the preview.
     const sampleOf = (cues) => cues.slice(0, 3).map((c) => c.text).join(" ").trim();
@@ -4369,7 +4395,7 @@ const buildAutoPlan = async (db, { videoGroupIds, projectIds, variantsPerVideo, 
 app.post("/api/auto/generate", async (req, res) => {
   await loadAutoJobs();
   const db = await readDb();
-  const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, blurBg, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
+  const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, blurBg, driveDestinations, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
   // Training mode: learned overrides narrow the deterministic picks. A studio project's
   // overrides fold on top. Snapshot the MERGED set on the job so a resumed/re-derived
   // job reproduces the exact same variants even if rules/projects change later.
@@ -4377,7 +4403,7 @@ app.post("/api/auto/generate", async (req, res) => {
 
   if (!videoGroupIds.length && !projectIds.length) return res.status(400).json({ error: "Aucune vidéo sélectionnée." });
   const { allProjectIds, perProject } = await buildAutoPlan(db, {
-    videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, blurBg, subtitleSizePx, plannerOverrides, assetPools, hookBank,
+    videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, blurBg, driveDestinations, subtitleSizePx, plannerOverrides, assetPools, hookBank,
   });
 
   const jobId = `auto-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -4404,6 +4430,7 @@ app.post("/api/auto/generate", async (req, res) => {
   const job = {
     id: jobId, createdAt: new Date().toISOString(), finishedAt: null, total: items.length, done: 0,
     engineVersion: AUTO_ENGINE_VERSION,
+    driveDestinations: Math.max(1, driveDestinations || 1),
     params: { projectIds: allProjectIds, variantsPerVideo, varied, lockSplitScreen, plannerOverrides, baseByProject, banksByProject }, hooksByProject, items,
   };
   autoJobs.set(jobId, job);
@@ -4420,11 +4447,11 @@ app.post("/api/auto/generate", async (req, res) => {
 app.post("/api/auto/plan", async (req, res) => {
   try {
     const db = await readDb();
-    const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, blurBg, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
+    const { videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, blurBg, driveDestinations, subtitleSizePx, overrides, assetPools, hookBank } = await resolveBatchInputs(req.body);
     if (!videoGroupIds.length && !projectIds.length) return res.status(400).json({ error: "Aucune vidéo sélectionnée." });
     const plannerOverrides = { ...(await getPlannerOverrides()), ...(overrides || {}) };
     const { perProject } = await buildAutoPlan(db, {
-      videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, blurBg, subtitleSizePx, plannerOverrides, assetPools, hookBank,
+      videoGroupIds, projectIds, variantsPerVideo, varied, lockSplitScreen, hookBrollSplit, shake, blurBg, driveDestinations, subtitleSizePx, plannerOverrides, assetPools, hookBank,
     });
     const lite = (asset) => (asset ? { id: asset.id, title: asset.title, fileUrl: asset.fileUrl } : null);
     const speakers = db.assets.filter((a) => a.category === "speaker").map(lite);
