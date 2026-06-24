@@ -4090,6 +4090,23 @@ const releaseRenderSlot = () => {
   if (next) next();
   else renderSlotsInUse = Math.max(0, renderSlotsInUse - 1);
 };
+// SEPARATE pool for Drive uploads — they run IN PARALLEL with rendering. Uploads are
+// network-bound and slow (a slow uplink can take minutes per file); awaiting them inside
+// a render worker stalled the renders (the "blocks at 12 videos" bug). Bounded so we don't
+// open hundreds of simultaneous uploads.
+const AUTO_UPLOAD_CONCURRENCY = clamp(Math.round(safeNumber(process.env.KLIMAX_UPLOAD_CONCURRENCY, 3)), 1, 6);
+let uploadSlotsInUse = 0;
+const uploadSlotWaiters = [];
+const acquireUploadSlot = () =>
+  new Promise((resolve) => {
+    if (uploadSlotsInUse < AUTO_UPLOAD_CONCURRENCY) { uploadSlotsInUse += 1; resolve(); }
+    else uploadSlotWaiters.push(resolve);
+  });
+const releaseUploadSlot = () => {
+  const next = uploadSlotWaiters.shift();
+  if (next) next();
+  else uploadSlotsInUse = Math.max(0, uploadSlotsInUse - 1);
+};
 // Bumped whenever buildVariant's rng draw ORDER changes (e.g. safe-zone layout v2):
 // a job planned under another version would re-derive DIFFERENT variants on resume,
 // silently mismatching its stored combo/decisions — refuse to resume it instead.
@@ -4190,6 +4207,7 @@ const processAutoJob = async (job) => {
       await saveAutoJobs();
     }
     const folderLocks = {};
+    const pendingUploads = new Set(); // in-flight background uploads (drained at the end)
     const ensureFolder = (di) => {
       const f = job.drive.folders[di];
       if (f.folderId) return Promise.resolve(f.folderId);
@@ -4262,13 +4280,22 @@ const processAutoJob = async (job) => {
         } finally {
           releaseRenderSlot();
         }
-        // Upload AFTER releasing the render slot (upload is network-bound, not CPU), then
-        // the file is deleted locally so the machine never piles up renders.
-        if (item.status === "ready") await uploadAndCleanup(item);
+        // Fire the upload in the BACKGROUND (own slot pool) so rendering keeps going while
+        // the (slow) upload runs — do NOT await it here. Uploads are drained at the end.
+        if (item.status === "ready" && driveOn) {
+          const pu = (async () => {
+            await acquireUploadSlot();
+            try { await uploadAndCleanup(item); } finally { releaseUploadSlot(); }
+          })();
+          pendingUploads.add(pu);
+          pu.finally(() => pendingUploads.delete(pu));
+        }
         job.done = jobDoneCount(job); await saveAutoJobs();
       }
     };
     await Promise.all(Array.from({ length: Math.min(AUTO_RENDER_CONCURRENCY, work.length || 1) }, worker));
+    // Renders are done; wait for the background uploads still in flight to drain.
+    await Promise.all([...pendingUploads]);
     job.finishedAt = new Date().toISOString();
 
     // Drive was delivered INCREMENTALLY in the worker (upload + local delete per video).
