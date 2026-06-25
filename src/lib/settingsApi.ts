@@ -14,16 +14,19 @@ export type SettingsSectionView = {
 export type SettingsView = {
   whisper: SettingsSectionView;
   brollIntelligence: SettingsSectionView;
+  imageGen: SettingsSectionView & { provider: string };
 };
 
 export type SettingsSectionPatch = {
   apiKey?: string;
   model?: string;
+  provider?: string;
 };
 
 export type SettingsPatch = {
   whisper?: SettingsSectionPatch;
   brollIntelligence?: SettingsSectionPatch;
+  imageGen?: SettingsSectionPatch;
 };
 
 async function parse<T>(res: Response): Promise<T> {
@@ -52,5 +55,8 @@ export const settingsApi = {
   },
   async testBrollIntelligence(): Promise<{ ok: boolean; error?: string; model?: string }> {
     return parse(await fetch(`${LOCAL_KLIMAX_API}/api/settings/test/broll-intelligence`, { method: "POST" }));
+  },
+  async testImageGen(): Promise<{ ok: boolean; error?: string; model?: string; provider?: string }> {
+    return parse(await fetch(`${LOCAL_KLIMAX_API}/api/settings/test/image-gen`, { method: "POST" }));
   },
 };

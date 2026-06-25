@@ -21,7 +21,16 @@ def main() -> int:
         word_timestamps=True,
         vad_filter=True,
         condition_on_previous_text=False,
-        temperature=0,
+        # Anti-repetition: Whisper sometimes loops on one token ("test test test…")
+        # when the audio is unclear/music. A SCALAR temperature disables the fallback
+        # ladder, so a repetitive decode is kept as-is. Pass the full temperature ladder
+        # so a segment whose output is too repetitive (compression_ratio_threshold) or
+        # low-confidence (log_prob_threshold) is RE-DECODED at a higher temperature, and
+        # forbid repeated trigrams outright during decoding.
+        temperature=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+        compression_ratio_threshold=2.4,
+        log_prob_threshold=-1.0,
+        no_repeat_ngram_size=3,
     )
 
     result = {

@@ -631,6 +631,23 @@ const runJson = async (command, args) => {
 const ffprobeJson = (filePath) =>
   runJson(ffprobe.path, ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", filePath]);
 
+// Whether the active logo file actually carries an audio stream. The render
+// filtergraph references [logo:a]; if the logo has no audio, referencing it
+// fails the whole render. Cached by path+mtime so we probe at most once.
+const logoAudioCache = new Map();
+const logoHasAudio = async () => {
+  const filePath = activeLogoPath();
+  const key = mediaCacheKey(filePath);
+  if (logoAudioCache.has(key)) return logoAudioCache.get(key);
+  let hasAudio = false;
+  try {
+    const probe = await ffprobeJson(filePath);
+    hasAudio = (probe.streams || []).some((s) => s.codec_type === "audio");
+  } catch { /* assume none */ }
+  logoAudioCache.set(key, hasAudio);
+  return hasAudio;
+};
+
 // Duration of a media file in seconds (0 if it can't be probed).
 // Media durations and loudness measurements are pure functions of the file —
 // cache them by path+mtime so N-variant auto batches don't re-probe/re-decode
@@ -954,9 +971,14 @@ const ensureSystemAssets = async () => {
   if (ffmpegPath && fsSync.existsSync(logoAnimationPath) && !fsSync.existsSync(logoAnimationFastPath)) {
     try {
       await runProcess(ffmpegPath, [
-        "-y", "-i", logoAnimationPath, "-an",
+        "-y", "-i", logoAnimationPath,
+        // KEEP the pop-up's own audio (the render filtergraph references [logo:a] for
+        // the "pop" sound). Dropping it (-an) makes every render that shows the logo
+        // fail with "Stream specifier ':a' matches no streams".
+        "-map", "0:v:0", "-map", "0:a:0?",
         "-vf", "scale=960:-2:flags=lanczos",
         "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le",
+        "-c:a", "pcm_s16le",
         logoAnimationFastPath,
       ], { timeoutMs: 180000 });
       console.log("[logo] built fast 960px logo for renders");
@@ -1301,7 +1323,11 @@ const buildAutoZoomEvents = (clip, clipDuration, settings) => {
     });
   }
 
-  return events.sort((a, b) => a.start - b.start);
+  const sorted = events.sort((a, b) => a.start - b.start);
+  if (sorted.length) {
+    console.log(`[zoom] clip ${clip?.stage}: ${sorted.map((e) => `${e.kind}@${e.start.toFixed(1)}s+${Math.round(e.boost * 100)}%`).join(" ")}`);
+  }
+  return sorted;
 };
 
 const zoomExpressionForEvents = (events) => {
@@ -1312,12 +1338,18 @@ const zoomExpressionForEvents = (events) => {
     const duration = Number(event.duration).toFixed(3);
     const boost = Number(event.boost).toFixed(4);
     if (event.kind === "smooth") {
-      return `${boost}*between(t,${start},${end})*sin(PI*(t-${start})/${duration})`;
+      // Raised-cosine bump: 0 at both ends WITH zero velocity (no lurch in/out), peaks at
+      // boost mid-window. sin(PI·x) had max velocity at the edges → it jerked into motion.
+      return `${boost}*between(t,${start},${end})*0.5*(1-cos(2*PI*(t-${start})/${duration}))`;
     }
     if (event.kind === "zoomOut") {
-      return `${boost}*between(t,0,${duration})*(1-t/${duration})`;
+      // Ease-OUT (decelerate to a smooth stop) instead of a constant-velocity linear pull.
+      return `${boost}*between(t,0,${duration})*pow(1-t/${duration},2)`;
     }
-    return `${boost}*between(t,${start},${end})`;
+    // "cut" punch: ramp in/out over 0.15 s (eased trapezoid) instead of a 1-frame snap
+    // in AND a jarring 1-frame snap-back mid-clip. Holds the boost in between.
+    const RAMP = 0.15;
+    return `${boost}*between(t,${start},${end})*min(1,max(0,min((t-${start})/${RAMP},(${end}-t)/${RAMP})))`;
   });
   return `1+${terms.join("+")}`;
 };
@@ -2016,10 +2048,15 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindow
   // "shadow lags the text" bug).
   const transcriptWords = Array.isArray(clipTranscription?.words) ? clipTranscription.words : [];
   const karaokeOn = renderStyle.activeWordEnabled !== false;
-  const events = cues.flatMap((cue) => {
+  const events = cues.flatMap((cue, cueIdx) => {
     if (hideInLogoWindow && inLogoWindow(cue)) return []; // centred-logo variant
     const cueStart = safeNumber(cue.start, 0);
     const cueEnd = Math.max(cueStart + 0.05, safeNumber(cue.end, cueStart + 0.05));
+    // Entry animation plays only at the START of a phrase — the first cue of the clip OR
+    // the first cue after a >0.6 s speech gap — NOT on every 2-word cue (that made the
+    // whole caption pulse/zoom ~3×/s, the #1 "amateur" tell). The per-word karaoke colour
+    // step still fires on every cue; only the geometry pop is gated.
+    const isEntryCue = cueIdx === 0 || (cueStart - safeNumber(cues[cueIdx - 1]?.end, -10) > 0.6);
     const cueText = renderStyle.uppercase === true ? String(cue.text || "").toUpperCase() : String(cue.text || "");
     const shadowText = assEscapePlain(cueText);
     const inLogo = inLogoWindow(cue);
@@ -2031,7 +2068,13 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindow
     // Build word segments (single segment = whole cue when karaoke is off / 1 word).
     let segs;
     if (karaokeOn && tokens.length >= 2) {
-      const cueWords = transcriptWords.filter((w) => safeNumber(w.start, -1) < cueEnd && safeNumber(w.end, -1) > cueStart);
+      // Match words whose MIDPOINT falls inside the cue (not edge-overlap): a word that
+      // straddles the cue boundary by ~0.02 s used to leak in, breaking the count and
+      // forcing an even-time fallback that mistimed the highlight (~7% of cues).
+      const cueWords = transcriptWords.filter((w) => {
+        const mid = (safeNumber(w.start, 0) + safeNumber(w.end, 0)) / 2;
+        return mid >= cueStart && mid < cueEnd;
+      });
       const boundaries = [cueStart];
       if (cueWords.length === tokens.length) {
         for (let k = 1; k < tokens.length; k += 1) boundaries.push(clamp(safeNumber(cueWords[k].start, cueStart), cueStart, cueEnd));
@@ -2054,7 +2097,7 @@ const buildAssSubtitleFile = async (project, clip, clipTranscription, logoWindow
     for (let s = 0; s < segs.length; s += 1) {
       const st = assTime(segs[s].start);
       const en = assTime(segs[s].end);
-      const ov = s === 0 ? anim : still; // entry animation on the first window only
+      const ov = (s === 0 && isEntryCue) ? anim : still; // entry animation only on a phrase's first cue
       if (!boxOn) {
         out.push(`Dialogue: 0,${st},${en},KlimaxShadow,,0,0,0,,${ov.shadow}${shadowText}`);
         if (outline > 0) out.push(`Dialogue: 1,${st},${en},KlimaxOutline,,0,0,0,,${ov.main}${shadowText}`);
@@ -2498,11 +2541,13 @@ const renderProject = async (db, project, sourceGroup) => {
     // EVERY frame → ~18x slower renders. zoompan keeps a constant output size and zooms
     // internally, so it's as fast as a static b-roll. Centred 7% travel over the segment.
     const frames = Math.max(1, Math.round(Math.max(0.2, segDur) * 30));
-    const per = (0.07 / frames).toFixed(6);
+    // EASED Ken-Burns (raised-cosine, ~10% travel) instead of a constant-velocity linear
+    // push that froze once it hit the cap. ease = 0.5*(1-cos(PI*p)), p=on/frames clamped.
+    const ease = `(0.5*(1-cos(PI*min(on/${frames},1))))`;
     const base = brollZoom === "out"
-      ? `max(1.07-${per}*on,1.0)`
+      ? `1.0+0.10*(1-${ease})`
       : brollZoom === "in"
-        ? `min(1.0+${per}*on,1.07)`
+        ? `1.0+0.10*${ease}`
         : `1.0`;
     // popIn: a quick centred scale "pop" (overshoot 1.16 → settle) over the first ~9
     // frames, then hand off to the Ken-Burns curve. Still zoompan → fixed output, cheap.
@@ -2747,7 +2792,10 @@ const renderProject = async (db, project, sourceGroup) => {
     const logoCenter = clip.logoCenter === true;
     // Logo audio ("garder le son"): collected while compositing each pop-up, then mixed
     // into the clip's audio below so the Klimax animation plays its sound.
+    // Only reference [logo:a] if the logo file actually has audio — otherwise the
+    // whole render fails with "Stream specifier ':a' matches no streams".
     const logoAudioTags = [];
+    const logoAudioAvailable = logoApplies ? await logoHasAudio() : false;
     // The on-screen time window of each logo pop-up (clip-local secs). Used to place
     // the overlay AND — in auto mode — to keep the b-roll OUT of these windows so
     // nothing ever shares the screen with the logo.
@@ -2790,12 +2838,14 @@ const renderProject = async (db, project, sourceGroup) => {
         cur = nextVideo;
         // Keep the pop-up's own sound: delay this logo's audio to its window start and
         // collect it for the clip audio mix below. Bounded to the clip length.
-        const logoDelayMs = Math.max(0, Math.round(win.start * 1000));
-        const logoATag = `alogo${clipIndex}_${logoIndex}`;
-        filterChains.push(
-          `[${logoInput}:a]aresample=async=1,volume=${LOGO_VOLUME_DB}dB,adelay=${logoDelayMs}:all=1,atrim=0:${Math.max(0.1, clipDuration).toFixed(3)},asetpts=PTS-STARTPTS[${logoATag}]`
-        );
-        logoAudioTags.push(`[${logoATag}]`);
+        if (logoAudioAvailable) {
+          const logoDelayMs = Math.max(0, Math.round(win.start * 1000));
+          const logoATag = `alogo${clipIndex}_${logoIndex}`;
+          filterChains.push(
+            `[${logoInput}:a]aresample=async=1,volume=${LOGO_VOLUME_DB}dB,adelay=${logoDelayMs}:all=1,atrim=0:${Math.max(0.1, clipDuration).toFixed(3)},asetpts=PTS-STARTPTS[${logoATag}]`
+          );
+          logoAudioTags.push(`[${logoATag}]`);
+        }
       }
       return cur;
     };
@@ -3147,9 +3197,10 @@ const renderProject = async (db, project, sourceGroup) => {
           const blendOut = j === flashJobs.length - 1 ? "vblend" : `vbl${j}`;
           filterChains.push(`[${baseTag}][flin${j}]blend=all_mode=lighten:shortest=1[${blendOut}]`);
           baseTag = blendOut;
-          // Keep the flash's own whoosh, delayed to the flash start, at -5 dB.
+          // Keep the flash's own whoosh, delayed to the flash start, at -10 dB (was -5,
+          // ~10 dB hotter than the riser/fahh accents → it dominated the transition).
           filterChains.push(
-            `[${flIdx}:a]volume=-5dB,adelay=${Math.round(flashStart * 1000)}:all=1,aresample=async=1[fla${j}]`
+            `[${flIdx}:a]volume=-10dB,adelay=${Math.round(flashStart * 1000)}:all=1,aresample=async=1[fla${j}]`
           );
           flashAudioTags.push(`[fla${j}]`);
         }
@@ -3247,21 +3298,41 @@ const renderProject = async (db, project, sourceGroup) => {
     // input, which buried the voice AND the music). The music is summed UNDER the voice at
     // musicVolumeDb, so the voice stays clearly dominant while the music is still audible
     // (stylé). A limiter guards the brief moments where voice + music peak together.
-    filterChains.push(`[${voiceTag}][bgm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.97[aout]`);
+    filterChains.push(`[${voiceTag}][bgm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.94[aout]`);
   } else {
     filterChains.push(`[${voiceTag}]anull[aout]`);
   }
+  // Per-variant audio uniqueness (anti same-source fingerprint): a tiny tempo nudge
+  // (±2 %, pitch-preserving) + a gentle random EQ shelf — both inaudible but they move
+  // the audio hash AND change the total duration so two variants of the same clip no
+  // longer share an identical waveform/length. The video is sped by the SAME factor
+  // below (setpts) so A/V stays perfectly in sync. Seeded by renderRng → reproducible.
+  const speedF = Math.round((1 + (renderRng() * 2 - 1) * 0.02) * 10000) / 10000; // 0.98–1.02
+  const eqFreq = 120 + Math.floor(renderRng() * 4800); // 120–4920 Hz
+  const eqGain = Math.round((renderRng() * 2 - 1) * 2 * 10) / 10; // ±2 dB
+  filterChains.push(`[aout]atempo=${speedF},equalizer=f=${eqFreq}:t=q:w=1.6:g=${eqGain},aresample=async=1[aoutF]`);
+  filterChains.push(`[${finalVideoTag}]setpts=PTS/${speedF}[vfinal]`);
+  finalVideoTag = "vfinal";
+  console.log(`[uniq] speedF=${speedF} eq=${eqFreq}Hz/${eqGain}dB`);
 
   // Hardware encode on Mac (videotoolbox) when available, else software libx264.
   const useHwEncoder = await hasVideotoolbox();
+  // videotoolbox in CONSTANT-QUALITY mode (-q:v) instead of a fixed 12M ABR target: the
+  // ABR target never bound (real files measured ~8 M) so bits were mis-allocated; -q:v
+  // lets the encoder spend bits where motion needs them. -g 90 = ~3 s GOP (the default
+  // emitted ~0.4 s keyframes, wasting bitrate on I-frames + an unusual fingerprint).
+  const VT_QUALITY = process.env.KLIMAX_VT_QUALITY || "68"; // 0–100, higher = better (~60–70 = high)
+  // -flags:v +bitexact stops libavcodec from stamping "Lavc… h264_videotoolbox" into the
+  // video stream's encoder tag (an ffmpeg/tooling tell). Container Lavf tag is killed by
+  // -fflags +bitexact in the output args; our explicit -metadata creation_time still wins.
   const videoCodecArgs = useHwEncoder
-    ? ["-c:v", "h264_videotoolbox", "-b:v", VIDEOTOOLBOX_BITRATE, "-maxrate", VIDEOTOOLBOX_BITRATE, "-bufsize", "24M", "-allow_sw", "1", "-pix_fmt", "yuv420p"]
-    : ["-c:v", "libx264", "-preset", "superfast", "-threads", "0", "-crf", "20", "-pix_fmt", "yuv420p"];
+    ? ["-c:v", "h264_videotoolbox", "-q:v", VT_QUALITY, "-g", "90", "-flags:v", "+bitexact", "-allow_sw", "1", "-pix_fmt", "yuv420p"]
+    : ["-c:v", "libx264", "-preset", "superfast", "-threads", "0", "-crf", "20", "-g", "90", "-flags:v", "+bitexact", "-pix_fmt", "yuv420p"];
   // Make the file look like a fresh iPhone capture (TikTok/Instagram read these tags;
   // a "real phone" provenance + a unique recent creation date per export reduces the
   // duplicate/low-quality flags that lead to shadowban). Applies to MANUAL and AUTO.
   // Values vary per render (seeded by renderRng) so no two exports share metadata.
-  const IOS_VERS = ["26.0", "26.0.1", "26.1", "18.6.2"];
+  const IOS_VERS = ["26.0", "26.0.1", "26.1", "26.0.2"]; // iPhone 17 Pro Max ships iOS 26 — no 18.x (was a provenance tell)
   const iosVer = IOS_VERS[Math.floor(renderRng() * IOS_VERS.length)];
   const creationIso = new Date(Date.now() - Math.floor(renderRng() * 25) * 86400000 - Math.floor(renderRng() * 86400) * 1000).toISOString();
   const iphoneMeta = [
@@ -3273,6 +3344,11 @@ const renderProject = async (db, project, sourceGroup) => {
     "-metadata", `creation_time=${creationIso}`,
     "-metadata:s:v:0", "handler_name=Core Media Video",
     "-metadata:s:a:0", "handler_name=Core Media Audio",
+    // Strip the ffmpeg encoder tells (real iPhone files carry none). The empty per-stream
+    // overrides run AFTER the codec writes its default ("Lavc… h264_videotoolbox"), so they win.
+    "-metadata", "encoder=",
+    "-metadata:s:v:0", "encoder=",
+    "-metadata:s:a:0", "encoder=",
   ];
   console.log(`[meta] iPhone 17 Pro Max · iOS ${iosVer} · ${creationIso}`);
   const args = [
@@ -3282,10 +3358,14 @@ const renderProject = async (db, project, sourceGroup) => {
     "-map",
     `[${finalVideoTag}]`,
     "-map",
-    "[aout]",
+    "[aoutF]",
     ...videoCodecArgs,
-    "-c:a",
-    "aac",
+    // Tag BT.709 so phones don't guess the colour matrix (measured: matrix was "unknown"
+    // → green/skin shifts on some devices). primaries/trc were already 709; the matrix
+    // (colorspace) is what was missing.
+    "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
+    "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
+    "-fflags", "+bitexact", // drop the container "encoder=Lavf…" tag (ffmpeg tell)
     ...iphoneMeta,
     "-movflags",
     "+faststart+use_metadata_tags",
@@ -3299,6 +3379,22 @@ const renderProject = async (db, project, sourceGroup) => {
   _mark("buildFilters+facedetect+hookPNG");
   const { stderr } = await runProcess(ffmpegPath, args, { timeoutMs: renderTimeoutMs });
   _mark("ffmpegEncode");
+  // Stream-copy remux (~0.15 s, NO re-encode → bit-identical video/audio) to strip the
+  // stream-level "encoder=Lavc h264_videotoolbox" tag that videotoolbox writes despite
+  // +bitexact — the last ffmpeg/tooling provenance tell. iPhone metadata + BT.709 + faststart
+  // are preserved. On any failure we keep the original file (never fails the render).
+  try {
+    const remuxPath = `${outputPath}.remux.mp4`;
+    await runProcess(ffmpegPath, [
+      "-y", "-i", outputPath, "-map", "0", "-c", "copy", "-map_metadata", "0",
+      "-metadata:s:v:0", "encoder=", "-metadata:s:a:0", "encoder=",
+      "-fflags", "+bitexact", "-movflags", "+faststart+use_metadata_tags", remuxPath,
+    ], { timeoutMs: 60000 });
+    if (fsSync.existsSync(remuxPath) && fsSync.statSync(remuxPath).size > 0) {
+      fsSync.renameSync(remuxPath, outputPath);
+    }
+  } catch (e) { console.warn("[remux] encoder-tag strip skipped:", e.message); }
+  _mark("remux");
   const metadata = await exportMetadata(outputPath);
   pruneRenders().catch(() => {}); // keep renders/ bounded (fire-and-forget, never blocks)
   return {
@@ -3819,11 +3915,12 @@ app.put("/api/settings", async (req, res) => {
   const body = req.body || {};
   // Only accept known sections, only accept apiKey + model fields.
   const patch = {};
-  for (const sectionKey of ["whisper", "brollIntelligence"]) {
+  for (const sectionKey of ["whisper", "brollIntelligence", "imageGen"]) {
     if (body[sectionKey] && typeof body[sectionKey] === "object") {
       const s = {};
       if (typeof body[sectionKey].apiKey === "string") s.apiKey = body[sectionKey].apiKey.trim();
       if (typeof body[sectionKey].model === "string") s.model = body[sectionKey].model.trim();
+      if (sectionKey === "imageGen" && typeof body[sectionKey].provider === "string") s.provider = body[sectionKey].provider.trim();
       if (Object.keys(s).length > 0) patch[sectionKey] = s;
     }
   }
@@ -3842,6 +3939,11 @@ app.post("/api/settings/test/whisper", async (_req, res) => {
 app.post("/api/settings/test/broll-intelligence", async (_req, res) => {
   const { testBrollIntelligenceConnection } = await import("./brollIntelligence.mjs");
   res.json(await testBrollIntelligenceConnection());
+});
+
+app.post("/api/settings/test/image-gen", async (_req, res) => {
+  const { testImageGenConnection } = await import("./imageGen.mjs");
+  res.json(await testImageGenConnection());
 });
 
 // -------------------------------------------------------------------------
@@ -4138,6 +4240,10 @@ const releaseUploadSlot = () => {
 // offset + per-render vertical jitter; b-roll square gets ±3% size jitter.
 // v8: caption centre capped (never glued to the bottom, SUB_MAX_CENTER ≈0.78·H).
 const AUTO_ENGINE_VERSION = 13;
+// A variant that fails (even after the no-b-roll salvage) is retried in a fresh round,
+// up to this many total attempts — a transient hiccup (HW-encoder contention, disk,
+// upload) shouldn't doom the variant. Successful variants are never re-rendered.
+const MAX_RENDER_ATTEMPTS = 3;
 
 const processAutoJob = async (job) => {
   if (job._running) return;
@@ -4161,7 +4267,7 @@ const processAutoJob = async (job) => {
     const p = job.params;
 
     // 1) Re-derive the full flat work list (variant params per item).
-    const work = [];
+    const allSlots = [];
     for (const pid of p.projectIds) {
       const project = db.projects.find((x) => x.id === pid);
       if (!project) continue;
@@ -4202,7 +4308,7 @@ const processAutoJob = async (job) => {
         const item = job.items.find((it) => it.id === `${job.id}-${pid}-${v.index}`);
         if (!item || item.status === "ready") continue;
         if (!item.decisions) item.decisions = v.decisions; // backfill for jobs created before this field
-        work.push({ item, project, sourceGroup, variant: v, pid });
+        allSlots.push({ item, project, sourceGroup, variant: v, pid });
       }
     }
 
@@ -4212,7 +4318,7 @@ const processAutoJob = async (job) => {
     //     it belongs to: floor(variantIndex / variantsPerVideo) → 0..N-1.
     const { isDriveConfigured, createSharedFolder, uploadOneFile } = await import("./driveUpload.mjs");
     const driveOn = isDriveConfigured();
-    const N = Math.max(1, Math.min(5, job.driveDestinations || 1));
+    const N = Math.max(1, Math.min(10, job.driveDestinations || 1));
     const vpv = Math.max(1, p.variantsPerVideo || 1);
     const ds = new Date();
     const dtag = `${ds.getFullYear()}-${String(ds.getMonth() + 1).padStart(2, "0")}-${String(ds.getDate()).padStart(2, "0")} ${String(ds.getHours()).padStart(2, "0")}h${String(ds.getMinutes()).padStart(2, "0")}`;
@@ -4255,14 +4361,16 @@ const processAutoJob = async (job) => {
       }
     };
 
-    // 2) Worker pool: N concurrent renders.
-    let cursor = 0;
-    const worker = async () => {
+    // 2) Worker pool: N concurrent renders, run over a given round's work list.
+    const runWorkerPool = async (roundWork) => {
+     let cursor = 0;
+     const worker = async () => {
       for (;;) {
-        const slot = cursor < work.length ? work[cursor++] : null;
+        const slot = cursor < roundWork.length ? roundWork[cursor++] : null;
         if (!slot) return;
         const { item, project, sourceGroup, variant: v, pid } = slot;
         await acquireRenderSlot(); // global cap across ALL jobs
+        item.attempts = (item.attempts || 0) + 1;
         item.status = "rendering"; await saveAutoJobs();
         try {
           const variantProject = {
@@ -4310,8 +4418,27 @@ const processAutoJob = async (job) => {
         }
         job.done = jobDoneCount(job); await saveAutoJobs();
       }
+     };
+     await Promise.all(Array.from({ length: Math.min(AUTO_RENDER_CONCURRENCY, roundWork.length || 1) }, worker));
     };
-    await Promise.all(Array.from({ length: Math.min(AUTO_RENDER_CONCURRENCY, work.length || 1) }, worker));
+
+    // BOUNDED AUTO-RETRY: relaunch every variant that still failed (after the no-b-roll
+    // salvage) in a fresh round, up to MAX_RENDER_ATTEMPTS per variant. Already-ready
+    // variants are never touched — each round only re-renders what's still failing, so a
+    // transient failure (HW-encoder contention, disk, a one-off ffmpeg error) can't doom
+    // the batch; it finishes the renders on its own.
+    for (let round = 1; round <= MAX_RENDER_ATTEMPTS; round += 1) {
+      const roundWork = allSlots.filter(
+        (s) => s.item.status !== "ready" && (s.item.attempts || 0) < MAX_RENDER_ATTEMPTS
+      );
+      if (!roundWork.length) break;
+      if (round > 1) {
+        console.warn(`[auto] job ${job.id}: retry ${round}/${MAX_RENDER_ATTEMPTS} — ${roundWork.length} variante(s) relancée(s)`);
+        for (const s of roundWork) { s.item.status = "queued"; s.item.error = null; }
+        await saveAutoJobs();
+      }
+      await runWorkerPool(roundWork);
+    }
     // Renders are done; wait for the background uploads still in flight to drain.
     await Promise.all([...pendingUploads]);
     job.finishedAt = new Date().toISOString();
@@ -4343,9 +4470,17 @@ const processAutoJob = async (job) => {
 const resumeAutoJobs = async () => {
   await loadAutoJobs();
   for (const job of autoJobs.values()) {
-    for (const it of job.items) if (it.status === "rendering") it.status = "queued";
+    for (const it of job.items) {
+      // Renders interrupted by the restart, AND failures that still have attempts left,
+      // go back to the queue so the batch finishes on its own after a restart/crash.
+      if (it.status === "rendering") it.status = "queued";
+      else if (it.status === "failed" && (it.attempts || 0) < MAX_RENDER_ATTEMPTS) { it.status = "queued"; it.error = null; }
+    }
     job.done = jobDoneCount(job);
-    if (jobDoneCount(job) < job.total) processAutoJob(job).catch(() => {});
+    if (jobDoneCount(job) < job.total) {
+      if (job.kind === "carousel") processCarouselJob(job).catch(() => {});
+      else processAutoJob(job).catch(() => {});
+    }
   }
   await saveAutoJobs();
 };
@@ -4367,7 +4502,7 @@ const parseAutoBatchParams = (body) => ({
   blurBg: body?.blurBg === true,
   // N separate Drive destinations: the batch renders variantsPerVideo × N unique variants
   // per video and splits them round-robin into N Drive folders (one shareable link each).
-  driveDestinations: clamp(Math.round(safeNumber(body?.driveDestinations, 1)), 1, 5),
+  driveDestinations: clamp(Math.round(safeNumber(body?.driveDestinations, 1)), 1, 10),
   subtitleSizePx: body?.subtitleSizePx != null ? clamp(Math.round(safeNumber(body.subtitleSizePx, 0)), 30, 120) : 0,
 });
 
@@ -4732,6 +4867,268 @@ app.post("/api/studio/projects/:id/run", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: String(e.message || e).slice(0, 200) });
   }
+});
+
+// ===================== MODE IMAGE : carrousels PNG =====================
+// A new job KIND ("carousel") in the shared auto-jobs store. Each item = ONE carousel
+// (2–5 content slides + a Klimax-logo CTA slide). Pipeline: 1 AI background per carousel
+// (reused on every slide → consistent "person"), optional per-slide anatomy diagram, then
+// PIL compositing via render_slide.py. Reuses the worker-pool / bounded-retry / Drive infra.
+const renderSlideScriptPath = path.join(projectRoot, "local-backend", "render_slide.py");
+const imageProjectsFile = path.join(dataRoot, "image-projects.json");
+const carouselsRoot = path.join(renderRoot, "carousels");
+const fontsRoot = path.join(dataRoot, "fonts");
+const CAROUSEL_ENGINE_VERSION = 1;
+const CAROUSEL_CONCURRENCY = clamp(Math.round(safeNumber(process.env.KLIMAX_CAROUSEL_CONCURRENCY, 2)), 1, 4);
+const IMAGEGEN_MAX_PER_JOB = clamp(Math.round(safeNumber(process.env.KLIMAX_IMAGEGEN_MAX_PER_JOB, 60)), 1, 500);
+const CAROUSEL_FONT_FILES = { "Anton": "anton-900.ttf", "Archivo Black": "archivo-black-900.ttf", "Bebas Neue": "bebas-neue-900.ttf", "Montserrat": "montserrat-900.ttf" };
+const carouselFontPath = (name, fallback = "Anton") => {
+  const file = CAROUSEL_FONT_FILES[name] || CAROUSEL_FONT_FILES[fallback];
+  const p = path.join(fontsRoot, file);
+  return fsSync.existsSync(p) ? p : null;
+};
+const CAROUSEL_SFW = "Clinical medical anatomical, SFW, educational, fully clothed, no nudity, no explicit content: ";
+const BG_SCENES = {
+  anatomy: "Clean clinical studio background, soft neutral gradient, medical anatomy poster aesthetic, no text",
+  person_bed: "A calm modern bedroom with one fully-clothed adult sitting relaxed on the bed, soft warm lighting, lifestyle photography",
+  person_city: "A fully-clothed adult standing on a modern city street at golden hour, lifestyle photography, shallow depth of field",
+};
+const SFW_FALLBACK_BG = `${CAROUSEL_SFW}${BG_SCENES.anatomy}`;
+// Topic-aware background = the MAIN visual of each slide (no separate diagram card on top,
+// so the AI image stays visible). Anatomy = skeleton/muscles showing the topic; person scenes.
+const sceneTemplate = (scene, topic) => {
+  if (scene === "person_bed") return `A fit fully-clothed man, calm and confident, in a modern bedroom, lifestyle photography, soft lighting, themed around "${topic}" men's wellness`;
+  if (scene === "person_city") return `A fit fully-clothed confident man on a modern city street at golden hour, lifestyle photography, shallow depth of field`;
+  return `Anatomical illustration of a male body / skeleton with the relevant muscles highlighted for "${topic}", clean clinical educational poster, centered figure, neutral background, no text`;
+};
+const pickBgScene = (style, rng) => {
+  if (style?.background && BG_SCENES[style.background]) return style.background;
+  const keys = Object.keys(BG_SCENES);
+  return keys[Math.floor(rng() * keys.length)];
+};
+const seedFromString = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i += 1) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
+
+const readImageProjects = async () => { try { return JSON.parse(await fs.readFile(imageProjectsFile, "utf8")).projects || []; } catch { return []; } };
+const writeImageProjects = async (projects) => fs.writeFile(imageProjectsFile, JSON.stringify({ projects }, null, 2));
+const normalizeImageProject = (body, existing) => {
+  const now = new Date().toISOString();
+  const ci = (v, lo, hi, d) => clamp(Math.round(safeNumber(v, d)), lo, hi);
+  const bg = body.style?.background ?? existing?.style?.background;
+  const min = ci(body.slideCountMin, 2, 5, existing?.slideCountMin ?? 2);
+  return {
+    id: body.id || existing?.id || `imgproj-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+    name: String(body.name ?? existing?.name ?? "Carrousels").slice(0, 80),
+    description: String(body.description ?? existing?.description ?? "").slice(0, 400),
+    topicSource: (body.topicSource ?? existing?.topicSource) === "manual" ? "manual" : "auto",
+    manualPrompt: String(body.manualPrompt ?? existing?.manualPrompt ?? "").slice(0, 300),
+    slideCountMin: min,
+    slideCountMax: ci(body.slideCountMax, min, 5, existing?.slideCountMax ?? 4),
+    carouselsPerBatch: ci(body.carouselsPerBatch, 1, 20, existing?.carouselsPerBatch ?? 4),
+    style: {
+      background: ["anatomy", "person_bed", "person_city", "random"].includes(bg) ? bg : "random",
+      titleFont: String(body.style?.titleFont ?? existing?.style?.titleFont ?? "Anton"),
+      bodyFont: String(body.style?.bodyFont ?? existing?.style?.bodyFont ?? "Montserrat"),
+      accentColor: String(body.style?.accentColor ?? existing?.style?.accentColor ?? "#e324ff"),
+    },
+    createdAt: existing?.createdAt || now, updatedAt: now,
+  };
+};
+
+app.get("/api/images/projects", async (_req, res) => { res.json({ projects: await readImageProjects() }); });
+app.post("/api/images/projects", async (req, res) => {
+  const projects = await readImageProjects();
+  const existing = req.body?.id ? projects.find((p) => p.id === req.body.id) : null;
+  const project = normalizeImageProject(req.body || {}, existing);
+  const idx = projects.findIndex((p) => p.id === project.id);
+  if (idx >= 0) projects[idx] = project; else projects.push(project);
+  await writeImageProjects(projects);
+  res.json({ project, projects });
+});
+app.delete("/api/images/projects/:id", async (req, res) => {
+  const projects = (await readImageProjects()).filter((p) => p.id !== req.params.id);
+  await writeImageProjects(projects);
+  res.json({ projects });
+});
+app.post("/api/images/projects/:id/run", async (req, res) => {
+  const project = (await readImageProjects()).find((p) => p.id === req.params.id);
+  if (!project) return res.status(404).json({ error: "Projet introuvable." });
+  try {
+    const resp = await fetch(`http://127.0.0.1:${port}/api/images/generate`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageProjectId: project.id }),
+    });
+    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).error || `HTTP ${resp.status}`);
+    res.json(await resp.json());
+  } catch (e) { res.status(500).json({ error: String(e.message || e).slice(0, 200) }); }
+});
+
+app.post("/api/images/generate", async (req, res) => {
+  await loadAutoJobs();
+  const { pickTopics } = await import("./carouselContent.mjs");
+  const b = req.body || {};
+  let cfg = b;
+  if (b.imageProjectId) { const p = (await readImageProjects()).find((x) => x.id === b.imageProjectId); if (p) cfg = { ...p, ...b }; }
+  const topicSource = cfg.topicSource === "manual" ? "manual" : "auto";
+  const manualPrompt = String(cfg.manualPrompt || "").trim();
+  const slideCountMin = clamp(Math.round(safeNumber(cfg.slideCountMin, 2)), 2, 5);
+  const slideCountMax = clamp(Math.round(safeNumber(cfg.slideCountMax, 4)), slideCountMin, 5);
+  const carouselsPerBatch = clamp(Math.round(safeNumber(cfg.carouselsPerBatch, 4)), 1, 20);
+  const style = normalizeImageProject({ style: cfg.style }, null).style;
+  if (topicSource === "manual" && !manualPrompt) return res.status(400).json({ error: "Prompt manuel vide." });
+
+  let topicLabels;
+  if (topicSource === "manual") topicLabels = Array.from({ length: carouselsPerBatch }, () => manualPrompt);
+  else {
+    const topics = await pickTopics(carouselsPerBatch, Date.now() >>> 0);
+    if (!topics.length) return res.status(400).json({ error: "Aucun sujet trouvé (transcris des vidéos d'abord, ou passe en manuel)." });
+    topicLabels = topics.map((t) => t.label);
+  }
+
+  const jobId = `img-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+  const items = topicLabels.map((label, index) => ({
+    id: `${jobId}-${index}`, kind: "carousel", index, source: label, topicLabel: label,
+    style, slideCountMin, slideCountMax, status: "queued", content: null, outputs: [], driveLink: null,
+  }));
+  const job = {
+    id: jobId, kind: "carousel", createdAt: new Date().toISOString(), finishedAt: null,
+    total: items.length, done: 0, engineVersion: CAROUSEL_ENGINE_VERSION, items,
+  };
+  autoJobs.set(jobId, job);
+  await saveAutoJobs();
+  processCarouselJob(job).catch((e) => console.error("[carousel] job failed:", e.message));
+  res.json({ jobId, total: job.total, items: job.items });
+});
+
+const processCarouselJob = async (job) => {
+  if (job._running) return;
+  job._running = true;
+  try {
+    if ((job.engineVersion || 1) !== CAROUSEL_ENGINE_VERSION) {
+      for (const it of job.items) if (it.status !== "ready") { it.status = "failed"; it.error = "Moteur image mis à jour — relance un nouveau lot."; }
+      job.done = jobDoneCount(job); job.finishedAt = job.finishedAt || new Date().toISOString(); return;
+    }
+    const { generateImage, ImageSafetyError } = await import("./imageGen.mjs");
+    const { generateCarouselContent } = await import("./carouselContent.mjs");
+    const { isDriveConfigured, createSharedFolder, uploadOneFile } = await import("./driveUpload.mjs");
+    const driveOn = isDriveConfigured();
+    const ds = new Date();
+    const dtag = `${ds.getFullYear()}-${String(ds.getMonth() + 1).padStart(2, "0")}-${String(ds.getDate()).padStart(2, "0")} ${String(ds.getHours()).padStart(2, "0")}h${String(ds.getMinutes()).padStart(2, "0")}`;
+    if (!job.drive) job.drive = { status: driveOn ? "uploading" : "skipped", uploaded: 0, total: job.total, folders: [], link: null, error: null };
+    const pendingUploads = new Set();
+    let jobImages = 0;
+    const genImg = async (prompt, aspect) => {
+      if (jobImages >= IMAGEGEN_MAX_PER_JOB) throw new Error(`Budget images atteint (${IMAGEGEN_MAX_PER_JOB}).`);
+      jobImages += 1;
+      try { return (await generateImage(prompt, { aspectRatio: aspect })).path; }
+      catch (e) {
+        if (e instanceof ImageSafetyError) { jobImages += 1; return (await generateImage(SFW_FALLBACK_BG, { aspectRatio: aspect })).path; }
+        throw e;
+      }
+    };
+
+    const renderOne = async (item) => {
+      if (!item.content) {
+        const c = await generateCarouselContent({ topicLabel: item.topicLabel, slideCountMin: item.slideCountMin, slideCountMax: item.slideCountMax });
+        item.content = c; item.topicLabel = c.topicLabel || item.topicLabel; await saveAutoJobs();
+      }
+      const rng = seededRng(`${job.id}:${item.index}`);
+      const scene = pickBgScene(item.style, rng);
+      const outDir = path.join(carouselsRoot, job.id, String(item.index));
+      await ensureDir(outDir);
+      // ONE topic-aware background per carousel = the main visual (no diagram card on top).
+      // Forced scene → template ; "random" → Claude's topic-tailored backgroundPrompt. 1 image/carousel.
+      const bgPrompt = (item.style.background && item.style.background !== "random")
+        ? `${CAROUSEL_SFW}${sceneTemplate(scene, item.topicLabel)}`
+        : (item.content.backgroundPrompt || `${CAROUSEL_SFW}${sceneTemplate(scene, item.topicLabel)}`);
+      const bgPath = await genImg(bgPrompt, "4:5");
+      const titleFont = carouselFontPath(item.style.titleFont, "Anton");
+      const bodyFont = carouselFontPath(item.style.bodyFont, "Montserrat");
+      const outputs = []; const paths = [];
+      let si = 0;
+      for (const s of item.content.slides) {
+        const diagramPath = null; // background IS the visual now — no separate diagram card
+        const out = path.join(outDir, `${String(si + 1).padStart(2, "0")}.png`);
+        const cfgPath = path.join(tempRoot, `slide-${job.id}-${item.index}-${si}.json`);
+        await fs.writeFile(cfgPath, JSON.stringify({ outputPath: out, backgroundPath: bgPath, diagramPath, title: s.title, explanation: s.explanation, titleFontPath: titleFont, bodyFontPath: bodyFont, accentColor: item.style.accentColor, seed: seedFromString(`${job.id}:${item.index}:${si}`) }));
+        await runProcess(pythonBin, [renderSlideScriptPath, cfgPath], { timeoutMs: 60000 });
+        outputs.push({ url: publicUrlFor(out), role: s.role }); paths.push(out); si += 1;
+      }
+      const ctaOut = path.join(outDir, `${String(si + 1).padStart(2, "0")}.png`);
+      const ctaCfgPath = path.join(tempRoot, `slide-${job.id}-${item.index}-cta.json`);
+      await fs.writeFile(ctaCfgPath, JSON.stringify({ outputPath: ctaOut, isCta: true, backgroundPath: bgPath, title: "On peut faire ça avec Klimax", titleFontPath: titleFont, logoPath: logoPreviewPath, seed: seedFromString(`${job.id}:${item.index}:cta`) }));
+      await runProcess(pythonBin, [renderSlideScriptPath, ctaCfgPath], { timeoutMs: 60000 });
+      outputs.push({ url: publicUrlFor(ctaOut), role: "cta" }); paths.push(ctaOut);
+      item.outputs = outputs; item.slidePaths = paths;
+    };
+
+    const allSlots = job.items.filter((it) => it.status !== "ready");
+    const runPool = async (work) => {
+      let cursor = 0;
+      const worker = async () => {
+        for (;;) {
+          const item = cursor < work.length ? work[cursor++] : null;
+          if (!item) return;
+          await acquireRenderSlot();
+          item.attempts = (item.attempts || 0) + 1;
+          item.status = "rendering"; await saveAutoJobs();
+          try { await renderOne(item); item.status = "ready"; item.error = null; }
+          catch (e) { item.status = "failed"; item.error = String(e.message || e).slice(0, 300); console.error("[carousel] item failed:", e.message); }
+          finally { releaseRenderSlot(); }
+          if (item.status === "ready" && driveOn) {
+            const pu = (async () => {
+              await acquireUploadSlot();
+              try {
+                const folder = await createSharedFolder(`Klimax carrousel · ${item.topicLabel} · ${dtag}`);
+                for (let i = 0; i < item.slidePaths.length; i += 1) await uploadOneFile(item.slidePaths[i], `${String(i + 1).padStart(2, "0")}.png`, folder.id);
+                item.driveLink = folder.link;
+                job.drive.folders.push({ label: item.topicLabel, link: folder.link, uploaded: item.slidePaths.length });
+                job.drive.uploaded = job.drive.folders.reduce((s, x) => s + (x.uploaded || 0), 0);
+                if (!job.drive.link) job.drive.link = folder.link;
+                await saveAutoJobs();
+              } catch (e) { console.warn("[carousel] upload raté:", e.message); } finally { releaseUploadSlot(); }
+            })();
+            pendingUploads.add(pu); pu.finally(() => pendingUploads.delete(pu));
+          }
+          job.done = jobDoneCount(job); await saveAutoJobs();
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(CAROUSEL_CONCURRENCY, work.length || 1) }, worker));
+    };
+    for (let round = 1; round <= MAX_RENDER_ATTEMPTS; round += 1) {
+      const work = allSlots.filter((it) => it.status !== "ready" && (it.attempts || 0) < MAX_RENDER_ATTEMPTS);
+      if (!work.length) break;
+      if (round > 1) { for (const it of work) { it.status = "queued"; it.error = null; } await saveAutoJobs(); }
+      await runPool(work);
+    }
+    await Promise.all([...pendingUploads]);
+    job.finishedAt = new Date().toISOString();
+    job.drive.status = driveOn ? "done" : "skipped";
+    job.imagesGenerated = jobImages;
+    console.log(`[carousel] job ${job.id}: ${jobImages} image(s) générée(s) pour ${job.total} carrousel(s) (~${(jobImages * 0.04).toFixed(2)}$ · cache exclus).`);
+    await saveAutoJobs();
+  } finally { job._running = false; await saveAutoJobs(); }
+};
+
+app.get("/api/images/jobs", async (_req, res) => {
+  await loadAutoJobs();
+  res.json({ jobs: [...autoJobs.values()].filter((j) => j.kind === "carousel").map(cleanJob) });
+});
+app.get("/api/images/jobs/:id", async (req, res) => {
+  await loadAutoJobs();
+  const job = autoJobs.get(req.params.id);
+  if (!job || job.kind !== "carousel") return res.status(404).json({ error: "Job introuvable." });
+  res.json({ job: cleanJob(job) });
+});
+app.get("/api/images/jobs/:id/download", async (req, res) => {
+  await loadAutoJobs();
+  const job = autoJobs.get(req.params.id);
+  if (!job || job.kind !== "carousel") return res.status(404).json({ error: "Job introuvable." });
+  const files = job.items.flatMap((it) => (it.slidePaths || []).filter((p) => fsSync.existsSync(p)));
+  if (!files.length) return res.status(400).json({ error: "Aucune image prête." });
+  const zipPath = path.join(tempRoot, `img-${job.id}-${Date.now()}.zip`);
+  try {
+    await runProcess("/usr/bin/zip", ["-j", "-q", zipPath, ...files]);
+    res.download(zipPath, `klimax-carrousels-${job.id}.zip`, () => { fs.unlink(zipPath).catch(() => {}); });
+  } catch (e) { fs.unlink(zipPath).catch(() => {}); res.status(500).json({ error: String(e.message || e) }); }
 });
 
 // MULTI-RUSH: assemble a real N-clip project from an ORDERED list of video-asset ids

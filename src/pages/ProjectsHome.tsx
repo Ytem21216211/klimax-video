@@ -2,7 +2,7 @@ import * as React from "react";
 const { useEffect, useState } = React;
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { Plus, Wand2, FolderCog, Play, Settings2, Library, Sparkles, LogOut, Loader2, Trash2 } from "lucide-react";
+import { Plus, Wand2, FolderCog, Play, Settings2, Library, Sparkles, LogOut, Loader2, Trash2, Image as ImageIcon } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { localKlimaxApi, type StudioProject } from "@/lib/localKlimaxApi";
@@ -47,6 +47,7 @@ const ProjectsHome = () => {
           <span className="text-lg font-black uppercase tracking-tight">Klimax · Accueil</span>
         </div>
         <div className="flex items-center gap-2">
+          <button onClick={() => navigate("/images")} className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-white/70 transition hover:bg-white hover:text-black"><ImageIcon className="h-4 w-4" /> Images</button>
           <button onClick={() => navigate("/asset-bank")} className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-white/70 transition hover:bg-white hover:text-black"><Library className="h-4 w-4" /> Banque</button>
           <button onClick={() => supabase.auth.signOut().then(() => navigate("/auth"))} className="grid h-9 w-9 place-items-center rounded-full border border-white/10 bg-white/[0.03] text-white/60 hover:bg-white hover:text-black"><LogOut className="h-4 w-4" /></button>
         </div>

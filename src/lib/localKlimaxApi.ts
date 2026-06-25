@@ -376,6 +376,29 @@ export const localKlimaxApi = {
   autoJobDownloadUrl(jobId: string) {
     return `${LOCAL_KLIMAX_API}/api/auto/jobs/${jobId}/download`;
   },
+  // ---- Image mode (PNG carousels) ----
+  async generateCarousels(payload: {
+    topicSource: "auto" | "manual";
+    manualPrompt?: string;
+    slideCountMin?: number;
+    slideCountMax?: number;
+    carouselsPerBatch?: number;
+    style?: { background?: string; titleFont?: string; bodyFont?: string; accentColor?: string };
+  }) {
+    return parseResponse<{ jobId: string; total: number; items: LocalCarouselItem[] }>(
+      await fetch(`${LOCAL_KLIMAX_API}/api/images/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+    );
+  },
+  async getCarouselJob(jobId: string) {
+    return parseResponse<{ job: LocalCarouselJob }>(await fetch(`${LOCAL_KLIMAX_API}/api/images/jobs/${jobId}`));
+  },
+  carouselJobDownloadUrl(jobId: string) {
+    return `${LOCAL_KLIMAX_API}/api/images/jobs/${jobId}/download`;
+  },
   // Plan-only (mode paramètre): same deterministic planning as startAutoBatch but
   // renders nothing — returns full per-variant settings/clips + source URLs.
   async planAutoBatch(payload: {
@@ -736,6 +759,32 @@ export type LocalAutoJob = {
     link: string | null;
     folders?: { label: string; link: string | null; uploaded: number; total?: number }[];
     error: string | null;
+  };
+};
+
+export type LocalCarouselItem = {
+  id: string;
+  index: number;
+  topicLabel: string;
+  status: "queued" | "rendering" | "ready" | "failed";
+  error?: string;
+  outputs?: { url: string; role: string }[];
+  driveLink?: string | null;
+};
+
+export type LocalCarouselJob = {
+  id: string;
+  kind: "carousel";
+  createdAt: string;
+  finishedAt: string | null;
+  total: number;
+  done: number;
+  items: LocalCarouselItem[];
+  drive?: {
+    status: "uploading" | "done" | "failed" | "skipped";
+    uploaded: number;
+    folders?: { label: string; link: string | null; uploaded: number }[];
+    link: string | null;
   };
 };
 

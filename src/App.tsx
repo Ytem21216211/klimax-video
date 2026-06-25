@@ -41,6 +41,7 @@ const AutomaticMode = lazy(() => import("./pages/AutomaticMode"));
 const AutoParamMode = lazy(() => import("./pages/AutoParamMode"));
 const StudioProjects = lazy(() => import("./pages/StudioProjects"));
 const ProjectsHome = lazy(() => import("./pages/ProjectsHome"));
+const ImagesHome = lazy(() => import("./pages/ImagesHome"));
 const TrainingMode = lazy(() => import("./pages/TrainingMode"));
 
 const queryClient = new QueryClient({
@@ -92,6 +93,7 @@ const App = () => (
                 <Route path="/imports" element={<ProtectedRoute><Imports /></ProtectedRoute>} />
                 <Route path="/invitations" element={<ProtectedRoute><Invitations /></ProtectedRoute>} />
                 <Route path="/sfx-library" element={<ProtectedRoute><SfxLibrary /></ProtectedRoute>} />
+                <Route path="/images" element={<ProtectedRoute><ImagesHome /></ProtectedRoute>} />
                 <Route path="/scriptforge" element={<ProtectedRoute><ScriptForge /></ProtectedRoute>} />
 
                 <Route path="/data-center" element={<ProtectedRoute><DataCenter /></ProtectedRoute>} />

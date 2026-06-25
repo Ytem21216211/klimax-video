@@ -24,6 +24,14 @@ export const DEFAULT_SETTINGS = {
     apiKey: "",
     model: "gemini-1.5-flash",
   },
+  // Text-to-image generation for the "Image" (carousel) mode. Own key (not shared with
+  // b-roll). provider "gemini" → Google Imagen / Gemini image models via the
+  // generativelanguage REST API. The key is the user's Google AI Studio API key.
+  imageGen: {
+    provider: "gemini",
+    apiKey: "",
+    model: "imagen-3.0-generate-002",
+  },
 };
 
 function deepMerge(base, override) {
@@ -52,6 +60,12 @@ function maskedSnapshot(settings) {
       apiKeyMasked: maskKey(settings.brollIntelligence?.apiKey || ""),
       hasKey: Boolean(settings.brollIntelligence?.apiKey),
       model: settings.brollIntelligence?.model || "gemini-1.5-flash",
+    },
+    imageGen: {
+      apiKeyMasked: maskKey(settings.imageGen?.apiKey || ""),
+      hasKey: Boolean(settings.imageGen?.apiKey),
+      provider: settings.imageGen?.provider || "gemini",
+      model: settings.imageGen?.model || "imagen-3.0-generate-002",
     },
   };
 }

@@ -611,7 +611,7 @@ const AutomaticMode = () => {
                 <div className="flex items-center gap-3 shrink-0">
                   <button type="button" onClick={() => setDriveDestinations((v) => Math.max(1, v - 1))} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-white/[0.03] text-lg font-black text-white/70 hover:bg-white hover:text-black">−</button>
                   <span className="w-5 text-center text-xl font-black leading-none">{driveDestinations}</span>
-                  <button type="button" onClick={() => setDriveDestinations((v) => Math.min(5, v + 1))} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-white/[0.03] text-lg font-black text-white/70 hover:bg-white hover:text-black">+</button>
+                  <button type="button" onClick={() => setDriveDestinations((v) => Math.min(10, v + 1))} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-white/[0.03] text-lg font-black text-white/70 hover:bg-white hover:text-black">+</button>
                 </div>
               </div>
             </div>
