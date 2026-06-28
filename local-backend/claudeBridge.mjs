@@ -19,7 +19,10 @@ export function runClaude(prompt, systemPrompt) {
     const args = ["-p", prompt, "--output-format", "json", "--model", CLAUDE_MODEL];
     if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
     // Run from a neutral cwd so the CLI doesn't load the project's CLAUDE.md / tools.
-    const child = spawn(CLAUDE_BIN, args, { cwd: "/tmp", env: process.env });
+    // stdin = ignore (/dev/null): the prompt is passed via -p, but the CLI otherwise
+    // BLOCKS waiting on stdin ("no stdin data received in 3s") and intermittently exits 1,
+    // which silently killed b-roll moment-picking (→ no b-roll) and flaked hooks/carousels.
+    const child = spawn(CLAUDE_BIN, args, { cwd: "/tmp", env: process.env, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
     // Bounded capture so a runaway Claude response can't overflow V8's max string

@@ -122,6 +122,40 @@ FORMAT :
 - [{"cueIndex": <number>, "brollId": "<id>", "trigger": "<mot exact>"}].
 - Ids EXACTS fournis, n'invente rien. Au plus un b-roll par cue. Si rien ne colle, renvoie [].`;
 
+// DETERMINISTIC LOCAL fallback when the Claude CLI is unavailable/flaky — so b-roll ALWAYS
+// appears when assets exist, instead of vanishing on a transient `claude exited 1`. Matches
+// each cue's words against each b-roll's note/title (accent-insensitive, ≥4-char tokens) +
+// the fixed exercise keywords (kegel/périnée/respiration/confiance). No two b-rolls reused.
+const FR_STOP = new Set(["mais", "avec", "dans", "pour", "vous", "nous", "elle", "ils", "est", "sont", "que", "qui", "des", "les", "une", "ton", "tes", "ces", "cette", "plus", "très", "fait", "faire", "comme", "donc", "alors", "tout", "tous", "bien", "être", "avoir", "leur", "sans", "sous", "deux", "trois"]);
+const KW_THEMES = [
+  { rx: /(k[ée]gels?|k[ée]guels?|quegels?|p[ée]rin[ée]|peri.?n[ée])/i, hint: /(kegel|p[ée]rin[ée]|pelvi)/i },
+  { rx: /(respiration|respirer|respi|souffle)/i, hint: /(respir|souffle|breath)/i },
+  { rx: /(confiance|assurance|mental|r[ée]ussite)/i, hint: /(confiance|mental|r[ée]ussite|affirmation)/i },
+];
+const normTxt = (s) => (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+function localMomentFallback(clip, brolls) {
+  const used = new Set();
+  const out = [];
+  for (let i = 0; i < clip.cues.length && out.length < 5; i += 1) {
+    const raw = clip.cues[i].text || "";
+    const cue = normTxt(raw);
+    let pick = null;
+    // 1) fixed exercise themes
+    for (const th of KW_THEMES) {
+      if (!th.rx.test(cue)) continue;
+      pick = brolls.find((b) => !used.has(b.id) && th.hint.test(normTxt(b.note || b.title)));
+      if (pick) break;
+    }
+    // 2) shared ≥4-char word between the cue and a b-roll note
+    if (!pick) {
+      const words = cue.split(/\s+/).filter((w) => w.length >= 4 && !FR_STOP.has(w));
+      pick = brolls.find((b) => !used.has(b.id) && words.some((w) => normTxt(b.note || b.title).includes(w)));
+    }
+    if (pick) { used.add(pick.id); out.push({ cueIndex: i, brollId: pick.id, trigger: raw.split(/\s+/)[0] || "" }); }
+  }
+  return out;
+}
+
 // clip = { id, cues: [{ start, text }] }. Returns [{ cueIndex, brollId }].
 export async function pickBrollMomentsForClip({ clip, brolls }) {
   if (!clip || !Array.isArray(clip.cues) || clip.cues.length === 0) return [];
@@ -131,8 +165,13 @@ export async function pickBrollMomentsForClip({ clip, brolls }) {
     brolls: brolls.map((b) => ({ id: b.id, description: (b.note || b.title || "").trim() })),
     cues: clip.cues.map((c, i) => ({ cueIndex: i, t: Number((c.start || 0).toFixed(2)), text: (c.text || "").trim() })),
   }, null, 2);
-  const text = await runClaude(`${payload}\n\nRends le tableau JSON demandé.`, MOMENT_SYSTEM + (await buildLearnedRulesBlock("broll")));
-  const parsed = extractJson(text);
+  let parsed = null;
+  try {
+    const text = await runClaude(`${payload}\n\nRends le tableau JSON demandé.`, MOMENT_SYSTEM + (await buildLearnedRulesBlock("broll")));
+    parsed = extractJson(text);
+  } catch { parsed = null; }
+  // Claude failed (exit 1 / parse) or found nothing → deterministic local match so b-roll still shows.
+  if (!Array.isArray(parsed) || parsed.length === 0) parsed = localMomentFallback(clip, brolls);
   if (!Array.isArray(parsed)) return [];
   const seen = new Set();
   const out = [];
