@@ -3375,7 +3375,7 @@ const renderProject = async (db, project, sourceGroup) => {
   // Wall-clock cap so a hung ffmpeg (e.g. a broken/0-duration b-roll looped into a
   // segment) can't freeze the render slot forever and stall the whole auto batch.
   // ~12 s of compute per second of output, floor 3 min, cap 8 min.
-  const renderTimeoutMs = Math.min(480000, Math.max(180000, Math.round((totalDuration || 30) * 12000)));
+  const renderTimeoutMs = Math.min(720000, Math.max(240000, Math.round((totalDuration || 30) * 16000)));
   _mark("buildFilters+facedetect+hookPNG");
   const { stderr } = await runProcess(ffmpegPath, args, { timeoutMs: renderTimeoutMs });
   _mark("ffmpegEncode");
@@ -4195,7 +4195,10 @@ const ensureAutoProject = async (db, groupId) => {
 // 3 on an 8-core mac: each ffmpeg render uses ~2.7 cores (filtergraph + x264 superfast),
 // so 3 keeps the cores busy WITHOUT oversubscribing. 4 thrashed (encodes ballooned from
 // ~22s to ~160s under contention in profiling). Tunable via KLIMAX_AUTO_CONCURRENCY.
-const AUTO_RENDER_CONCURRENCY = clamp(Math.round(safeNumber(process.env.KLIMAX_AUTO_CONCURRENCY, 3)), 1, 6);
+// Default 2 (not 3): with b-roll + zoom + h264_videotoolbox, 3 concurrent renders contend
+// on the HW encoder and each balloons past the render timeout → "process timed out" ÉCHEC.
+// 2 keeps each render fast enough to finish. Tunable via KLIMAX_AUTO_CONCURRENCY.
+const AUTO_RENDER_CONCURRENCY = clamp(Math.round(safeNumber(process.env.KLIMAX_AUTO_CONCURRENCY, 2)), 1, 6);
 // GLOBAL ffmpeg slot pool — shared across jobs, so two concurrent batches (or a
 // resume of several) can never stack 2 pools × 2 ffmpeg and overload the machine.
 let renderSlotsInUse = 0;
