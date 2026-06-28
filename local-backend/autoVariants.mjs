@@ -97,7 +97,10 @@ const ZOOM_INTENSITIES = [
   { autoZoomBoostPercent: 22, autoZoomDurationSeconds: 2.0 }, // moyen
 ];
 const CLIP_TRANSITIONS = ["random", "opacity", "camera_flash"];
-const BROLL_STYLES = ["square", "fullscreen", "alternate"];
+// SQUARE only: the b-roll sits as a square in the bottom zone (caption lifted above it),
+// never FULLSCREEN covering the speaker ("toujours en grand" — fixed). Re-add "fullscreen"/
+// "alternate" here if some variety is wanted later.
+const BROLL_STYLES = ["square"];
 
 // ---------------------------------------------------------------------------
 // PER-PERSON BASE FRAMING (calibrated by hand for this podcast's two cameras).
