@@ -1366,24 +1366,16 @@ const applyVideoZoomEvents = (filterChains, inputTag, outputTag, events) => {
   // the clip's own framing. Default anchor 0.5 = true centre (both axes);
   // KLIMAX_ZOOM_VERTICAL_ANCHOR can bias it upward (0 = top) for talking heads.
   const vAnchor = clamp(safeNumber(process.env.KLIMAX_ZOOM_VERTICAL_ANCHOR, 0.5), 0, 0.5);
-  // Oversample ONLY as much as the motion needs (output is ALWAYS 1080x1920):
-  //  - smooth / zoom-out beats move the centred crop every frame, so a fractional
-  //    crop offset must land sub-pixel → oversample 1.5x (1620x2880) then downscale
-  //    to 1080. (Was 2x/2160 — 1.5x is ~44% fewer pixels with no visible difference.)
-  //  - pure CUT beats hold a CONSTANT, centred zoom within their window (a step), so
-  //    the crop never moves sub-pixel → NO oversample needed: scale up by the zoom and
-  //    crop a fixed 1080x1920 centre directly. Much cheaper, identical look.
-  // A fixed-size crop keeps the filter chain stable (a per-frame-varying crop size
-  // makes ffmpeg fail "reinitializing filters"); max() pins the scale floor so a
-  // zoom-out dipping below 1.0 can't make the frame smaller than the crop.
-  const smoothMotion = events.some((e) => e.kind !== "cut");
-  const W = smoothMotion ? 1620 : 1080;
-  const H = smoothMotion ? 2880 : 1920;
-  const downscale = smoothMotion ? `scale=1080:1920:flags=lanczos,` : ``;
+  // ZOOMPAN at a CONSTANT 1080x1920 output: zooms INTERNALLY (z = the zoom factor, ≥1) so
+  // there is NO per-frame scaler re-init and NO 1.5x oversample (1620x2880). The old
+  // scale=…:eval=frame path re-initialised the swscale context every frame AND worked at
+  // 2.25x the pixels → smooth-zoom renders were ~10x slower. Output stays native 1080p.
+  // zoompan's time variable is `time` (not `t`); the crop is centred horizontally and
+  // anchored vertically by vAnchor. `escaped` (comma-escaped) is unused on this path.
+  void escaped;
+  const zexpr = expression.replace(/\bt\b/g, "time");
   filterChains.push(
-    `[${inputTag}]scale=w='max(${W},${W}*(${escaped}))':h='max(${H},${H}*(${escaped}))':eval=frame:flags=bicubic,` +
-      `crop=${W}:${H}:(in_w-${W})/2:(in_h-${H})*${vAnchor.toFixed(3)},` +
-      `${downscale}setsar=1[${outputTag}]`
+    `[${inputTag}]zoompan=z='${zexpr}':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)*${vAnchor.toFixed(3)}':d=1:s=1080x1920:fps=30,setsar=1[${outputTag}]`
   );
 };
 
