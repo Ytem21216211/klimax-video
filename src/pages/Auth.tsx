@@ -39,6 +39,11 @@ const Auth = () => {
     }
     setLoading(true);
     try {
+      // Purge any STALE/expired session first: a leftover token from a previous run can
+      // make getSession() bounce back to /auth right after login. Clearing it guarantees
+      // a clean sign-in. (Also nukes the localStorage key defensively.)
+      await supabase.auth.signOut().catch(() => {});
+      try { Object.keys(localStorage).filter((k) => k.startsWith("sb-")).forEach((k) => localStorage.removeItem(k)); } catch { /* ignore */ }
       // Sign in with the fixed account; create it on the very first launch.
       let { error } = await supabase.auth.signInWithPassword({ email: APP_EMAIL, password: APP_PASSWORD });
       if (error) {
